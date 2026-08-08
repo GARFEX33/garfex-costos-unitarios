@@ -1,0 +1,11 @@
+- `go.mod` declara Go 1.26.5 y no declara dependencias externas.
+- La CLI one-shot se ejecuta con `go run ./cmd/garfex`; los subcomandos actuales son `version` y `config check`.
+- `config check` exige `GARFEX_DB_HOST`, `GARFEX_DB_PORT`, `GARFEX_DB_NAME`, `GARFEX_DB_USER`, `GARFEX_DB_PASSWORD` y `GARFEX_DB_SSLMODE`; `GARFEX_LOG_LEVEL` admite `debug`, `info`, `warn` o `error` y por omisión es `info`.
+- La CLI no lee `.env`; para `go run`, cargá las variables `GARFEX_*` en el proceso actual.
+- Ejecutá `gofmt -l .`, `go vet ./...` y `go test ./... -count=1` localmente; CI ejecuta `go test ./... -race -count=1`, `go build ./...`, construye una imagen Docker etiquetada, verifica `Config.User=65532:65532` y ejecuta `version`.
+- No ejecutes `go build` ni `docker build` localmente después de cambios; esos builds pertenecen a CI.
+- `docker compose up -d --wait db` inicia el único servicio `db`, que publica PostgreSQL solo en `127.0.0.1:5432` y conserva datos en `garfex_pgdata`.
+- `docker compose down -v` destruye `garfex_pgdata`; no lo ejecutes sin un reset explícito.
+- `garfex_admin` administra el esquema y `garfex_app` es la identidad de runtime; `POSTGRES_USER` es solo bootstrap.
+- Los tests Go existentes usan tablas y subtests; al agregar casos de error, cubrí éxito y error en archivos `*_test.go` junto al código.
+- Usá commits convencionales y nunca agregues trailers `Co-Authored-By`.
