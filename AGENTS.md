@@ -1,5 +1,6 @@
-- `go.mod` declara Go 1.26.5 y no declara dependencias externas.
-- La CLI one-shot se ejecuta con `go run ./cmd/garfex`; los subcomandos actuales son `version` y `config check`.
+- `go.mod` declara Go 1.26.5; la TUI usa Bubble Tea.
+- La CLI se ejecuta con `go run ./cmd/garfex`: sin argumentos abre el menú Bubble Tea y los subcomandos directos son `version` y `config check`.
+- Smoke manual de la TUI: ejecutá `go run ./cmd/garfex`, navegá Version, Config check y GARFEX status con flechas o `j`/`k`, y elegí Exit.
 - `config check` exige `GARFEX_DB_HOST`, `GARFEX_DB_PORT`, `GARFEX_DB_NAME`, `GARFEX_DB_USER`, `GARFEX_DB_PASSWORD` y `GARFEX_DB_SSLMODE`; `GARFEX_LOG_LEVEL` admite `debug`, `info`, `warn` o `error` y por omisión es `info`.
 - La CLI no lee `.env`; para `go run`, cargá las variables `GARFEX_*` en el proceso actual.
 - Ejecutá `gofmt -l .`, `go vet ./...` y `go test ./... -count=1` localmente; CI ejecuta `go test ./... -race -count=1`, `go build ./...`, construye una imagen Docker etiquetada, verifica `Config.User=65532:65532` y ejecuta `version`.

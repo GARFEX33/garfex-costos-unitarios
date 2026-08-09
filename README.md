@@ -24,7 +24,11 @@ Para ejecutar la CLI desde PowerShell, definí las variables `GARFEX_*` en el pr
 go run ./cmd/garfex config check
 ```
 
-El resumen de `config check` redacta la contraseña. La CLI también admite `go run ./cmd/garfex` y `go run ./cmd/garfex version`.
+El resumen de `config check` redacta la contraseña. `go run ./cmd/garfex version` conserva su comportamiento directo.
+
+## Menú interactivo
+
+Ejecutá `go run ./cmd/garfex` sin argumentos para abrir el menú Bubble Tea. Como verificación manual, navegá con las flechas o `j`/`k`, abrí **Version**, **Config check** y **GARFEX status**, y después elegí **Exit**. `config check` usa las variables `GARFEX_*` del proceso actual; si faltan, el menú muestra el error de configuración sin exponer la contraseña.
 
 ## PostgreSQL local
 
