@@ -5,6 +5,7 @@ Base operativa de Fase 0: CLI Go one-shot y PostgreSQL local. No contiene esquem
 ## Arquitectura
 
 - [Límite de capacidades MCP](docs/architecture/mcp-capability-boundary.md)
+- [Harness de runtime de agentes](docs/architecture/agent-runtime-harness.md)
 
 ## Requisitos
 
