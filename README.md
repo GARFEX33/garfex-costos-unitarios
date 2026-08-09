@@ -2,6 +2,10 @@
 
 Base operativa de Fase 0: CLI Go one-shot y PostgreSQL local. No contiene esquema de negocio, migraciones ni servicios de aplicación.
 
+## Arquitectura
+
+- [Límite de capacidades MCP](docs/architecture/mcp-capability-boundary.md)
+
 ## Requisitos
 
 - Go 1.26.5 (declarado en `go.mod`).
