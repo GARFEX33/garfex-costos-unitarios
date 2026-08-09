@@ -5,19 +5,35 @@ import (
 	"io"
 	"os"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/config"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/tui"
 )
 
 var version = "dev"
 
-func main() {
-	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr))
+type program interface {
+	Run() (tea.Model, error)
 }
 
-func run(args []string, look func(string) (string, bool), out, errw io.Writer) int {
+type programLauncher func(tea.Model) program
+
+func main() {
+	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram))
+}
+
+func newProgram(model tea.Model) program { return tea.NewProgram(model) }
+
+func run(args []string, look func(string) (string, bool), out, errw io.Writer, launch programLauncher) int {
 	if len(args) == 0 {
-		fmt.Fprintln(out, "garfex")
-		printUsage(errw)
+		if _, err := launch(tui.New(tui.Handlers{
+			Version: tui.Version(version),
+			Config:  tui.Config(look),
+			Status:  tui.Status(),
+		})).Run(); err != nil {
+			fmt.Fprintf(errw, "TUI launcher failed: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 
