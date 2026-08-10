@@ -1,6 +1,6 @@
 # GARFEX Costos Unitarios
 
-Base operativa de Fase 0: CLI Go one-shot y PostgreSQL local. No contiene esquema de negocio, migraciones ni servicios de aplicación.
+Base operativa de Fase 0: CLI Go con TUI Bubble Tea, PostgreSQL local y migraciones versionadas. No contiene esquema de negocio ni servicios de aplicación.
 
 ## Arquitectura
 
@@ -29,7 +29,7 @@ Para ejecutar la CLI desde PowerShell, definí las variables `GARFEX_*` en el pr
 go run ./cmd/garfex config check
 ```
 
-El resumen de `config check` redacta la contraseña. `go run ./cmd/garfex version` conserva su comportamiento directo.
+El resumen de `config check` redacta la contraseña. Los subcomandos directos disponibles son `version` y `config check`.
 
 ## Menú interactivo
 
@@ -49,15 +49,15 @@ El único servicio es `db`, publicado en `127.0.0.1:5432`, con el volumen nombra
 
 Para borrar intencionalmente la base local y volver a ejecutar los scripts de inicialización, usá `docker compose down -v`. Ese comando destruye `garfex_pgdata`.
 
-## Migraciones futuras
+## Migraciones
 
-No existe `migrations/` en Fase 0. La imagen fijada para la futura ejecución de migraciones es verificable sin crear esa carpeta:
+Las migraciones versionadas están en `migrations/`. La imagen fijada para ejecutarlas se puede verificar con:
 
 ```powershell
 docker run --rm migrate/migrate:v4.18.2 -version
 ```
 
-Cuando haya una migración real, ejecutala con el DSN de `garfex_admin`; no uses `garfex_app` para administrar el esquema.
+Ejecutalas con el DSN de `garfex_admin`; no uses `garfex_app` para administrar el esquema.
 
 ## Verificaciones
 

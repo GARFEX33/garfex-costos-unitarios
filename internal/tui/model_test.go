@@ -31,7 +31,7 @@ func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 func TestModelMenuAndCommands(t *testing.T) {
 	called := false
 	m := New(Handlers{Version: func() tea.Cmd { called = true; return func() tea.Msg { return resultMsg{text: "ok"} } }, Config: Status(), Status: Status()})
-	if got := ansi.Strip(m.View().Content); !containsFullWordmark(got) || !strings.Contains(normalized(got), officialTagline) || !strings.Contains(got, "› 01  Versión") || !strings.Contains(got, "02  Verificar configuración") || !strings.Contains(got, "03  Estado de GARFEX") || !strings.Contains(got, "04  Salir") || !strings.Contains(got, "j/k navegar") || strings.Contains(got, "/\\/") || strings.Contains(got, "╭") {
+	if got := ansi.Strip(m.View().Content); containsFullWordmark(got) || !strings.Contains(got, "GARFEX") || !strings.Contains(normalized(got), officialTagline) || !strings.Contains(got, "› 01  Versión") || !strings.Contains(got, "02  Verificar configuración") || !strings.Contains(got, "03  Estado de GARFEX") || !strings.Contains(got, "04  Salir") || !strings.Contains(got, "j/k navegar") || strings.Contains(got, "/\\/") || strings.Contains(got, "╭") {
 		t.Fatalf("menu = %q", got)
 	}
 	for range 8 {
@@ -149,6 +149,7 @@ func TestModelMissingContracts(t *testing.T) {
 		{"error", screenError, []string{"ERROR DE OPERACIÓN", "bad", "r reintentar", "b/esc volver"}},
 		{"minimum", screenMinSize, []string{"La terminal debe tener al menos 40x10."}},
 	} {
+		m.width, m.height = 102, 24
 		m.screen, m.result = tt.s, "bad"
 		if tt.s == screenResult {
 			m.result = "ok"
@@ -172,9 +173,11 @@ func TestModelViewResponsiveShell(t *testing.T) {
 		width, height int
 		full          bool
 	}{
-		{"full", 80, 24, true},
-		{"exact banner width", lipgloss.Width(fullWordmark) + 2, 24, true},
-		{"compact width", 40, 16, false},
+		{"full", 120, 30, true},
+		{"exact banner width", 102, 24, true},
+		{"exact full height", 102, 21, true},
+		{"insufficient full height", 102, 20, false},
+		{"ordinary terminal", 80, 24, false},
 		{"minimum boundary", 40, 10, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -199,16 +202,29 @@ func TestModelViewResponsiveShell(t *testing.T) {
 }
 
 func TestFullWordmark(t *testing.T) {
-	if lines := strings.Split(strings.TrimSpace(fullWordmark), "\n"); len(lines) != 5 {
-		t.Fatalf("wordmark lines = %d, want 5", len(lines))
+	const (
+		wantRows    = 9
+		wantColumns = 100
+	)
+	if maxCardWidth != wantColumns {
+		t.Fatalf("maximum card width = %d, want %d", maxCardWidth, wantColumns)
 	}
-	for _, glyph := range []string{"███████    ██████   ████████", "██  █████ ████████  ████████", "█████████ ██    ██  ██    ██"} {
-		if !strings.Contains(fullWordmark, glyph) {
-			t.Fatalf("wordmark is missing %q", glyph)
+	wordmarkLines := strings.Split(fullWordmark, "\n")
+	if len(wordmarkLines) != wantRows {
+		t.Fatalf("wordmark lines = %d, want %d", len(wordmarkLines), wantRows)
+	}
+	for row, line := range wordmarkLines {
+		if got := lipgloss.Width(line); got != wantColumns {
+			t.Fatalf("wordmark row %d width = %d, want %d", row, got, wantColumns)
 		}
-	}
-	if strings.ContainsAny(fullWordmark, "╔╗╚╝═║") {
-		t.Fatal("wordmark must remain flat and shadow-free")
+		for column, glyph := range []rune(line) {
+			if glyph < '\u2800' || glyph > '\u28ff' {
+				t.Fatalf("wordmark row %d column %d contains non-Braille glyph %q", row, column, glyph)
+			}
+			if got := lipgloss.Width(string(glyph)); got != 1 {
+				t.Fatalf("wordmark glyph %q width = %d, want 1", glyph, got)
+			}
+		}
 	}
 
 	styled := wordmarkStyle(lipgloss.Width(fullWordmark)).GetForeground()
@@ -219,16 +235,27 @@ func TestFullWordmark(t *testing.T) {
 	}
 
 	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
-	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	plain := ansi.Strip(m.View().Content)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 102, Height: 24})
+	one, two := m.View().Content, m.View().Content
+	if one != two {
+		t.Fatal("full wordmark render must be deterministic")
+	}
+	plain := ansi.Strip(one)
 	lines := strings.Split(plain, "\n")
-	first, last := -1, -1
+	first := -1
 	for i, line := range lines {
-		if strings.Contains(line, "███████    ██████") && first == -1 {
+		if strings.Contains(line, wordmarkLines[0]) {
 			first = i
+			break
 		}
-		if strings.Contains(line, "████████  ███    ███") {
-			last = i
+	}
+	if first < 0 {
+		t.Fatal("rendered view is missing the full wordmark")
+	}
+	last := first + len(wordmarkLines) - 1
+	for row, want := range wordmarkLines {
+		if !strings.Contains(lines[first+row], want) {
+			t.Fatalf("rendered wordmark row %d = %q, missing %q", row, lines[first+row], want)
 		}
 	}
 	tagline := -1
@@ -241,14 +268,17 @@ func TestFullWordmark(t *testing.T) {
 			t.Fatalf("unexpected content between wordmark and tagline: %q", lines[i])
 		}
 	}
-	if first < 0 || last-first != 4 || tagline <= last+1 {
+	if tagline <= last+1 {
 		t.Fatalf("wordmark/tagline spacing is invalid: first=%d last=%d", first, last)
 	}
-	line := lines[first]
-	left := len(line) - len(strings.TrimLeft(line, " "))
-	right := len(line) - len(strings.TrimRight(line, " "))
-	if left-right < -1 || left-right > 1 {
-		t.Fatalf("wordmark is not centered: left=%d right=%d", left, right)
+	for row, want := range wordmarkLines {
+		line := lines[first+row]
+		start := strings.Index(line, want)
+		left := lipgloss.Width(line[:start])
+		right := lipgloss.Width(line) - left - lipgloss.Width(want)
+		if left-right < -1 || left-right > 1 {
+			t.Fatalf("wordmark row %d is not centered: left=%d right=%d", row, left, right)
+		}
 	}
 }
 
