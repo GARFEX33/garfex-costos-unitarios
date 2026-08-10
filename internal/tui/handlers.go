@@ -20,13 +20,13 @@ func Config(look func(string) (string, bool)) Handler {
 		return func() tea.Msg {
 			cfg, err := config.Load(look)
 			if err == nil {
-				return resultMsg{text: "configuration is valid\npassword: " + cfg.DBPassword.String()}
+				return resultMsg{text: "configuración válida\ncontraseña: " + cfg.DBPassword.String()}
 			}
 			var validation config.ValidationError
 			if errors.As(err, &validation) {
-				return resultMsg{err: fmt.Errorf("configuration is invalid: %s", validation.Var)}
+				return resultMsg{err: fmt.Errorf("configuración inválida: %s", validation.Var)}
 			}
-			return resultMsg{err: errors.New("configuration is invalid")}
+			return resultMsg{err: errors.New("configuración inválida")}
 		}
 	}
 }
@@ -34,7 +34,7 @@ func Config(look func(string) (string, bool)) Handler {
 func Status() Handler {
 	return func() tea.Cmd {
 		return func() tea.Msg {
-			return resultMsg{text: "Version: available\nConfig check: available\nTUI menu: available"}
+			return resultMsg{text: "Versión: disponible\nVerificación de configuración: disponible\nMenú TUI: disponible"}
 		}
 	}
 }

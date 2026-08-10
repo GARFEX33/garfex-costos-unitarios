@@ -6,11 +6,22 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
-func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg(tea.Key{Code: code, Text: string(code)}) }
-func enter() tea.KeyPressMsg        { return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}) }
-func space() tea.KeyPressMsg        { return tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}) }
+func key(code rune) tea.KeyPressMsg  { return tea.KeyPressMsg(tea.Key{Code: code, Text: string(code)}) }
+func enter() tea.KeyPressMsg         { return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}) }
+func space() tea.KeyPressMsg         { return tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}) }
+func normalized(value string) string { return strings.Join(strings.Fields(value), " ") }
+func containsFullWordmark(value string) bool {
+	for _, line := range strings.Split(fullWordmark, "\n") {
+		if !strings.Contains(value, strings.TrimSpace(line)) {
+			return false
+		}
+	}
+	return true
+}
 func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
 	next, cmd := m.Update(msg)
@@ -20,7 +31,7 @@ func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 func TestModelMenuAndCommands(t *testing.T) {
 	called := false
 	m := New(Handlers{Version: func() tea.Cmd { called = true; return func() tea.Msg { return resultMsg{text: "ok"} } }, Config: Status(), Status: Status()})
-	if got := m.View().Content; !strings.Contains(got, "> Version") || !strings.Contains(got, "Config check\n") || !strings.Contains(got, "GARFEX status\n") || !strings.Contains(got, "Exit") {
+	if got := ansi.Strip(m.View().Content); !containsFullWordmark(got) || !strings.Contains(normalized(got), officialTagline) || !strings.Contains(got, "› 01  Versión") || !strings.Contains(got, "02  Verificar configuración") || !strings.Contains(got, "03  Estado de GARFEX") || !strings.Contains(got, "04  Salir") || !strings.Contains(got, "j/k navegar") || strings.Contains(got, "/\\/") || strings.Contains(got, "╭") {
 		t.Fatalf("menu = %q", got)
 	}
 	for range 8 {
@@ -35,9 +46,10 @@ func TestModelMenuAndCommands(t *testing.T) {
 	if m.cursor != 3 {
 		t.Fatalf("lower cursor = %d", m.cursor)
 	}
+	m.items[m.cursor].Handler = func() tea.Cmd { called = true; return nil }
 	_, quit := update(t, m, enter())
 	if quit == nil || called {
-		t.Fatal("exit must quit before handler")
+		t.Fatal("localized exit must quit without calling a handler")
 	}
 	m, _ = update(t, New(Handlers{Version: func() tea.Cmd { called = true; return func() tea.Msg { return resultMsg{text: "ok"} } }, Config: Status(), Status: Status()}), enter())
 	if m.screen != screenLoading || !called {
@@ -61,7 +73,7 @@ func TestModelResultsSizingAndView(t *testing.T) {
 	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
 	m.cursor = 2
 	m, _ = update(t, m, resultMsg{text: "ok\x1b"})
-	if m.screen != screenResult || strings.Contains(m.View().Content, "\x1b") {
+	if got := ansi.Strip(m.View().Content); m.screen != screenResult || strings.Contains(got, "\x1b") {
 		t.Fatal("success must be sanitized")
 	}
 	m, _ = update(t, m, key('b'))
@@ -69,7 +81,7 @@ func TestModelResultsSizingAndView(t *testing.T) {
 		t.Fatal("back must preserve cursor")
 	}
 	m, _ = update(t, m, resultMsg{err: errors.New("bad\x7f")})
-	if m.screen != screenError || strings.Contains(m.View().Content, "\x7f") {
+	if got := ansi.Strip(m.View().Content); m.screen != screenError || strings.Contains(got, "\x7f") {
 		t.Fatal("error must be sanitized")
 	}
 	for _, size := range []tea.WindowSizeMsg{{Width: 39, Height: 10}, {Width: 40, Height: 9}} {
@@ -89,7 +101,7 @@ func TestModelResultsSizingAndView(t *testing.T) {
 
 func TestModelMissingContracts(t *testing.T) {
 	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
-	if len(m.items) != 4 || m.items[0].Label != "Version" || m.items[1].Label != "Config check" || m.items[2].Label != "GARFEX status" || m.items[3].Label != "Exit" {
+	if len(m.items) != 4 || m.items[0].Label != "Versión" || m.items[1].Label != "Verificar configuración" || m.items[2].Label != "Estado de GARFEX" || m.items[3].Label != "Salir" || !m.items[3].Quit {
 		t.Fatalf("items = %#v", m.items)
 	}
 	for _, tt := range []struct {
@@ -127,15 +139,133 @@ func TestModelMissingContracts(t *testing.T) {
 		t.Fatal("esc must return to menu")
 	}
 	for _, tt := range []struct {
+		name string
 		s    screen
-		want string
-	}{{screenMenu, "GARFEX\n\n> Version\n  Config check\n  GARFEX status\n  Exit\n\nUse arrows or j/k, enter or space to select."}, {screenLoading, "Loading Version..."}, {screenResult, "ok\n\nPress b or esc to return."}, {screenError, "bad\n\nPress r to retry, b or esc to return."}, {screenMinSize, "Terminal must be at least 40x10."}} {
+		want []string
+	}{
+		{"menu", screenMenu, []string{"MENÚ PRINCIPAL", "› 01  Versión", "04  Salir", "j/k navegar", "enter elegir", "q salir"}},
+		{"loading", screenLoading, []string{"PROCESANDO", "Procesando Versión...", "Espere un momento", "q salir"}},
+		{"success", screenResult, []string{"OPERACIÓN COMPLETADA", "ok", "b/esc volver", "q salir"}},
+		{"error", screenError, []string{"ERROR DE OPERACIÓN", "bad", "r reintentar", "b/esc volver"}},
+		{"minimum", screenMinSize, []string{"La terminal debe tener al menos 40x10."}},
+	} {
 		m.screen, m.result = tt.s, "bad"
 		if tt.s == screenResult {
 			m.result = "ok"
 		}
-		if one, two := m.View().Content, m.View().Content; one != two || one != tt.want {
-			t.Fatalf("view = %q, want %q", one, tt.want)
+		one, two := m.View().Content, m.View().Content
+		if one != two {
+			t.Fatalf("%s view is not deterministic", tt.name)
 		}
+		plain := ansi.Strip(one)
+		for _, want := range tt.want {
+			if !strings.Contains(plain, want) {
+				t.Fatalf("%s view = %q, missing %q", tt.name, plain, want)
+			}
+		}
+	}
+}
+
+func TestModelViewResponsiveShell(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		width, height int
+		full          bool
+	}{
+		{"full", 80, 24, true},
+		{"exact banner width", lipgloss.Width(fullWordmark) + 2, 24, true},
+		{"compact width", 40, 16, false},
+		{"minimum boundary", 40, 10, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+			m, _ = update(t, m, tea.WindowSizeMsg{Width: tt.width, Height: tt.height})
+			got := m.View().Content
+			if lipgloss.Width(got) != tt.width || lipgloss.Height(got) != tt.height {
+				t.Fatalf("view size = %dx%d, want %dx%d", lipgloss.Width(got), lipgloss.Height(got), tt.width, tt.height)
+			}
+			plain := ansi.Strip(got)
+			if !strings.Contains(normalized(plain), officialTagline) || strings.Contains(plain, "/\\/") || strings.Contains(plain, "╭") {
+				t.Fatalf("shell is not centered or branded: %q", plain)
+			}
+			if tt.full != containsFullWordmark(plain) {
+				t.Fatalf("full wordmark presence = %v, want %v", containsFullWordmark(plain), tt.full)
+			}
+			if !tt.full && (!strings.Contains(plain, "GARFEX") || strings.Contains(plain, "G A R F E X") || strings.Contains(plain, "MENÚ PRINCIPAL")) {
+				t.Fatalf("compact shell fallback is invalid: %q", plain)
+			}
+		})
+	}
+}
+
+func TestFullWordmark(t *testing.T) {
+	if lines := strings.Split(strings.TrimSpace(fullWordmark), "\n"); len(lines) != 5 {
+		t.Fatalf("wordmark lines = %d, want 5", len(lines))
+	}
+	for _, glyph := range []string{"███████    ██████   ████████", "██  █████ ████████  ████████", "█████████ ██    ██  ██    ██"} {
+		if !strings.Contains(fullWordmark, glyph) {
+			t.Fatalf("wordmark is missing %q", glyph)
+		}
+	}
+	if strings.ContainsAny(fullWordmark, "╔╗╚╝═║") {
+		t.Fatal("wordmark must remain flat and shadow-free")
+	}
+
+	styled := wordmarkStyle(lipgloss.Width(fullWordmark)).GetForeground()
+	wantR, wantG, wantB, wantA := brandRed.RGBA()
+	gotR, gotG, gotB, gotA := styled.RGBA()
+	if gotR != wantR || gotG != wantG || gotB != wantB || gotA != wantA {
+		t.Fatal("full wordmark does not use GARFEX corporate red")
+	}
+
+	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	plain := ansi.Strip(m.View().Content)
+	lines := strings.Split(plain, "\n")
+	first, last := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "███████    ██████") && first == -1 {
+			first = i
+		}
+		if strings.Contains(line, "████████  ███    ███") {
+			last = i
+		}
+	}
+	tagline := -1
+	for i := last + 1; i < len(lines); i++ {
+		if strings.Contains(lines[i], "DISEÑO") {
+			tagline = i
+			break
+		}
+		if strings.TrimSpace(lines[i]) != "" {
+			t.Fatalf("unexpected content between wordmark and tagline: %q", lines[i])
+		}
+	}
+	if first < 0 || last-first != 4 || tagline <= last+1 {
+		t.Fatalf("wordmark/tagline spacing is invalid: first=%d last=%d", first, last)
+	}
+	line := lines[first]
+	left := len(line) - len(strings.TrimLeft(line, " "))
+	right := len(line) - len(strings.TrimRight(line, " "))
+	if left-right < -1 || left-right > 1 {
+		t.Fatalf("wordmark is not centered: left=%d right=%d", left, right)
+	}
+}
+
+func TestBrandPalette(t *testing.T) {
+	if backgroundHex != "#0B0D0E" || surfaceHex != "#17191B" || primaryTextHex != "#F2F0E9" || secondaryTextHex != "#8B8B86" || brandRedHex != "#800000" || accentHex != "#FFD400" {
+		t.Fatalf("palette = %s, %s, %s, %s, %s, %s", backgroundHex, surfaceHex, primaryTextHex, secondaryTextHex, brandRedHex, accentHex)
+	}
+	if brandRedHex == accentHex {
+		t.Fatal("banner red and interaction accent must remain distinct")
+	}
+	if successHex == accentHex || errorHex == accentHex {
+		t.Fatal("success and error colors must remain semantic")
+	}
+	if stateAccent(screenLoading) != accentHex || stateAccent(screenResult) != successHex || stateAccent(screenError) != errorHex {
+		t.Fatal("state colors do not match their semantic roles")
+	}
+	if _, ok := menuItemStyle(true).GetBackground().(lipgloss.NoColor); !ok {
+		t.Fatal("active menu item must not use a background fill")
 	}
 }
