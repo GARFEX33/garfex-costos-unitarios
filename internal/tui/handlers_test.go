@@ -18,9 +18,9 @@ func TestHandlers(t *testing.T) {
 		wantErr bool
 	}{
 		{"version", Version("v1.2.3"), "v1.2.3", false},
-		{"config success", Config(valid), "configuration is valid\npassword: ***REDACTED***", false},
-		{"config failure", Config(func(string) (string, bool) { return "secret", false }), "configuration is invalid: GARFEX_DB_HOST", true},
-		{"status", Status(), "Version: available\nConfig check: available\nTUI menu: available", false},
+		{"config success", Config(valid), "configuración válida\ncontraseña: ***REDACTED***", false},
+		{"config failure", Config(func(string) (string, bool) { return "secret", false }), "configuración inválida: GARFEX_DB_HOST", true},
+		{"status", Status(), "Versión: disponible\nVerificación de configuración: disponible\nMenú TUI: disponible", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			msg := tt.handler()().(resultMsg)

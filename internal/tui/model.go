@@ -1,9 +1,6 @@
 package tui
 
 import (
-	"fmt"
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -25,6 +22,7 @@ const (
 type Item struct {
 	Label   string
 	Handler Handler
+	Quit    bool
 }
 type Handlers struct{ Version, Config, Status Handler }
 type resultMsg struct {
@@ -41,7 +39,12 @@ type Model struct {
 }
 
 func New(handlers Handlers) Model {
-	return Model{items: []Item{{"Version", handlers.Version}, {"Config check", handlers.Config}, {"GARFEX status", handlers.Status}, {"Exit", nil}}}
+	return Model{items: []Item{
+		{Label: "Versión", Handler: handlers.Version},
+		{Label: "Verificar configuración", Handler: handlers.Config},
+		{Label: "Estado de GARFEX", Handler: handlers.Status},
+		{Label: "Salir", Quit: true},
+	}}
 }
 func (Model) Init() tea.Cmd { return nil }
 
@@ -80,7 +83,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "enter", "space", " ":
 				item := m.items[m.cursor]
-				if item.Label == "Exit" {
+				if item.Quit {
 					return m, tea.Quit
 				}
 				m.screen = screenLoading
@@ -100,24 +103,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() tea.View {
 	if m.screen == screenMinSize {
-		return tea.NewView("Terminal must be at least 40x10.")
+		return tea.NewView("La terminal debe tener al menos 40x10.")
 	}
-	if m.screen == screenLoading {
-		return tea.NewView("Loading " + m.items[m.cursor].Label + "...")
-	}
-	if m.screen == screenResult {
-		return tea.NewView(m.result + "\n\nPress b or esc to return.")
-	}
-	if m.screen == screenError {
-		return tea.NewView(m.result + "\n\nPress r to retry, b or esc to return.")
-	}
-	var lines []string
-	for i, item := range m.items {
-		prefix := "  "
-		if i == m.cursor {
-			prefix = "> "
-		}
-		lines = append(lines, prefix+item.Label)
-	}
-	return tea.NewView(fmt.Sprintf("GARFEX\n\n%s\n\nUse arrows or j/k, enter or space to select.", strings.Join(lines, "\n")))
+	return tea.NewView(m.render())
 }
