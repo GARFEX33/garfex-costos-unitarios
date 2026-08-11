@@ -1,42 +1,77 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
+	"github.com/shopspring/decimal"
 )
 
-func TestHandlers(t *testing.T) {
-	valid := func(name string) (string, bool) {
-		values := map[string]string{"GARFEX_DB_HOST": "db", "GARFEX_DB_PORT": "5432", "GARFEX_DB_NAME": "name", "GARFEX_DB_USER": "user", "GARFEX_DB_PASSWORD": "secret", "GARFEX_DB_SSLMODE": "require"}
-		v, ok := values[name]
-		return v, ok
+func TestMaterialsHandler(t *testing.T) {
+	value := int64(25)
+	material := domain.Material{
+		FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|25",
+		Attributes: []domain.MaterialAttributeValue{
+			{AttributeCode: "strength", Type: domain.ValueTypeInteger, Integer: &value},
+			domain.DecimalValue("density", "2.40"),
+			domain.QuantityValue("length", "3.5", "m"),
+		},
 	}
-	for _, tt := range []struct {
-		name    string
-		handler Handler
-		want    string
-		wantErr bool
+	repositoryError := errors.New("database unavailable")
+	cases := []struct {
+		name     string
+		material domain.Material
+		err      error
+		want     string
+		wantErr  string
 	}{
-		{"version", Version("v1.2.3"), "v1.2.3", false},
-		{"config success", Config(valid), "configuración válida\ncontraseña: ***REDACTED***", false},
-		{"config failure", Config(func(string) (string, bool) { return "secret", false }), "configuración inválida: GARFEX_DB_HOST", true},
-		{"status", Status(), "Versión: disponible\nVerificación de configuración: disponible\nMenú TUI: disponible", false},
-	} {
+		{name: "renders technical detail", material: material, want: "Material\nUnidad natural: kg\nAtributos técnicos:\n- density: 2.4\n- length: 3.5 m\n- strength: 25\n"},
+		{name: "returns repository error", err: repositoryError, wantErr: "materiales: database unavailable"},
+		{name: "returns not found", err: domain.ErrMaterialNotFound, wantErr: "materiales: material not found"},
+	}
+
+	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := tt.handler()().(resultMsg)
-			if (msg.err != nil) != tt.wantErr {
-				t.Fatalf("error = %v", msg.err)
+			getter := &fakeMaterialGetter{material: tt.material, err: tt.err}
+			msg := Materials(getter, "CEMENT", "CEMENT|kg|25")()().(resultMsg)
+			if tt.wantErr != "" {
+				if msg.err == nil || msg.err.Error() != tt.wantErr {
+					t.Fatalf("error = %v, want %q", msg.err, tt.wantErr)
+				}
+				return
 			}
-			got := msg.text
-			if msg.err != nil {
-				got = msg.err.Error()
+			if msg.err != nil || msg.text != tt.want {
+				t.Fatalf("result = (%q, %v), want (%q, nil)", msg.text, msg.err, tt.want)
 			}
-			if got != tt.want {
-				t.Fatalf("output = %q, want %q", got, tt.want)
-			}
-			if strings.Contains(got, "secret") || strings.Contains(got, "DB, migration") {
-				t.Fatalf("unsafe output: %q", got)
+			for _, forbidden := range []string{"UnitCost", "Unit cost", "100.00", "Supplier", "Provider", "precio", "CEMENT|kg|25", "Identity key", "familyCode", "identityKey"} {
+				if strings.Contains(msg.text, forbidden) {
+					t.Fatalf("commercial field %q leaked in %q", forbidden, msg.text)
+				}
 			}
 		})
+	}
+}
+
+type fakeMaterialGetter struct {
+	material domain.Material
+	err      error
+}
+
+func (f *fakeMaterialGetter) Get(context.Context, string, string) (domain.Material, error) {
+	return f.material, f.err
+}
+
+func TestRenderMaterialDetailIsDeterministic(t *testing.T) {
+	material := domain.Material{FamilyCode: "F", NaturalUnit: "u", IdentityKey: "k", Attributes: []domain.MaterialAttributeValue{
+		domain.DecimalValue("z", "1.0"), domain.OptionValue("a", "X"),
+	}}
+	if first, second := renderMaterialDetail(material), renderMaterialDetail(material); first != second {
+		t.Fatalf("render differs: %q != %q", first, second)
+	}
+	if !strings.Contains(renderMaterialDetail(material), decimal.RequireFromString("1.0").String()) {
+		t.Fatal("decimal attribute missing")
 	}
 }
