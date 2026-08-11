@@ -64,11 +64,13 @@ func (m Model) render() string {
 
 func (m Model) renderCard(width int, full bool) string {
 	sections := []string{renderWordmark(width, full), renderTagline(width), renderDivider(width, full)}
-	if m.screen == screenMenu {
+	if m.screen == screenHome {
 		if full {
-			sections = append(sections, lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("MENÚ PRINCIPAL"))
+			sections = append(sections, lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("HOME · ÁREAS DE GARFEX"))
 		}
 		sections = append(sections, m.renderMenu(width))
+	} else if m.screen == screenWorkspace {
+		sections = append(sections, m.renderWorkspace(width))
 	} else {
 		sections = append(sections, m.renderState(width))
 	}
@@ -127,15 +129,50 @@ func (m Model) renderMenu(width int) string {
 	return strings.Join(lines, "\n")
 }
 
+func (m Model) renderWorkspace(width int) string {
+	shortcuts := []string{"Buscar material", "Crear material", "Catálogo", "Historial"}
+	lines := []string{
+		lipgloss.NewStyle().Foreground(accent).Bold(true).Render("GARFEX / MATERIALES MAESTROS"),
+		lipgloss.NewStyle().Foreground(secondaryText).Render("¿Qué necesitas?"),
+		"",
+	}
+	for i, label := range shortcuts {
+		marker := "  "
+		if i == m.workspaceItem {
+			marker = "› "
+		}
+		lines = append(lines, menuItemStyle(i == m.workspaceItem).Render(marker+label))
+	}
+	if len(m.history) > 0 {
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(secondaryText).Render("Historial:"))
+		for _, message := range m.history {
+			lines = append(lines, lipgloss.NewStyle().Foreground(primaryText).Render("> "+message))
+		}
+	}
+	if m.inputFocused {
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width-2).Render(m.input+"▌"))
+	} else {
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(secondaryText).Render("Elegí una acción con flechas y Enter"))
+	}
+	return lipgloss.NewStyle().Width(width).Padding(1, 1).Foreground(primaryText).Background(surface).Render(strings.Join(lines, "\n"))
+}
+
 func (m Model) renderState(width int) string {
-	label, detail, note := "PROCESANDO", "Procesando "+m.items[m.cursor].Label+"...", "Espere un momento"
+	label, detail, note := "PROCESANDO", "Procesando...", "Espere un momento"
+	if m.screen == screenLoading {
+		detail = "Buscando..."
+	}
 	if m.screen == screenResult {
 		label, detail, note = "OPERACIÓN COMPLETADA", m.result, ""
 	} else if m.screen == screenError {
 		label, detail, note = "ERROR DE OPERACIÓN", m.result, ""
 	}
 
-	lines := []string{lipgloss.NewStyle().Foreground(lipgloss.Color(stateAccent(m.screen))).Bold(true).Render(label), detail}
+	lines := []string{lipgloss.NewStyle().Foreground(lipgloss.Color(stateAccent(m.screen))).Bold(true).Render(label)}
+	if message := m.historyInput(); m.screen == screenLoading && message != "" {
+		lines = append(lines, "> "+message)
+	}
+	lines = append(lines, detail)
 	if note != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(secondaryText).Render(note))
 	}
@@ -161,13 +198,17 @@ func hint(key, description string) string {
 }
 
 func (m Model) renderFooter(width int) string {
-	parts := []string{hint("q", "salir")}
-	if m.screen == screenMenu {
-		parts = []string{hint("j/k", "navegar"), hint("enter", "elegir"), hint("q", "salir")}
+	parts := []string{hint("ctrl+c", "salir")}
+	if m.screen == screenHome {
+		parts = []string{hint("flechas", "navegar"), hint("enter", "elegir"), hint("ctrl+c", "salir")}
+	} else if m.screen == screenWorkspace {
+		parts = []string{hint("flechas", "navegar"), hint("enter", "usar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
+	} else if m.screen == screenLoading {
+		parts = []string{hint("esc", "cancelar"), hint("ctrl+c", "salir")}
 	} else if m.screen == screenResult {
-		parts = []string{hint("b/esc", "volver"), hint("q", "salir")}
+		parts = []string{hint("enter", "reintentar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
 	} else if m.screen == screenError {
-		parts = []string{hint("r", "reintentar"), hint("b/esc", "volver"), hint("q", "salir")}
+		parts = []string{hint("enter", "reintentar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
 	}
 	return lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
 		Render(strings.Join(parts, "  "))

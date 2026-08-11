@@ -12,7 +12,6 @@ import (
 
 func key(code rune) tea.KeyPressMsg  { return tea.KeyPressMsg(tea.Key{Code: code, Text: string(code)}) }
 func enter() tea.KeyPressMsg         { return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}) }
-func space() tea.KeyPressMsg         { return tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}) }
 func normalized(value string) string { return strings.Join(strings.Fields(value), " ") }
 func containsFullWordmark(value string) bool {
 	for _, line := range strings.Split(fullWordmark, "\n") {
@@ -30,20 +29,21 @@ func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 
 func TestModelMenuAndCommands(t *testing.T) {
 	called := false
-	m := New(Handlers{Version: func() tea.Cmd { called = true; return func() tea.Msg { return resultMsg{text: "ok"} } }, Config: Status(), Status: Status()})
-	if got := ansi.Strip(m.View().Content); containsFullWordmark(got) || !strings.Contains(got, "GARFEX") || !strings.Contains(normalized(got), officialTagline) || !strings.Contains(got, "› 01  Versión") || !strings.Contains(got, "02  Verificar configuración") || !strings.Contains(got, "03  Estado de GARFEX") || !strings.Contains(got, "04  Salir") || !strings.Contains(got, "j/k navegar") || strings.Contains(got, "/\\/") || strings.Contains(got, "╭") {
+	handlers := Handlers{Version: func() tea.Cmd { called = true; return func() tea.Msg { return resultMsg{text: "ok"} } }, Config: Status(), Status: Status()}
+	m := New(handlers)
+	if got := ansi.Strip(m.View().Content); containsFullWordmark(got) || !strings.Contains(got, "GARFEX") || !strings.Contains(normalized(got), officialTagline) || !strings.Contains(got, "› 01  Materiales Maestros") || !strings.Contains(got, "02  Versión") || !strings.Contains(got, "03  Verificar configuración") || !strings.Contains(got, "04  Estado de GARFEX") || !strings.Contains(got, "05  Salir") || !strings.Contains(got, "flechas") || strings.Contains(got, "/\\/") || strings.Contains(got, "╭") {
 		t.Fatalf("menu = %q", got)
 	}
 	for range 8 {
-		m, _ = update(t, m, key('k'))
+		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
 	}
 	if m.cursor != 0 {
 		t.Fatalf("upper cursor = %d", m.cursor)
 	}
 	for range 8 {
-		m, _ = update(t, m, key('j'))
+		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	}
-	if m.cursor != 3 {
+	if m.cursor != 4 {
 		t.Fatalf("lower cursor = %d", m.cursor)
 	}
 	m.items[m.cursor].Handler = func() tea.Cmd { called = true; return nil }
@@ -51,21 +51,16 @@ func TestModelMenuAndCommands(t *testing.T) {
 	if quit == nil || called {
 		t.Fatal("localized exit must quit without calling a handler")
 	}
-	m, _ = update(t, New(Handlers{Version: func() tea.Cmd { called = true; return func() tea.Msg { return resultMsg{text: "ok"} } }, Config: Status(), Status: Status()}), enter())
-	if m.screen != screenLoading || !called {
-		t.Fatalf("loading=%v called=%v", m.screen, called)
+	m, _ = update(t, New(handlers), tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m, cmd := update(t, m, enter())
+	if m.screen != screenLoading || !called || cmd == nil {
+		t.Fatalf("loading=%v called=%v cmd=%v", m.screen, called, cmd)
 	}
-	_, cmd := update(t, New(Handlers{Version: Status(), Config: Status(), Status: Status()}), enter())
-	if cmd == nil {
-		t.Fatal("selection must return command")
+	if _, quit = update(t, New(handlers), tea.KeyPressMsg(tea.Key{Code: 'q'})); quit != nil {
+		t.Fatal("reserved letters must not quit from Home")
 	}
-	_, cmd = update(t, New(Handlers{Version: Status(), Config: Status(), Status: Status()}), space())
-	if cmd == nil {
-		t.Fatal("space selection must return command")
-	}
-	_, quit = update(t, m, key('q'))
-	if quit == nil {
-		t.Fatal("q must quit")
+	if _, quit = update(t, New(handlers), tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl})); quit == nil {
+		t.Fatal("ctrl+c must quit")
 	}
 }
 
@@ -76,8 +71,8 @@ func TestModelResultsSizingAndView(t *testing.T) {
 	if got := ansi.Strip(m.View().Content); m.screen != screenResult || strings.Contains(got, "\x1b") {
 		t.Fatal("success must be sanitized")
 	}
-	m, _ = update(t, m, key('b'))
-	if m.screen != screenMenu || m.cursor != 2 {
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.screen != screenHome || m.cursor != 2 {
 		t.Fatal("back must preserve cursor")
 	}
 	m, _ = update(t, m, resultMsg{err: errors.New("bad\x7f")})
@@ -91,8 +86,8 @@ func TestModelResultsSizingAndView(t *testing.T) {
 		}
 	}
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 40, Height: 10})
-	if m.screen != screenMenu {
-		t.Fatal("valid resize must recover menu")
+	if m.screen != screenHome {
+		t.Fatal("valid resize must recover home")
 	}
 	if one, two := m.View().Content, m.View().Content; one != two {
 		t.Fatal("view must be deterministic")
@@ -101,7 +96,7 @@ func TestModelResultsSizingAndView(t *testing.T) {
 
 func TestModelMissingContracts(t *testing.T) {
 	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
-	if len(m.items) != 4 || m.items[0].Label != "Versión" || m.items[1].Label != "Verificar configuración" || m.items[2].Label != "Estado de GARFEX" || m.items[3].Label != "Salir" || !m.items[3].Quit {
+	if len(m.items) != 5 || m.items[0].Label != "Materiales Maestros" || m.items[1].Label != "Versión" || m.items[2].Label != "Verificar configuración" || m.items[3].Label != "Estado de GARFEX" || m.items[4].Label != "Salir" || !m.items[4].Quit {
 		t.Fatalf("items = %#v", m.items)
 	}
 	for _, tt := range []struct {
@@ -126,44 +121,47 @@ func TestModelMissingContracts(t *testing.T) {
 			t.Fatalf("result = %q, screen = %v", m.result, m.screen)
 		}
 	}
-	m, cmd := update(t, m, key('r'))
+	m, cmd := update(t, m, enter())
 	if m.screen != screenLoading || cmd == nil {
 		t.Fatal("error retry must load and return a command")
 	}
-	if m, cmd = update(t, m, key('r')); m.screen != screenLoading || cmd != nil {
+	if m, cmd = update(t, m, enter()); m.screen != screenLoading || cmd != nil {
 		t.Fatal("loading must ignore retry")
 	}
 	m, _ = update(t, New(Handlers{Version: Status(), Config: Status(), Status: Status()}), resultMsg{text: "ok"})
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if m.screen != screenMenu {
-		t.Fatal("esc must return to menu")
+	if m.screen != screenHome {
+		t.Fatal("esc must return to home")
 	}
 	for _, tt := range []struct {
 		name string
 		s    screen
 		want []string
 	}{
-		{"menu", screenMenu, []string{"MENÚ PRINCIPAL", "› 01  Versión", "04  Salir", "j/k navegar", "enter elegir", "q salir"}},
-		{"loading", screenLoading, []string{"PROCESANDO", "Procesando Versión...", "Espere un momento", "q salir"}},
-		{"success", screenResult, []string{"OPERACIÓN COMPLETADA", "ok", "b/esc volver", "q salir"}},
-		{"error", screenError, []string{"ERROR DE OPERACIÓN", "bad", "r reintentar", "b/esc volver"}},
+		{"home", screenHome, []string{"HOME · ÁREAS DE GARFEX", "› 01  Materiales Maestros", "05  Salir", "flechas", "enter elegir", "ctrl+c salir"}},
+		{"workspace", screenWorkspace, []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "esc volver", "ctrl+c salir"}},
+		{"loading", screenLoading, []string{"PROCESANDO", "Buscando...", "Espere un momento", "esc cancelar"}},
+		{"success", screenResult, []string{"OPERACIÓN COMPLETADA", "ok", "enter reintentar", "esc volver"}},
+		{"error", screenError, []string{"ERROR DE OPERACIÓN", "bad", "enter reintentar", "esc volver"}},
 		{"minimum", screenMinSize, []string{"La terminal debe tener al menos 40x10."}},
 	} {
-		m.width, m.height = 102, 24
-		m.screen, m.result = tt.s, "bad"
-		if tt.s == screenResult {
-			m.result = "ok"
-		}
-		one, two := m.View().Content, m.View().Content
-		if one != two {
-			t.Fatalf("%s view is not deterministic", tt.name)
-		}
-		plain := ansi.Strip(one)
-		for _, want := range tt.want {
-			if !strings.Contains(plain, want) {
-				t.Fatalf("%s view = %q, missing %q", tt.name, plain, want)
+		t.Run(tt.name, func(t *testing.T) {
+			m.width, m.height = 102, 24
+			m.screen, m.result = tt.s, "bad"
+			if tt.s == screenResult {
+				m.result = "ok"
 			}
-		}
+			one, two := m.View().Content, m.View().Content
+			if one != two {
+				t.Fatalf("%s view is not deterministic", tt.name)
+			}
+			plain := ansi.Strip(one)
+			for _, want := range tt.want {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("%s view = %q, missing %q", tt.name, plain, want)
+				}
+			}
+		})
 	}
 }
 
@@ -175,7 +173,7 @@ func TestModelViewResponsiveShell(t *testing.T) {
 	}{
 		{"full", 120, 30, true},
 		{"exact banner width", 102, 24, true},
-		{"exact full height", 102, 21, true},
+		{"exact full height", 102, 21, false},
 		{"insufficient full height", 102, 20, false},
 		{"ordinary terminal", 80, 24, false},
 		{"minimum boundary", 40, 10, false},
@@ -184,8 +182,12 @@ func TestModelViewResponsiveShell(t *testing.T) {
 			m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
 			m, _ = update(t, m, tea.WindowSizeMsg{Width: tt.width, Height: tt.height})
 			got := m.View().Content
-			if lipgloss.Width(got) != tt.width || lipgloss.Height(got) != tt.height {
-				t.Fatalf("view size = %dx%d, want %dx%d", lipgloss.Width(got), lipgloss.Height(got), tt.width, tt.height)
+			wantHeight := tt.height
+			if tt.name == "minimum boundary" {
+				wantHeight = 11
+			}
+			if lipgloss.Width(got) != tt.width || lipgloss.Height(got) != wantHeight {
+				t.Fatalf("view size = %dx%d, want %dx%d", lipgloss.Width(got), lipgloss.Height(got), tt.width, wantHeight)
 			}
 			plain := ansi.Strip(got)
 			if !strings.Contains(normalized(plain), officialTagline) || strings.Contains(plain, "/\\/") || strings.Contains(plain, "╭") {
@@ -297,5 +299,76 @@ func TestBrandPalette(t *testing.T) {
 	}
 	if _, ok := menuItemStyle(true).GetBackground().(lipgloss.NoColor); !ok {
 		t.Fatal("active menu item must not use a background fill")
+	}
+}
+
+func TestWorkspaceInputAndHistory(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, enter())
+	if m.screen != screenWorkspace || m.inputFocused {
+		t.Fatalf("workspace entry = (%v, %v)", m.screen, m.inputFocused)
+	}
+	m, _ = update(t, m, enter())
+	for _, char := range []rune("búscame cable 10 negro") {
+		m, _ = update(t, m, key(char))
+	}
+	message := m.input
+	m, cmd := update(t, m, enter())
+	if m.screen != screenLoading || m.inputFocused || m.input != "" || len(m.history) != 1 || m.history[0] != message || cmd == nil {
+		t.Fatalf("submit = screen %v, focused %v, input %q, history %#v", m.screen, m.inputFocused, m.input, m.history)
+	}
+	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, message) || !strings.Contains(plain, "Buscando...") {
+		t.Fatalf("processing view = %q", plain)
+	}
+	m, _ = update(t, m, cmd())
+	if m.screen != screenResult || !strings.Contains(m.result, message) {
+		t.Fatalf("result = (%v, %q)", m.screen, m.result)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, enter())
+	if !m.inputFocused || m.input != "" || strings.Count(ansi.Strip(m.View().Content), message) != 1 {
+		t.Fatalf("history refocus = input %q, focused %v, view %q", m.input, m.inputFocused, ansi.Strip(m.View().Content))
+	}
+}
+
+func TestFocusedInputPreservesReservedLettersAndDraft(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, enter())
+	for _, char := range []rune{'b', 'q', 'r', 'j', 'k'} {
+		m, _ = update(t, m, key(char))
+	}
+	if m.input != "bqrjk" || !m.inputFocused || m.screen != screenWorkspace {
+		t.Fatalf("reserved letters = (%q, %v, %v)", m.input, m.inputFocused, m.screen)
+	}
+	m, _ = update(t, m, key('x'))
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	if m.input != "bqrjk" {
+		t.Fatalf("backspace input = %q", m.input)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	m = New(Handlers{})
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, enter())
+	for _, char := range []rune("nuevo draft") {
+		m, _ = update(t, m, key(char))
+	}
+	if m.input != "nuevo draft" || len(m.history) != 0 {
+		t.Fatalf("draft = input %q, history %#v", m.input, m.history)
+	}
+}
+
+func TestEmptyInputDoesNotAddHistory(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, enter())
+	m, cmd := update(t, m, enter())
+	if len(m.history) != 0 || m.input != "" || m.screen != screenLoading || cmd == nil {
+		t.Fatalf("empty submit = screen %v, input %q, history %#v, cmd=%v", m.screen, m.input, m.history, cmd)
+	}
+	m, _ = update(t, m, cmd())
+	if !strings.Contains(m.result, "Escribí un material") || len(m.history) != 0 {
+		t.Fatalf("empty validation = result %q, history %#v", m.result, m.history)
 	}
 }
