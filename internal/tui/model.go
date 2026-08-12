@@ -462,22 +462,50 @@ func (m *Model) handlePendingKey(msg tea.KeyPressMsg) {
 	}
 	key := msg.String()
 	options := m.pendingOptions()
+	allowCustom := m.pendingAllowsCustom()
 	switch key {
-	case "up", "k":
+	case "up":
 		if m.choiceIndex > 0 {
 			m.choiceIndex--
 			m.refreshViewport()
 		}
-	case "down", "j":
+		return
+	case "down":
 		if m.choiceIndex < len(options)-1 {
 			m.choiceIndex++
 			m.refreshViewport()
 		}
+		return
+	case "k":
+		// Freed as a literal character when AllowCustom is true; falls
+		// through to the printable-text append below.
+		if !allowCustom {
+			if m.choiceIndex > 0 {
+				m.choiceIndex--
+				m.refreshViewport()
+			}
+			return
+		}
+	case "j":
+		if !allowCustom {
+			if m.choiceIndex < len(options)-1 {
+				m.choiceIndex++
+				m.refreshViewport()
+			}
+			return
+		}
 	case " ", "space":
-		m.toggleChoice()
+		if !allowCustom {
+			m.toggleChoice()
+			return
+		}
 	case "esc":
+		if allowCustom {
+			m.input = ""
+		}
 		m.appendCancelledInteraction(pendingQuestion(m.pending))
 		m.respond(InteractionInput{Kind: InputCancel})
+		return
 	case "enter":
 		if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
 			if !m.multipleSelectionValid(request) {
@@ -490,6 +518,17 @@ func (m *Model) handlePendingKey(msg tea.KeyPressMsg) {
 			m.respond(InteractionInput{Kind: InputSelection, Key: request.Key, Values: values})
 			return
 		}
+		// Dual Enter: with AllowCustom, a non-empty typed value wins over the
+		// focused option; an empty input falls back to confirming the focus.
+		if allowCustom {
+			if trimmed := strings.TrimSpace(m.input); trimmed != "" {
+				m.appendResolvedInteraction(pendingQuestion(m.pending), trimmed)
+				input := InteractionInput{Kind: inputKindFor(m.pending), Key: pendingKey(m.pending), Value: trimmed}
+				m.input = ""
+				m.respond(input)
+				return
+			}
+		}
 		if len(options) > 0 {
 			selected := options[m.choiceIndex]
 			m.appendResolvedInteraction(pendingQuestion(m.pending), selected.Label)
@@ -500,13 +539,26 @@ func (m *Model) handlePendingKey(msg tea.KeyPressMsg) {
 			}
 			m.respond(input)
 		}
+		return
+	case "backspace":
+		if allowCustom {
+			m.input = trimLastRune(m.input)
+		}
+		return
+	}
+	if allowCustom && msg.Text != "" && !strings.ContainsAny(msg.Text, "\x00\x1b") {
+		m.input += msg.Text
 	}
 }
 
 func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
 	key := msg.String()
+	allowCustom := m.pendingAllowsCustom()
 	if key == "esc" {
 		m.searchQuery = ""
+		if allowCustom {
+			m.input = ""
+		}
 		// screenManual (manual material search) is out of scope for the inline
 		// question rendering in this PR: it must keep its existing behavior of
 		// not adding a cancellation entry to the chat history.
@@ -516,14 +568,16 @@ func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
 		m.respond(InteractionInput{Kind: InputCancel})
 		return
 	}
-	if key == "up" || key == "k" {
+	// AllowCustom frees j/k as literal characters (handled by the printable
+	// text branch below); only up/down remain navigation keys in that mode.
+	if key == "up" || (key == "k" && !allowCustom) {
 		if m.choiceIndex > 0 {
 			m.choiceIndex--
 			m.refreshViewport()
 		}
 		return
 	}
-	if key == "down" || key == "j" {
+	if key == "down" || (key == "j" && !allowCustom) {
 		options := m.pendingOptions()
 		if m.choiceIndex < len(options)-1 {
 			m.choiceIndex++
@@ -532,6 +586,18 @@ func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
 		return
 	}
 	if key == "enter" {
+		// Dual Enter (spec, literal wording): with AllowCustom, typed text in
+		// m.input wins over the visually-focused filtered option when
+		// non-empty; this is an intentional, flagged UX follow-up, not an
+		// accident of the shared buffer.
+		if allowCustom {
+			if trimmed := strings.TrimSpace(m.input); trimmed != "" {
+				m.appendResolvedInteraction(pendingQuestion(m.pending), trimmed)
+				m.input = ""
+				m.respond(InteractionInput{Kind: InputSelection, Key: pendingKey(m.pending), Value: trimmed})
+				return
+			}
+		}
 		options := m.pendingOptions()
 		if len(options) == 0 {
 			return
@@ -539,6 +605,7 @@ func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
 		selected := options[m.choiceIndex]
 		m.appendResolvedInteraction(pendingQuestion(m.pending), selected.Label)
 		m.searchQuery = ""
+		m.input = ""
 		if m.screen == screenManual {
 			m.appendGARFEX(StructuredResult{Title: "Material seleccionado", Fields: []Field{{Label: "Material", Value: selected.Label}}})
 			m.leaveManual()
@@ -548,13 +615,21 @@ func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
 		return
 	}
 	if key == "backspace" {
-		m.searchQuery = trimLastRune(m.searchQuery)
+		if allowCustom {
+			m.input = trimLastRune(m.input)
+		} else {
+			m.searchQuery = trimLastRune(m.searchQuery)
+		}
 		m.syncChoiceFields()
 		m.refreshViewport()
 		return
 	}
 	if msg.Text != "" && !strings.ContainsAny(msg.Text, "\x00\x1b") {
-		m.searchQuery += msg.Text
+		if allowCustom {
+			m.input += msg.Text
+		} else {
+			m.searchQuery += msg.Text
+		}
 		m.syncChoiceFields()
 		m.refreshViewport()
 	}
@@ -636,9 +711,21 @@ func inputKindFor(pending InteractionMessage) InputKind {
 
 func (m Model) pendingOptions() []Option {
 	if m.interactionMode == interactionModeSearchable {
+		if m.pendingAllowsCustom() {
+			return filterOptions(pendingOptionsFor(m.pending), m.input)
+		}
 		return filterOptions(pendingOptionsFor(m.pending), m.searchQuery)
 	}
 	return pendingOptionsFor(m.pending)
+}
+
+// pendingAllowsCustom is the sole key-routing discriminant between the
+// existing navigate/toggle/confirm behavior (AllowCustom == false) and free
+// text entry (AllowCustom == true): printable keys and j/k route to m.input
+// instead of navigating, while arrows keep navigating in both modes.
+func (m Model) pendingAllowsCustom() bool {
+	request, ok := m.pending.(QuestionRequest)
+	return ok && request.AllowCustom
 }
 
 func filterOptions(options []Option, query string) []Option {
