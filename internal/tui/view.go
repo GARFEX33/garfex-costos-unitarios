@@ -34,13 +34,6 @@ const (
 ⠀⠀⠀⠀⠈⠉⠛⠛⠛⠋⠉⠁⠀⠀⠀⠐⠉⠋⠙⠉⠙⠀⠀⠀⠀⠀⠀⠉⠋⠙⠉⠋⠁⠀⠀⠋⠙⠉⠋⠁⠀⠀⠈⠋⠙⠉⠋⠙⠀⠀⠀⠉⠋⠙⠉⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⠙⠉⠋⠙⠉⠋⠉⠉⠉⠙⠁⠀⠀⠋⠙⠉⠋⠙⠁⠀⠀⠀⠀⠀⠙⠉⠋⠙⠉⠃⠀⠀⠀`
 )
 
-var workspaceShortcuts = []Option{
-	{ID: "new_search", Label: "Buscar material", Target: ActionTargetLocal},
-	{ID: "create_material", Label: "Crear material", Target: ActionTargetLocal},
-	{ID: "view_catalog", Label: "Catálogo", Target: ActionTargetLocal},
-	{ID: "view_history", Label: "Historial", Target: ActionTargetLocal},
-}
-
 var (
 	background    = lipgloss.Color(backgroundHex)
 	surface       = lipgloss.Color(surfaceHex)
@@ -73,20 +66,21 @@ func (m Model) render() string {
 
 func (m Model) renderCard(width int, full bool) string {
 	sections := make([]string, 0, 4)
-	if m.screen == screenHome {
+	switch m.screen {
+	case screenHome:
 		sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
 		if full {
 			sections = append(sections, lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("HOME · ÁREAS DE GARFEX"))
 		}
 		sections = append(sections, m.renderMenu(width))
-	} else if m.screen == screenWorkspace {
+	case screenWorkspace:
 		if m.heroActive {
 			sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
 		}
 		sections = append(sections, m.renderWorkspace(width))
-	} else if m.screen == screenManual {
+	case screenManual:
 		sections = append(sections, m.renderManual(width))
-	} else {
+	default:
 		sections = append(sections, m.renderState(width))
 	}
 	sections = append(sections, m.renderFooter(width))
@@ -242,9 +236,10 @@ func (m Model) renderState(width int) string {
 	if m.screen == screenLoading {
 		detail = "Buscando material..."
 	}
-	if m.screen == screenResult {
+	switch m.screen {
+	case screenResult:
 		label, detail, note = "Resultado", m.result, ""
-	} else if m.screen == screenError {
+	case screenError:
 		label, detail, note = "No se pudo completar la consulta", m.result, ""
 	}
 
@@ -279,9 +274,10 @@ func hint(key, description string) string {
 
 func (m Model) renderFooter(width int) string {
 	parts := []string{hint("ctrl+c", "salir")}
-	if m.screen == screenHome {
+	switch m.screen {
+	case screenHome:
 		parts = []string{hint("flechas", "navegar"), hint("enter", "elegir"), hint("ctrl+c", "salir")}
-	} else if m.screen == screenWorkspace {
+	case screenWorkspace:
 		if m.interactionMode == interactionModePalette {
 			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "abrir"), hint("esc", "cerrar")}
 		} else if m.interactionMode == interactionModeSearchable || m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
@@ -294,13 +290,13 @@ func (m Model) renderFooter(width int) string {
 		} else {
 			parts = []string{hint("flechas", "navegar"), hint("enter", "usar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
 		}
-	} else if m.screen == screenManual {
+	case screenManual:
 		parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "confirmar"), hint("esc", "volver")}
-	} else if m.screen == screenLoading {
+	case screenLoading:
 		parts = []string{hint("esc", "cancelar"), hint("ctrl+c", "salir")}
-	} else if m.screen == screenResult {
+	case screenResult:
 		parts = []string{hint("enter", "reintentar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
-	} else if m.screen == screenError {
+	case screenError:
 		parts = []string{hint("enter", "reintentar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
 	}
 	return lipgloss.NewStyle().Width(width).Align(lipgloss.Center).

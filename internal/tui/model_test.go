@@ -317,7 +317,7 @@ func TestWorkspaceInputAndHistory(t *testing.T) {
 	if m.screen != screenWorkspace || !m.inputFocused {
 		t.Fatalf("workspace entry = (%v, %v)", m.screen, m.inputFocused)
 	}
-	for _, char := range []rune("búscame cable 10 negro") {
+	for _, char := range "búscame cable 10 negro" {
 		m, _ = update(t, m, key(char))
 	}
 	message := m.input
@@ -362,7 +362,7 @@ func TestFocusedInputPreservesReservedLettersAndDraft(t *testing.T) {
 	m = New(Handlers{})
 	m, _ = update(t, m, enter())
 	m, _ = update(t, m, enter())
-	for _, char := range []rune("nuevo draft") {
+	for _, char := range "nuevo draft" {
 		m, _ = update(t, m, key(char))
 	}
 	if m.input != "nuevo draft" || len(m.history) != 0 {
@@ -378,7 +378,7 @@ func TestEmptyInputDoesNotAddHistory(t *testing.T) {
 	if len(m.history) != 0 || m.input != "" || !m.inputFocused || m.screen != screenWorkspace || m.workspaceState != screenHome || cmd != nil {
 		t.Fatalf("empty submit = screen %v, input %q, history %#v, cmd=%v", m.screen, m.input, m.history, cmd)
 	}
-	for _, char := range []rune("cable 10 negro") {
+	for _, char := range "cable 10 negro" {
 		m, _ = update(t, m, key(char))
 	}
 	m, cmd = update(t, m, enter())
@@ -660,7 +660,7 @@ func workspaceChat(t *testing.T) Model {
 
 func submitText(t *testing.T, m Model, text string) Model {
 	t.Helper()
-	for _, char := range []rune(text) {
+	for _, char := range text {
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, enter())
@@ -1085,11 +1085,11 @@ func TestSearchableSelectUpdatesLocallyAndClampsCursor(t *testing.T) {
 func TestSearchableSelectEnterSendsVisibleValueInOrder(t *testing.T) {
 	agent := &recordingAgent{}
 	m := searchableModel(agent)
-	for _, char := range []rune("negro") {
+	for _, char := range "negro" {
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
-	m, _ = update(t, m, enter())
+	update(t, m, enter())
 	if agent.last.Kind != InputSelection || agent.last.Key != "material" || agent.last.Value != "xhhw-black-10" || len(agent.last.Values) != 0 {
 		t.Fatalf("selection payload = %#v", agent.last)
 	}
@@ -1098,7 +1098,7 @@ func TestSearchableSelectEnterSendsVisibleValueInOrder(t *testing.T) {
 func TestSearchableSelectDoesNotConfirmNoMatchAndCancels(t *testing.T) {
 	agent := &recordingAgent{}
 	m := searchableModel(agent)
-	for _, char := range []rune("copper") {
+	for _, char := range "copper" {
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, enter())
@@ -1113,7 +1113,7 @@ func TestSearchableSelectDoesNotConfirmNoMatchAndCancels(t *testing.T) {
 
 func TestSearchableSelectRendersPromptQueryCountAndFocus(t *testing.T) {
 	m := searchableModel(&recordingAgent{})
-	for _, char := range []rune("10") {
+	for _, char := range "10" {
 		m, _ = update(t, m, key(char))
 	}
 	plain := ansi.Strip(m.viewport.GetContent())
@@ -1155,7 +1155,7 @@ func TestAssistantShellFlow(t *testing.T) {
 			if m.interactionMode != interactionModePalette || m.engine.History() != nil {
 				t.Fatalf("palette open = mode %v engine history %#v", m.interactionMode, m.engine.History())
 			}
-			for _, char := range []rune(tt.query) {
+			for _, char := range tt.query {
 				m, _ = update(t, m, key(char))
 			}
 			options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
@@ -1198,7 +1198,7 @@ func TestAssistantTextUsesAgentAndPaletteEscDoesNot(t *testing.T) {
 	agent := &recordingAgent{}
 	m := NewWithAgent(Handlers{}, agent)
 	m, _ = update(t, m, enter())
-	for _, char := range []rune("hola") {
+	for _, char := range "hola" {
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, enter())
@@ -1208,7 +1208,7 @@ func TestAssistantTextUsesAgentAndPaletteEscDoesNot(t *testing.T) {
 	m.resetPending()
 	m.inputFocused = true
 	m, _ = update(t, m, key('/'))
-	for _, char := range []rune("material") {
+	for _, char := range "material" {
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
@@ -1233,13 +1233,13 @@ func TestWorkspaceConversationGrowsWithShortContent(t *testing.T) {
 func TestManualMaterialSearchPreservesAssistantContext(t *testing.T) {
 	m := New(Handlers{})
 	m, _ = update(t, m, enter())
-	for _, char := range []rune("hola") {
+	for _, char := range "hola" {
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, enter())
 	prior := len(m.history)
 	m, _ = update(t, m, enter())
-	for _, char := range []rune("/material buscar") {
+	for _, char := range "/material buscar" {
 		if char == '/' {
 			m, _ = update(t, m, key(char))
 			continue
@@ -1256,7 +1256,7 @@ func TestManualMaterialSearchPreservesAssistantContext(t *testing.T) {
 		t.Fatalf("manual cancel = screen %v pending %T mode %v focused %v history %d", m.screen, m.pending, m.interactionMode, m.inputFocused, len(m.history))
 	}
 	m.openManualSearch()
-	for _, char := range []rune("xhhw") {
+	for _, char := range "xhhw" {
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, enter())
@@ -1308,7 +1308,7 @@ func TestWorkspaceModeTransitionDeactivatesHero(t *testing.T) {
 	if !m.heroActive {
 		t.Fatal("startup must begin in welcome mode")
 	}
-	for _, char := range []rune("hola") {
+	for _, char := range "hola" {
 		m, _ = update(t, m, key(char))
 	}
 	if m.heroActive {
@@ -1385,7 +1385,7 @@ func TestPaletteDrillsIntoModuleActions(t *testing.T) {
 
 func TestPaletteDirectFilteringToConcreteActions(t *testing.T) {
 	m := New(Handlers{})
-	for _, char := range []rune("/buscar") {
+	for _, char := range "/buscar" {
 		if char == '/' {
 			m, _ = update(t, m, key(char))
 			continue
@@ -1411,7 +1411,7 @@ func TestPaletteDoesNotShowDuplicateEntries(t *testing.T) {
 
 func TestPaletteDoesNotRenderDescriptions(t *testing.T) {
 	m := New(Handlers{})
-	for _, char := range []rune("/mat") {
+	for _, char := range "/mat" {
 		if char == '/' {
 			m, _ = update(t, m, key(char))
 			continue
@@ -1460,7 +1460,7 @@ func TestManualScreenOpeningDeactivatesHero(t *testing.T) {
 
 func TestPaletteBackspaceToEmptyRestoresTopLevel(t *testing.T) {
 	m := New(Handlers{})
-	for _, char := range []rune("/buscar") {
+	for _, char := range "/buscar" {
 		if char == '/' {
 			m, _ = update(t, m, key(char))
 			continue
