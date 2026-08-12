@@ -140,9 +140,9 @@ func TestModelMissingContracts(t *testing.T) {
 	}{
 		{"home", screenHome, []string{"HOME · ÁREAS DE GARFEX", "› 01  Materiales Maestros", "05  Salir", "flechas", "enter elegir", "ctrl+c salir"}},
 		{"workspace", screenWorkspace, []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "esc volver", "ctrl+c salir"}},
-		{"loading", screenLoading, []string{"PROCESANDO", "Buscando...", "Espere un momento", "esc cancelar"}},
-		{"success", screenResult, []string{"OPERACIÓN COMPLETADA", "ok", "enter reintentar", "esc volver"}},
-		{"error", screenError, []string{"ERROR DE OPERACIÓN", "bad", "enter reintentar", "esc volver"}},
+		{"loading", screenLoading, []string{"Trabajando", "Buscando material...", "Esperá un momento", "esc cancelar"}},
+		{"success", screenResult, []string{"Resultado", "ok", "enter reintentar", "esc volver"}},
+		{"error", screenError, []string{"No se pudo completar la consulta", "bad", "enter reintentar", "esc volver"}},
 		{"minimum", screenMinSize, []string{"La terminal debe tener al menos 40x10."}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -314,15 +314,8 @@ func TestWorkspaceInputAndHistory(t *testing.T) {
 	}
 	message := m.input
 	m, cmd := update(t, m, enter())
-	if m.screen != screenLoading || m.inputFocused || m.input != "" || len(m.history) != 1 || m.history[0] != message || cmd == nil {
+	if m.screen != screenWorkspace || m.inputFocused || m.input != "" || len(m.history) != 1 || m.history[0].text != message || !m.workspacePending || m.pending == nil || cmd != nil {
 		t.Fatalf("submit = screen %v, focused %v, input %q, history %#v", m.screen, m.inputFocused, m.input, m.history)
-	}
-	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, message) || !strings.Contains(plain, "Buscando...") {
-		t.Fatalf("processing view = %q", plain)
-	}
-	m, _ = update(t, m, cmd())
-	if m.screen != screenResult || !strings.Contains(m.result, message) {
-		t.Fatalf("result = (%v, %q)", m.screen, m.result)
 	}
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	m, _ = update(t, m, enter())
@@ -364,11 +357,7 @@ func TestEmptyInputDoesNotAddHistory(t *testing.T) {
 	m, _ = update(t, m, enter())
 	m, _ = update(t, m, enter())
 	m, cmd := update(t, m, enter())
-	if len(m.history) != 0 || m.input != "" || m.screen != screenLoading || cmd == nil {
+	if len(m.history) != 0 || m.input != "" || m.screen != screenWorkspace || m.workspacePending || m.pending != nil || cmd != nil {
 		t.Fatalf("empty submit = screen %v, input %q, history %#v, cmd=%v", m.screen, m.input, m.history, cmd)
-	}
-	m, _ = update(t, m, cmd())
-	if !strings.Contains(m.result, "Escribí un material") || len(m.history) != 0 {
-		t.Fatalf("empty validation = result %q, history %#v", m.result, m.history)
 	}
 }
