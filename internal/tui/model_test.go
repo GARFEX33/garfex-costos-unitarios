@@ -335,7 +335,10 @@ func TestWorkspaceInputAndHistory(t *testing.T) {
 	}
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	m, _ = update(t, m, enter())
-	if !m.inputFocused || m.input != "" || len(m.history) != 2 || m.history[len(m.history)-1].text != "Está bien, volvemos a la conversación." {
+	// Esc leaves a discrete cancellation mark in the transcript (see
+	// TestEscCancelsInlineQuestionMarksDiscrete), so the cancelled question
+	// now accounts for an extra history entry ahead of the follow-up text.
+	if !m.inputFocused || m.input != "" || len(m.history) != 3 || m.history[len(m.history)-1].text != "Está bien, volvemos a la conversación." {
 		t.Fatalf("history refocus = input %q, focused %v, view %q", m.input, m.inputFocused, ansi.Strip(m.View().Content))
 	}
 }

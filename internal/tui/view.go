@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"charm.land/lipgloss/v2"
 )
@@ -177,6 +178,40 @@ func (m Model) renderManual(width int) string {
 	return lipgloss.NewStyle().Width(width).Padding(1, 1).Foreground(primaryText).Background(surface).Render(strings.Join(lines, "\n"))
 }
 
+// questionHelpParts builds the contextual help fragments for the pending
+// question, shared by renderFooter (general footer) and renderInteractionDock
+// (composer hint) so both stay in sync instead of maintaining two separate
+// copies of the hint text. allowCustom is accepted for forward compatibility
+// with the AllowCustom-editable composer (wired in a follow-up change); it is
+// unused while that behavior is not yet implemented.
+func questionHelpParts(pending InteractionMessage, allowCustom bool) []string {
+	if pending == nil {
+		return nil
+	}
+	_ = allowCustom
+	request, isQuestion := pending.(QuestionRequest)
+	if isQuestion && request.SelectionMode == SelectionSearchable {
+		return []string{"↑↓/j/k seleccionar", "enter confirmar", "esc cancelar"}
+	}
+	parts := []string{"↑↓ seleccionar", "enter confirmar", "esc cancelar"}
+	if isQuestion && request.SelectionMode == SelectionMultiple {
+		parts = append(parts, "espacio alternar")
+	}
+	return parts
+}
+
+// capitalizeHintWord upper-cases the first rune of a hint fragment for the
+// dock's contextual help line (non-cased runes such as arrows are left
+// untouched).
+func capitalizeHintWord(part string) string {
+	runes := []rune(part)
+	if len(runes) == 0 {
+		return part
+	}
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
 func (m Model) renderInteractionDock(width int) string {
 	width = max(1, width)
 	if m.interactionMode == interactionModeChat {
@@ -189,14 +224,14 @@ func (m Model) renderInteractionDock(width int) string {
 		prompt := lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("❯ " + m.input + "▌")
 		return strings.Join([]string{prompt, m.renderPalette()}, "\n")
 	}
-	if m.interactionMode == interactionModeSearchable {
-		return lipgloss.NewStyle().Foreground(secondaryText).Render("↑↓/j/k seleccionar · Enter confirmar · Esc cancelar")
+	composer := lipgloss.NewStyle().Foreground(secondaryText).Render("❯ " + m.input)
+	parts := questionHelpParts(m.pending, false)
+	capitalized := make([]string, len(parts))
+	for i, part := range parts {
+		capitalized[i] = capitalizeHintWord(part)
 	}
-	hint := "↑↓ seleccionar · Enter confirmar · Esc cancelar"
-	if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
-		hint += " · Espacio alternar"
-	}
-	return lipgloss.NewStyle().Foreground(secondaryText).Render(hint)
+	hintLine := lipgloss.NewStyle().Foreground(secondaryText).Render(strings.Join(capitalized, " · "))
+	return strings.Join([]string{composer, hintLine}, "\n")
 }
 
 func (m Model) renderState(width int) string {
@@ -246,13 +281,8 @@ func (m Model) renderFooter(width int) string {
 	} else if m.screen == screenWorkspace {
 		if m.interactionMode == interactionModePalette {
 			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "abrir"), hint("esc", "cerrar")}
-		} else if m.interactionMode == interactionModeSearchable {
-			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
-		} else if m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
-			parts = []string{hint("↑↓", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
-			if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
-				parts = append(parts, hint("espacio", "alternar"))
-			}
+		} else if m.interactionMode == interactionModeSearchable || m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
+			parts = questionHelpParts(m.pending, false)
 		} else if m.inputFocused {
 			parts = []string{hint("enter", "enviar"), hint("esc", "cancelar"), hint("ctrl+c", "salir")}
 		} else {
