@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +100,31 @@ func TestSecretIsRedacted(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), secret.Reveal()) || !strings.Contains(string(encoded), "***REDACTED***") {
 		t.Fatalf("json.Marshal() = %s, secret was not redacted", encoded)
+	}
+}
+
+func TestConfigDSN(t *testing.T) {
+	cfg := Config{
+		DBHost: "localhost", DBPort: 5432, DBName: "garfex", DBUser: "garfex_app",
+		DBPassword: Secret("a-secret-value"), DBSSLMode: "disable",
+	}
+	want := "postgres://garfex_app:a-secret-value@localhost:5432/garfex?sslmode=disable"
+	if got := cfg.DSN(); got != want {
+		t.Fatalf("DSN() = %q, want %q", got, want)
+	}
+}
+
+func TestConfigDSNEscapesSpecialCharacters(t *testing.T) {
+	cfg := Config{
+		DBHost: "localhost", DBPort: 5432, DBName: "garfex", DBUser: "user@name",
+		DBPassword: Secret("p@ss/word?"), DBSSLMode: "disable",
+	}
+	got := cfg.DSN()
+	if strings.Contains(got, "user@name") || strings.Contains(got, "p@ss/word?") {
+		t.Fatalf("DSN() = %q, expected user/password to be escaped", got)
+	}
+	if !strings.Contains(got, url.QueryEscape("user@name")) || !strings.Contains(got, url.QueryEscape("p@ss/word?")) {
+		t.Fatalf("DSN() = %q, expected escaped user/password", got)
 	}
 }
 
