@@ -37,3 +37,15 @@ func (s *Service) Get(ctx context.Context, familyCode, identityKey string) (doma
 	}
 	return m, nil
 }
+
+// Search returns materials matching criteria. Empty Text/FamilyCode/Filters
+// are valid "match everything" inputs, so no argument validation is needed
+// here — Limit/Offset clamping is a SQL-correctness concern handled by the
+// repository.
+func (s *Service) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Material, error) {
+	materials, err := s.repo.Search(ctx, criteria)
+	if err != nil {
+		return nil, fmt.Errorf("search materials: %w", err)
+	}
+	return materials, nil
+}

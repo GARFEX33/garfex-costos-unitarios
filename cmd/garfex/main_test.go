@@ -26,6 +26,9 @@ func (fakeMaterialRepository) Create(context.Context, domain.Material) error { r
 func (fakeMaterialRepository) Get(context.Context, string, string) (domain.Material, error) {
 	return domain.Material{}, nil
 }
+func (fakeMaterialRepository) Search(context.Context, domain.SearchCriteria) ([]domain.Material, error) {
+	return nil, nil
+}
 
 func TestRun(t *testing.T) {
 	valid := map[string]string{

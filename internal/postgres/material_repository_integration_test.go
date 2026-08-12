@@ -150,6 +150,216 @@ func TestMaterialRepositoryIntegration(t *testing.T) {
 		}
 		assertMaterialEqual(t, got, byInch)
 	})
+
+	t.Run("search text matches identity key substring", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		match := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, match); err != nil {
+			t.Fatalf("Create() match: %v", err)
+		}
+		other := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "8 AWG"), domain.OptionValue("insulation", "THHN"), domain.OptionValue("color", "BLANCO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, other); err != nil {
+			t.Fatalf("Create() other: %v", err)
+		}
+		got, err := repo.Search(ctx, domain.SearchCriteria{Text: "THW-LS"})
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("Search() results = %d, want 1", len(got))
+		}
+		assertMaterialEqual(t, got[0], match)
+	})
+
+	t.Run("search text matches family code or name", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		conductor := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, conductor); err != nil {
+			t.Fatalf("Create() conductor: %v", err)
+		}
+		tuberia := mustCreateMaterial(t, catalog, "TUBERIAS", "PZA", []domain.MaterialAttributeValue{domain.OptionValue("tipo", "PVC CONDUIT"), domain.OptionValue("diameter_inch", `1"`), domain.OptionValue("diameter_mm", "25 mm")})
+		if err := repo.Create(ctx, tuberia); err != nil {
+			t.Fatalf("Create() tuberia: %v", err)
+		}
+		byCode, err := repo.Search(ctx, domain.SearchCriteria{Text: "CONDUCTORES"})
+		if err != nil {
+			t.Fatalf("Search() by code error = %v", err)
+		}
+		if len(byCode) != 1 || byCode[0].IdentityKey != conductor.IdentityKey {
+			t.Fatalf("Search() by code = %+v, want only %+v", byCode, conductor)
+		}
+		byName, err := repo.Search(ctx, domain.SearchCriteria{Text: "Conductors"})
+		if err != nil {
+			t.Fatalf("Search() by name error = %v", err)
+		}
+		if len(byName) != 1 || byName[0].IdentityKey != conductor.IdentityKey {
+			t.Fatalf("Search() by name = %+v, want only %+v", byName, conductor)
+		}
+	})
+
+	t.Run("search text with no match returns empty result without error", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		material := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, material); err != nil {
+			t.Fatalf("Create() material: %v", err)
+		}
+		got, err := repo.Search(ctx, domain.SearchCriteria{Text: "no-such-substring"})
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("Search() results = %d, want 0", len(got))
+		}
+	})
+
+	t.Run("search filters narrow results to exact attribute match", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		black := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, black); err != nil {
+			t.Fatalf("Create() black: %v", err)
+		}
+		white := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "8 AWG"), domain.OptionValue("insulation", "THHN"), domain.OptionValue("color", "BLANCO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, white); err != nil {
+			t.Fatalf("Create() white: %v", err)
+		}
+		got, err := repo.Search(ctx, domain.SearchCriteria{Filters: []domain.MaterialAttributeValue{domain.OptionValue("color", "NEGRO")}})
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("Search() results = %d, want 1", len(got))
+		}
+		assertMaterialEqual(t, got[0], black)
+	})
+
+	t.Run("search family code narrows to one family", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		conductor := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, conductor); err != nil {
+			t.Fatalf("Create() conductor: %v", err)
+		}
+		tuberia := mustCreateMaterial(t, catalog, "TUBERIAS", "PZA", []domain.MaterialAttributeValue{domain.OptionValue("tipo", "PVC CONDUIT"), domain.OptionValue("diameter_inch", `1"`), domain.OptionValue("diameter_mm", "25 mm")})
+		if err := repo.Create(ctx, tuberia); err != nil {
+			t.Fatalf("Create() tuberia: %v", err)
+		}
+		got, err := repo.Search(ctx, domain.SearchCriteria{FamilyCode: "TUBERIAS"})
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		if len(got) != 1 || got[0].IdentityKey != tuberia.IdentityKey {
+			t.Fatalf("Search() = %+v, want only %+v", got, tuberia)
+		}
+	})
+
+	t.Run("search combines text family code and filters with and", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		match := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, match); err != nil {
+			t.Fatalf("Create() match: %v", err)
+		}
+		wrongColor := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "8 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "BLANCO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, wrongColor); err != nil {
+			t.Fatalf("Create() wrongColor: %v", err)
+		}
+		wrongText := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "6 AWG"), domain.OptionValue("insulation", "THHN"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, wrongText); err != nil {
+			t.Fatalf("Create() wrongText: %v", err)
+		}
+		got, err := repo.Search(ctx, domain.SearchCriteria{
+			Text:       "THW-LS",
+			FamilyCode: "CONDUCTORES",
+			Filters:    []domain.MaterialAttributeValue{domain.OptionValue("color", "NEGRO")},
+		})
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("Search() results = %d, want 1", len(got))
+		}
+		assertMaterialEqual(t, got[0], match)
+	})
+
+	t.Run("search orders results deterministically by identity key", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		// Create in a deliberately "wrong" gauge order so insertion order
+		// cannot be mistaken for the ordering guarantee under test.
+		gauges := []string{"6 AWG", "10 AWG", "8 AWG"}
+		for _, gauge := range gauges {
+			material := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", gauge), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+			if err := repo.Create(ctx, material); err != nil {
+				t.Fatalf("Create() gauge %s: %v", gauge, err)
+			}
+		}
+		got, err := repo.Search(ctx, domain.SearchCriteria{FamilyCode: "CONDUCTORES"})
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("Search() results = %d, want 3", len(got))
+		}
+		for i := 1; i < len(got); i++ {
+			if got[i-1].IdentityKey >= got[i].IdentityKey {
+				t.Fatalf("Search() results not sorted: %q >= %q", got[i-1].IdentityKey, got[i].IdentityKey)
+			}
+		}
+	})
+
+	t.Run("search limit and offset paginate results", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		gauges := []string{"14 AWG", "12 AWG", "10 AWG"}
+		var created []domain.Material
+		for _, gauge := range gauges {
+			material := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", gauge), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+			if err := repo.Create(ctx, material); err != nil {
+				t.Fatalf("Create() gauge %s: %v", gauge, err)
+			}
+			created = append(created, material)
+		}
+		sort.Slice(created, func(i, j int) bool { return created[i].IdentityKey < created[j].IdentityKey })
+
+		firstPage, err := repo.Search(ctx, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Limit: 2})
+		if err != nil {
+			t.Fatalf("Search() first page error = %v", err)
+		}
+		if len(firstPage) != 2 || firstPage[0].IdentityKey != created[0].IdentityKey || firstPage[1].IdentityKey != created[1].IdentityKey {
+			t.Fatalf("Search() first page = %+v, want %+v", firstPage, created[:2])
+		}
+
+		secondPage, err := repo.Search(ctx, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Limit: 2, Offset: 2})
+		if err != nil {
+			t.Fatalf("Search() second page error = %v", err)
+		}
+		if len(secondPage) != 1 || secondPage[0].IdentityKey != created[2].IdentityKey {
+			t.Fatalf("Search() second page = %+v, want %+v", secondPage, created[2:])
+		}
+	})
+
+	t.Run("search non-positive limit falls back to default and still returns rows", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		material := mustCreateMaterial(t, catalog, "CONDUCTORES", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, material); err != nil {
+			t.Fatalf("Create() material: %v", err)
+		}
+		got, err := repo.Search(ctx, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Limit: 0})
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		// This is the case that would silently break if LIMIT 0 were
+		// reintroduced: a non-positive limit must fall back to
+		// defaultSearchLimit, not return zero rows.
+		if len(got) != 1 {
+			t.Fatalf("Search() results = %d, want 1 (defaultSearchLimit fallback)", len(got))
+		}
+	})
 }
 
 func mustCreateMaterial(t *testing.T, catalog domain.MaterialsCatalog, family, unit string, values []domain.MaterialAttributeValue) domain.Material {

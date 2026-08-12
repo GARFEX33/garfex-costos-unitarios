@@ -146,11 +146,38 @@ type Material struct {
 	IdentityKey string
 }
 
+// SearchCriteria narrows a Search over the material catalog. All fields
+// combine with AND; a zero-value criteria matches every active material.
+type SearchCriteria struct {
+	// Text, when non-empty, is matched case-insensitively as a partial
+	// substring against the material identity key or its family code/name.
+	//
+	// This is the initial textual implementation over the existing schema,
+	// not a permanent guarantee of the public SearchMaterials contract
+	// shape: a future change may swap in a dedicated search layer without
+	// changing this Go signature.
+	//
+	// Known, accepted, documented limitation: with today's seeded catalog
+	// data, Text="cab" will NOT match CONDUCTORES materials, because the
+	// literal substring "cable" does not exist anywhere in the current
+	// family/attribute-option data (the family is named "Conductores" /
+	// "Conductors", not "cable"). This is a data/naming gap, not a bug.
+	Text       string
+	FamilyCode string
+	// Filters requires an exact, canonical match per attribute: each entry
+	// is ANDed as its own existence check against the material's attribute
+	// values.
+	Filters []MaterialAttributeValue
+	Limit   int
+	Offset  int
+}
+
 // MaterialRepository persists and retrieves the complete technical aggregate.
 // NaturalUnit is stored metadata; IdentityKey is the deterministic lookup key.
 type MaterialRepository interface {
 	Create(context.Context, Material) error
 	Get(context.Context, string, string) (Material, error)
+	Search(context.Context, SearchCriteria) ([]Material, error)
 }
 
 type AttributeOptionRelation struct {
