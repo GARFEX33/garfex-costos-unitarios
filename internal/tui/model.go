@@ -212,7 +212,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input = ""
 					m.addPromptHistory(input)
 					m.appendUser(TextMessage{Text: input})
-					m.inputFocused = false
 					m.respond(InteractionInput{Kind: InputText, Value: input})
 				case "backspace":
 					m.input = trimLastRune(m.input)
@@ -283,6 +282,12 @@ func (m *Model) respond(input InteractionInput) {
 	m.pending = response.Pending
 	m.workspacePending = response.Pending != nil
 	m.interactionMode = modeFor(response.Pending)
+	// Keep the composer ready to type immediately when a response has no
+	// follow-up question (e.g. a plain search result): the user should not
+	// have to press Enter a second time just to refocus the input before
+	// typing their next message. When a question IS pending, focus moves to
+	// answering it instead (handlePendingKey), matching existing behavior.
+	m.inputFocused = m.interactionMode == interactionModeChat
 	m.choiceIndex = 0
 	m.choiceSelected = nil
 	m.syncChoiceFields()

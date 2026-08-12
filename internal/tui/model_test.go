@@ -857,7 +857,11 @@ func TestPendingModesRenderSelectorControlsAndKeepViewportFixed(t *testing.T) {
 
 			m = tt.model(t)
 			m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-			if m.interactionMode != interactionModeChat || m.pending != nil || m.inputFocused {
+			// Esc-cancelling back to plain chat mode now leaves the composer
+			// focused (respond() ties inputFocused to interactionMode), so
+			// the user can type the next message immediately instead of
+			// needing an extra Enter press just to refocus.
+			if m.interactionMode != interactionModeChat || m.pending != nil || !m.inputFocused {
 				t.Fatalf("esc did not cancel selector: mode=%v pending=%T focused=%v", m.interactionMode, m.pending, m.inputFocused)
 			}
 		})
