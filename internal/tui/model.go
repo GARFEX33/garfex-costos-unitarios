@@ -58,6 +58,7 @@ type conversationMessage struct {
 type resolvedInteraction struct {
 	prompt    string
 	selection string
+	cancelled bool
 }
 type messageKind uint8
 
@@ -475,6 +476,7 @@ func (m *Model) handlePendingKey(msg tea.KeyPressMsg) {
 	case " ", "space":
 		m.toggleChoice()
 	case "esc":
+		m.appendCancelledInteraction(pendingQuestion(m.pending))
 		m.respond(InteractionInput{Kind: InputCancel})
 	case "enter":
 		if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
@@ -505,6 +507,12 @@ func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
 	key := msg.String()
 	if key == "esc" {
 		m.searchQuery = ""
+		// screenManual (manual material search) is out of scope for the inline
+		// question rendering in this PR: it must keep its existing behavior of
+		// not adding a cancellation entry to the chat history.
+		if m.screen != screenManual {
+			m.appendCancelledInteraction(pendingQuestion(m.pending))
+		}
 		m.respond(InteractionInput{Kind: InputCancel})
 		return
 	}
@@ -700,6 +708,19 @@ func (m *Model) appendResolvedInteraction(prompt, selection string) {
 	}
 }
 
+func (m *Model) appendCancelledInteraction(prompt string) {
+	wasAtBottom := m.viewport.AtBottom()
+	m.history = append(m.history, conversationMessage{
+		role:     roleGARFEX,
+		resolved: &resolvedInteraction{prompt: prompt, cancelled: true},
+		kind:     kindQuestion,
+	})
+	m.refreshViewport()
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
+}
+
 func (m *Model) syncChoiceFields() {
 	m.choicePrompt = pendingQuestion(m.pending)
 	options := m.pendingOptions()
@@ -805,6 +826,9 @@ func (m Model) interactionDockLines(width int) int {
 }
 
 func renderResolvedInteraction(interaction resolvedInteraction) string {
+	if interaction.cancelled {
+		return interaction.prompt + "\n" + lipgloss.NewStyle().Foreground(secondaryText).Render("· cancelado")
+	}
 	return interaction.prompt + "\n✓ " + interaction.selection
 }
 
@@ -837,6 +861,9 @@ func renderActiveInteractionWithSelection(message InteractionMessage, selected i
 			label = "❯ " + option.Label
 		}
 		lines = append(lines, interactionOptionStyle(active, false).Render(label))
+		if option.Description != "" {
+			lines = append(lines, lipgloss.NewStyle().Foreground(secondaryText).Render("    "+option.Description))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -884,7 +911,11 @@ func renderMultipleOption(option Option, focused, selected bool) string {
 	if selected {
 		check = "[x]"
 	}
-	return interactionOptionStyle(focused, selected).Render(marker + check + " " + option.Label)
+	line := interactionOptionStyle(focused, selected).Render(marker + check + " " + option.Label)
+	if option.Description == "" {
+		return line
+	}
+	return line + "\n" + lipgloss.NewStyle().Foreground(secondaryText).Render("    "+option.Description)
 }
 
 func messageText(message InteractionMessage) string {

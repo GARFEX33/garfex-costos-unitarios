@@ -3,11 +3,12 @@ package tui
 import "context"
 
 type Option struct {
-	ID       string
-	Label    string
-	Value    string
-	Target   ActionTarget
-	Metadata map[string]string
+	ID          string
+	Label       string
+	Value       string
+	Description string
+	Target      ActionTarget
+	Metadata    map[string]string
 }
 
 type Field struct {
