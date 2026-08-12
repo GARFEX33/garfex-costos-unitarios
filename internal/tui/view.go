@@ -72,16 +72,19 @@ func (m Model) render() string {
 
 func (m Model) renderCard(width int, full bool) string {
 	sections := make([]string, 0, 4)
-	if m.screen != screenWorkspace {
-		sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
-	}
 	if m.screen == screenHome {
+		sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
 		if full {
 			sections = append(sections, lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("HOME · ÁREAS DE GARFEX"))
 		}
 		sections = append(sections, m.renderMenu(width))
 	} else if m.screen == screenWorkspace {
+		if m.heroActive {
+			sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
+		}
 		sections = append(sections, m.renderWorkspace(width))
+	} else if m.screen == screenManual {
+		sections = append(sections, m.renderManual(width))
 	} else {
 		sections = append(sections, m.renderState(width))
 	}
@@ -151,20 +154,26 @@ func (m Model) renderMenu(width int) string {
 }
 
 func (m Model) renderWorkspace(width int) string {
-	shortcuts := workspaceShortcuts
-	lines := []string{
-		lipgloss.NewStyle().Foreground(accent).Bold(true).Render("GARFEX / MATERIALES MAESTROS"),
-		"",
-	}
-	for i, shortcut := range shortcuts {
-		marker := "  "
-		if i == m.workspaceItem {
-			marker = "› "
-		}
-		lines = append(lines, menuItemStyle(i == m.workspaceItem).Render(marker+shortcut.Label))
+	var lines []string
+	if !m.heroActive {
+		lines = append(lines,
+			lipgloss.NewStyle().Foreground(accent).Bold(true).Render("GARFEX / ASSISTANT"),
+			"",
+		)
 	}
 	lines = append(lines, m.viewport.View())
 	lines = append(lines, m.renderInteractionDock(width-2))
+	return lipgloss.NewStyle().Width(width).Padding(1, 1).Foreground(primaryText).Background(surface).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderManual(width int) string {
+	lines := []string{
+		lipgloss.NewStyle().Foreground(accent).Bold(true).Render("GARFEX › Materiales › Buscar"),
+		"",
+	}
+	if m.pending != nil {
+		lines = append(lines, renderActiveSearchable(m.pending, m.searchQuery, m.choiceIndex))
+	}
 	return lipgloss.NewStyle().Width(width).Padding(1, 1).Foreground(primaryText).Background(surface).Render(strings.Join(lines, "\n"))
 }
 
@@ -174,7 +183,11 @@ func (m Model) renderInteractionDock(width int) string {
 		if m.inputFocused {
 			return lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("❯ " + m.input + "▌")
 		}
-		return lipgloss.NewStyle().Foreground(secondaryText).Render("❯ ¿Qué necesitas?")
+		return lipgloss.NewStyle().Foreground(secondaryText).Render("❯ Pregúntame o escribe / para ver acciones...")
+	}
+	if m.interactionMode == interactionModePalette {
+		prompt := lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("❯ " + m.input + "▌")
+		return strings.Join([]string{prompt, m.renderPalette()}, "\n")
 	}
 	if m.interactionMode == interactionModeSearchable {
 		return lipgloss.NewStyle().Foreground(secondaryText).Render("↑↓/j/k seleccionar · Enter confirmar · Esc cancelar")
@@ -231,7 +244,9 @@ func (m Model) renderFooter(width int) string {
 	if m.screen == screenHome {
 		parts = []string{hint("flechas", "navegar"), hint("enter", "elegir"), hint("ctrl+c", "salir")}
 	} else if m.screen == screenWorkspace {
-		if m.interactionMode == interactionModeSearchable {
+		if m.interactionMode == interactionModePalette {
+			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "abrir"), hint("esc", "cerrar")}
+		} else if m.interactionMode == interactionModeSearchable {
 			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
 		} else if m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
 			parts = []string{hint("↑↓", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
@@ -243,6 +258,8 @@ func (m Model) renderFooter(width int) string {
 		} else {
 			parts = []string{hint("flechas", "navegar"), hint("enter", "usar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
 		}
+	} else if m.screen == screenManual {
+		parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "confirmar"), hint("esc", "volver")}
 	} else if m.screen == screenLoading {
 		parts = []string{hint("esc", "cancelar"), hint("ctrl+c", "salir")}
 	} else if m.screen == screenResult {
@@ -263,6 +280,22 @@ func renderActiveSearchable(message InteractionMessage, query string, selected i
 			label = "❯ " + option.Label
 		}
 		lines = append(lines, interactionOptionStyle(i == selected, false).Render(label))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderPalette() string {
+	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+	var lines []string
+	if m.paletteTitle != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(secondaryText).Render(m.paletteTitle))
+	}
+	for i, option := range options {
+		label := "  " + option.Label
+		if i == m.paletteIndex {
+			label = "❯ " + option.Label
+		}
+		lines = append(lines, interactionOptionStyle(i == m.paletteIndex).Render(label))
 	}
 	return strings.Join(lines, "\n")
 }

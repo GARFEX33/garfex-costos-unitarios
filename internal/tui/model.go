@@ -8,6 +8,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 	screenResult
 	screenError
 	screenMinSize
+	screenManual
 )
 
 const screenMenu = screenHome
@@ -75,6 +77,7 @@ const (
 	interactionModeSearchable
 	interactionModeConfirmation
 	interactionModeAction
+	interactionModePalette
 )
 
 type Model struct {
@@ -98,10 +101,19 @@ type Model struct {
 	searchQuery            string
 	choiceSelected         []bool
 	workspacePending       bool
+	paletteQuery           string
+	paletteIndex           int
+	paletteActions         []assistantAction
+	paletteTitle           string
+	paletteFlat            bool
+	heroActive             bool
+	manualReturnInput      string
+	manualReturnOffset     int
+	manualReturnAtBottom   bool
 }
 
 func New(handlers Handlers) Model {
-	m := Model{items: []Item{{Label: "Materiales Maestros"}, {Label: "Versión", Handler: handlers.Version}, {Label: "Verificar configuración", Handler: handlers.Config}, {Label: "Estado de GARFEX", Handler: handlers.Status}, {Label: "Salir", Quit: true}}, engine: NewInteractionEngine(NewFakeAgent()), viewport: viewport.New(viewport.WithWidth(defaultWidth-4), viewport.WithHeight(workspaceViewportHeight(defaultHeight, interactionModeChat))), promptHistoryCursor: -1}
+	m := Model{items: []Item{{Label: "Materiales Maestros"}, {Label: "Versión", Handler: handlers.Version}, {Label: "Verificar configuración", Handler: handlers.Config}, {Label: "Estado de GARFEX", Handler: handlers.Status}, {Label: "Salir", Quit: true}}, engine: NewInteractionEngine(NewFakeAgent()), screen: screenWorkspace, viewport: viewport.New(viewport.WithWidth(defaultWidth-4), viewport.WithHeight(workspaceViewportHeight(defaultHeight, interactionModeChat))), inputFocused: true, promptHistoryCursor: -1, heroActive: true}
 	m.viewport.SoftWrap, m.viewport.FillHeight = true, true
 	m.refreshViewport()
 	return m
@@ -149,7 +161,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "ctrl+c" {
 			return m, tea.Quit
 		}
+		if m.screen == screenManual {
+			if key == "esc" {
+				m.leaveManual()
+				return m, nil
+			}
+			m.handlePendingKey(msg)
+			return m, nil
+		}
 		if m.screen == screenWorkspace {
+			if m.interactionMode == interactionModePalette {
+				m.handlePaletteKey(msg)
+				return m, nil
+			}
 			if m.interactionMode != interactionModeChat {
 				if m.scrollHistory(msg) {
 					return m, nil
@@ -173,6 +197,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if input == "" {
 						return m, nil
 					}
+					m.heroActive = false
 					m.input = ""
 					m.addPromptHistory(input)
 					m.appendUser(TextMessage{Text: input})
@@ -183,14 +208,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.promptHistoryCursor = -1
 				default:
 					if msg.Text != "" && !strings.ContainsAny(msg.Text, "\x00\x1b") {
+						m.heroActive = false
 						m.input += msg.Text
 						m.promptHistoryCursor = -1
+						if strings.HasPrefix(m.input, "/") {
+							m.openPalette(strings.TrimPrefix(m.input, "/"))
+						}
 					}
 				}
 				return m, nil
 			}
 		}
-		if (m.screen == screenLoading || m.screen == screenResult || m.screen == screenError || m.screen == screenWorkspace) && key == "esc" {
+		if (m.screen == screenLoading || m.screen == screenResult || m.screen == screenError) && key == "esc" {
 			m.screen, m.inputFocused = screenHome, false
 			return m, nil
 		}
@@ -220,17 +249,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, item.Handler()
 			}
 		} else if m.screen == screenWorkspace {
-			switch key {
-			case "up":
-				if m.workspaceItem > 0 {
-					m.workspaceItem--
-				}
-			case "down":
-				if m.workspaceItem < len(workspaceShortcuts)-1 {
-					m.workspaceItem++
-				}
-			case "enter":
-				m.handleShortcut(workspaceShortcuts[m.workspaceItem].ID)
+			if !m.inputFocused && key == "enter" {
+				m.inputFocused = true
 			}
 		} else if (m.screen == screenResult || m.screen == screenError) && key == "enter" {
 			m.screen = screenLoading
@@ -258,6 +278,117 @@ func (m *Model) respond(input InteractionInput) {
 	m.refreshViewport()
 	if wasAtBottom {
 		m.viewport.GotoBottom()
+	}
+}
+
+func (m *Model) openPalette(query string) {
+	m.heroActive = false
+	m.paletteFlat = query != ""
+	if query == "" {
+		m.paletteActions = assistantActions
+	} else {
+		m.paletteActions = flattenLeafActions(assistantActions)
+	}
+	m.paletteTitle = ""
+	m.paletteQuery = query
+	m.paletteIndex = 0
+	m.interactionMode = interactionModePalette
+	m.input = "/" + query
+	m.refreshViewport()
+}
+
+func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
+	key := msg.String()
+	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+	switch key {
+	case "esc":
+		m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
+		m.paletteFlat = false
+		m.interactionMode, m.inputFocused = interactionModeChat, true
+		m.refreshViewport()
+	case "up", "k":
+		if m.paletteIndex > 0 {
+			m.paletteIndex--
+		}
+	case "down", "j":
+		if m.paletteIndex < len(options)-1 {
+			m.paletteIndex++
+		}
+	case "backspace":
+		m.paletteQuery = trimLastRune(m.paletteQuery)
+		m.input = "/" + m.paletteQuery
+		m.paletteIndex = 0
+		if m.paletteQuery == "" {
+			if m.paletteFlat {
+				m.paletteFlat = false
+				m.paletteActions = assistantActions
+			}
+		} else if !m.paletteFlat {
+			m.paletteFlat = true
+			m.paletteActions = flattenLeafActions(assistantActions)
+		}
+	case "enter":
+		if len(options) == 0 {
+			return
+		}
+		selected := options[m.paletteIndex]
+		for _, action := range m.paletteActions {
+			if action.id != selected.ID {
+				continue
+			}
+			if len(action.children) > 0 {
+				m.paletteActions, m.paletteTitle, m.paletteQuery, m.paletteIndex = action.children, action.label, "", 0
+				m.paletteFlat = false
+				m.refreshViewport()
+				return
+			}
+			if action.id == "material-search" {
+				m.openManualSearch()
+			}
+			return
+		}
+	default:
+		if msg.Text != "" && !strings.ContainsAny(msg.Text, "\x00\x1b") {
+			m.paletteQuery += msg.Text
+			m.input = "/" + m.paletteQuery
+			m.paletteIndex = 0
+			if !m.paletteFlat {
+				m.paletteFlat = true
+				m.paletteActions = flattenLeafActions(assistantActions)
+			}
+		}
+	}
+	m.refreshViewport()
+}
+
+func (m *Model) openManualSearch() {
+	m.heroActive = false
+	m.manualReturnInput = m.input
+	m.manualReturnOffset = m.viewport.YOffset()
+	m.manualReturnAtBottom = m.viewport.AtBottom()
+	m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
+	m.paletteTitle = ""
+	m.input = ""
+	m.inputFocused = false
+	m.screen = screenManual
+	m.pending = QuestionRequest{ID: "material-search", Key: "material-search", Prompt: "Buscar material", SelectionMode: SelectionSearchable, Options: manualMaterialOptions()}
+	m.interactionMode = interactionModeSearchable
+	m.choiceIndex, m.searchQuery = 0, ""
+	m.syncChoiceFields()
+	m.refreshViewport()
+}
+
+func (m *Model) leaveManual() {
+	returnInput, returnOffset, returnAtBottom := m.manualReturnInput, m.manualReturnOffset, m.manualReturnAtBottom
+	m.manualReturnInput, m.manualReturnOffset, m.manualReturnAtBottom = "", 0, false
+	m.pending, m.searchQuery = nil, ""
+	m.interactionMode, m.screen, m.inputFocused, m.input = interactionModeChat, screenWorkspace, true, returnInput
+	m.syncChoiceFields()
+	m.refreshViewport()
+	if returnAtBottom {
+		m.viewport.GotoBottom()
+	} else {
+		m.viewport.SetYOffset(returnOffset)
 	}
 }
 
@@ -400,6 +531,11 @@ func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
 		selected := options[m.choiceIndex]
 		m.appendResolvedInteraction(pendingQuestion(m.pending), selected.Label)
 		m.searchQuery = ""
+		if m.screen == screenManual {
+			m.appendGARFEX(StructuredResult{Title: "Material seleccionado", Fields: []Field{{Label: "Material", Value: selected.Label}}})
+			m.leaveManual()
+			return
+		}
 		m.respond(InteractionInput{Kind: InputSelection, Key: pendingKey(m.pending), Value: selected.Value})
 		return
 	}
@@ -606,7 +742,11 @@ func (m *Model) resizeViewport() {
 	}
 	viewportWidth := max(1, width-4)
 	m.viewport.SetWidth(viewportWidth)
-	m.viewport.SetHeight(max(1, height-fixedWorkspaceHeight-interactionDockHeight))
+	maxHeight := max(1, height-fixedWorkspaceHeight-interactionDockHeight)
+	if m.screen == screenWorkspace {
+		maxHeight = max(1, height-fixedWorkspaceHeight-m.interactionDockLines(viewportWidth-2))
+	}
+	m.viewport.SetHeight(maxHeight)
 	m.refreshViewport()
 	if wasAtBottom {
 		m.viewport.GotoBottom()
@@ -652,6 +792,16 @@ func (m *Model) refreshViewport() {
 		lines = append(lines, "Todavía no hay mensajes. Iniciá una búsqueda para comenzar.")
 	}
 	m.viewport.SetContent(strings.Join(lines, "\n"))
+	maxHeight := max(1, m.height-fixedWorkspaceHeight-m.interactionDockLines(m.viewport.Width()-2))
+	if m.height == 0 {
+		maxHeight = max(1, defaultHeight-fixedWorkspaceHeight-m.interactionDockLines(m.viewport.Width()-2))
+	}
+	contentHeight := max(1, strings.Count(m.viewport.GetContent(), "\n")+1)
+	m.viewport.SetHeight(min(maxHeight, contentHeight))
+}
+
+func (m Model) interactionDockLines(width int) int {
+	return max(1, lipgloss.Height(m.renderInteractionDock(width)))
 }
 
 func renderResolvedInteraction(interaction resolvedInteraction) string {
