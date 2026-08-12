@@ -33,6 +33,13 @@ const (
 ⠀⠀⠀⠀⠈⠉⠛⠛⠛⠋⠉⠁⠀⠀⠀⠐⠉⠋⠙⠉⠙⠀⠀⠀⠀⠀⠀⠉⠋⠙⠉⠋⠁⠀⠀⠋⠙⠉⠋⠁⠀⠀⠈⠋⠙⠉⠋⠙⠀⠀⠀⠉⠋⠙⠉⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⠙⠉⠋⠙⠉⠋⠉⠉⠉⠙⠁⠀⠀⠋⠙⠉⠋⠙⠁⠀⠀⠀⠀⠀⠙⠉⠋⠙⠉⠃⠀⠀⠀`
 )
 
+var workspaceShortcuts = []Option{
+	{ID: "new_search", Label: "Buscar material", Target: ActionTargetLocal},
+	{ID: "create_material", Label: "Crear material", Target: ActionTargetLocal},
+	{ID: "view_catalog", Label: "Catálogo", Target: ActionTargetLocal},
+	{ID: "view_history", Label: "Historial", Target: ActionTargetLocal},
+}
+
 var (
 	background    = lipgloss.Color(backgroundHex)
 	surface       = lipgloss.Color(surfaceHex)
@@ -63,7 +70,10 @@ func (m Model) render() string {
 }
 
 func (m Model) renderCard(width int, full bool) string {
-	sections := []string{renderWordmark(width, full), renderTagline(width), renderDivider(width, full)}
+	sections := make([]string, 0, 4)
+	if m.screen != screenWorkspace {
+		sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
+	}
 	if m.screen == screenHome {
 		if full {
 			sections = append(sections, lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("HOME · ÁREAS DE GARFEX"))
@@ -115,6 +125,13 @@ func menuItemStyle(active bool) lipgloss.Style {
 	return style
 }
 
+func interactionOptionStyle(selected bool) lipgloss.Style {
+	if selected {
+		return lipgloss.NewStyle().Foreground(accent).Background(surface).Bold(true).Padding(0, 1)
+	}
+	return lipgloss.NewStyle().Foreground(secondaryText).Padding(0, 1)
+}
+
 func (m Model) renderMenu(width int) string {
 	lines := make([]string, 0, len(m.items))
 	for i, item := range m.items {
@@ -130,46 +147,47 @@ func (m Model) renderMenu(width int) string {
 }
 
 func (m Model) renderWorkspace(width int) string {
-	shortcuts := []string{"Buscar material", "Crear material", "Catálogo", "Historial"}
+	shortcuts := workspaceShortcuts
 	lines := []string{
 		lipgloss.NewStyle().Foreground(accent).Bold(true).Render("GARFEX / MATERIALES MAESTROS"),
-		lipgloss.NewStyle().Foreground(secondaryText).Render("¿Qué necesitas?"),
 		"",
 	}
-	for i, label := range shortcuts {
+	for i, shortcut := range shortcuts {
 		marker := "  "
 		if i == m.workspaceItem {
 			marker = "› "
 		}
-		lines = append(lines, menuItemStyle(i == m.workspaceItem).Render(marker+label))
+		lines = append(lines, menuItemStyle(i == m.workspaceItem).Render(marker+shortcut.Label))
 	}
-	if len(m.history) > 0 {
-		lines = append(lines, "", lipgloss.NewStyle().Foreground(secondaryText).Render("Historial:"))
-		for _, message := range m.history {
-			lines = append(lines, lipgloss.NewStyle().Foreground(primaryText).Render("> "+message))
-		}
-	}
-	if m.inputFocused {
-		lines = append(lines, "", lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width-2).Render(m.input+"▌"))
-	} else {
-		lines = append(lines, "", lipgloss.NewStyle().Foreground(secondaryText).Render("Elegí una acción con flechas y Enter"))
-	}
+	lines = append(lines, m.viewport.View())
+	lines = append(lines, m.renderInteractionDock(width-2))
 	return lipgloss.NewStyle().Width(width).Padding(1, 1).Foreground(primaryText).Background(surface).Render(strings.Join(lines, "\n"))
 }
 
+func (m Model) renderInteractionDock(width int) string {
+	width = max(1, width)
+	if m.interactionMode == interactionModeChat {
+		if m.inputFocused {
+			return lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("❯ " + m.input + "▌")
+		}
+		return lipgloss.NewStyle().Foreground(secondaryText).Render("❯ ¿Qué necesitas?")
+	}
+	return lipgloss.NewStyle().Foreground(secondaryText).Render("↑↓ seleccionar · Enter confirmar · Esc cancelar")
+}
+
 func (m Model) renderState(width int) string {
-	label, detail, note := "PROCESANDO", "Procesando...", "Espere un momento"
+	label, detail, note := "Trabajando", "Buscando material...", "Esperá un momento"
 	if m.screen == screenLoading {
-		detail = "Buscando..."
+		detail = "Buscando material..."
 	}
 	if m.screen == screenResult {
-		label, detail, note = "OPERACIÓN COMPLETADA", m.result, ""
+		label, detail, note = "Resultado", m.result, ""
 	} else if m.screen == screenError {
-		label, detail, note = "ERROR DE OPERACIÓN", m.result, ""
+		label, detail, note = "No se pudo completar la consulta", m.result, ""
 	}
 
 	lines := []string{lipgloss.NewStyle().Foreground(lipgloss.Color(stateAccent(m.screen))).Bold(true).Render(label)}
-	if message := m.historyInput(); m.screen == screenLoading && message != "" {
+	if message := inputFromHistory(m.history); m.screen == screenLoading && message != "" {
 		lines = append(lines, "> "+message)
 	}
 	lines = append(lines, detail)
@@ -202,7 +220,13 @@ func (m Model) renderFooter(width int) string {
 	if m.screen == screenHome {
 		parts = []string{hint("flechas", "navegar"), hint("enter", "elegir"), hint("ctrl+c", "salir")}
 	} else if m.screen == screenWorkspace {
-		parts = []string{hint("flechas", "navegar"), hint("enter", "usar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
+		if m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
+			parts = []string{hint("↑↓", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
+		} else if m.inputFocused {
+			parts = []string{hint("enter", "enviar"), hint("esc", "cancelar"), hint("ctrl+c", "salir")}
+		} else {
+			parts = []string{hint("flechas", "navegar"), hint("enter", "usar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
+		}
 	} else if m.screen == screenLoading {
 		parts = []string{hint("esc", "cancelar"), hint("ctrl+c", "salir")}
 	} else if m.screen == screenResult {
