@@ -91,6 +91,63 @@ func TestFakeAgentUsesKnownAttributesAndReturnsGenericAction(t *testing.T) {
 	}
 }
 
+func TestScenarioForRecognizesNaturalMaterialRequestWithoutTechnicalTrigger(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "quiero buscar un material", want: "multi"},
+		{input: "buscar material por características", want: "multi"},
+		{input: "multi", want: "unknown"},
+		{input: "multiselect", want: "unknown"},
+		{input: "cable", want: "cable"},
+		{input: "tubería", want: "pipe"},
+		{input: "crear material", want: "create"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := scenarioFor(tt.input); got != tt.want {
+				t.Fatalf("scenarioFor(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFakeAgentMultiSelectResponseShape(t *testing.T) {
+	agent := NewFakeAgent()
+	got, err := agent.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "quiero buscar un material"})
+	if err != nil {
+		t.Fatalf("start multi-select: %v", err)
+	}
+	question, ok := got.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("pending = %T, want question", got.Pending)
+	}
+	if question.SelectionMode != SelectionMultiple || question.MinSelections != 2 || question.MaxSelections != 3 || question.AllowCustom {
+		t.Fatalf("question constraints = %#v", question)
+	}
+	if len(question.Options) != 5 || question.Key != "materials" || question.Prompt != "Selecciona las características que quieres considerar" {
+		t.Fatalf("question options/key = %d/%q", len(question.Options), question.Key)
+	}
+}
+
+func TestFakeAgentHandlesMultiSelectValuesPayload(t *testing.T) {
+	engine := NewInteractionEngine(NewFakeAgent())
+	engine.Text(context.Background(), "quiero buscar un material")
+	response := engine.Respond(context.Background(), InteractionInput{
+		Kind:   InputSelection,
+		Key:    "materials",
+		Values: []string{"thw-ls", "cobre"},
+	})
+	result, ok := firstStructured(response)
+	if !ok || response.Pending != nil {
+		t.Fatalf("response = %#v pending=%T, want result without pending question", response.Messages, response.Pending)
+	}
+	if result.Title != "SELECCIÓN MÚLTIPLE RECIBIDA" || len(result.Fields) != 1 || result.Fields[0].Value != "thw-ls, cobre" {
+		t.Fatalf("multi-select result = %#v", result)
+	}
+}
+
 func TestInteractionEngineClearsPendingWhenResponseIsNotPending(t *testing.T) {
 	engine := NewInteractionEngine(NewFakeAgent())
 	first := engine.Text(context.Background(), "cable")

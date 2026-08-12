@@ -94,6 +94,7 @@ type Model struct {
 	choiceIndex            int
 	choicePrompt           string
 	choiceOptions          []string
+	choiceSelected         []bool
 	workspacePending       bool
 }
 
@@ -250,6 +251,7 @@ func (m *Model) respond(input InteractionInput) {
 	m.workspacePending = response.Pending != nil
 	m.interactionMode = modeFor(response.Pending)
 	m.choiceIndex = 0
+	m.choiceSelected = nil
 	m.syncChoiceFields()
 	m.refreshViewport()
 	if wasAtBottom {
@@ -278,6 +280,7 @@ func (m *Model) resetPending() {
 	m.workspacePending = false
 	m.interactionMode = interactionModeChat
 	m.choiceIndex = 0
+	m.choiceSelected = nil
 	m.syncChoiceFields()
 	m.refreshViewport()
 }
@@ -317,19 +320,32 @@ func modeFor(pending InteractionMessage) interactionMode {
 func (m *Model) handlePendingKey(key string) {
 	options := m.pendingOptions()
 	switch key {
-	case "up":
+	case "up", "k":
 		if m.choiceIndex > 0 {
 			m.choiceIndex--
 			m.refreshViewport()
 		}
-	case "down":
+	case "down", "j":
 		if m.choiceIndex < len(options)-1 {
 			m.choiceIndex++
 			m.refreshViewport()
 		}
+	case " ", "space":
+		m.toggleChoice()
 	case "esc":
 		m.respond(InteractionInput{Kind: InputCancel})
 	case "enter":
+		if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
+			if !m.multipleSelectionValid(request) {
+				m.refreshViewport()
+				return
+			}
+			values := selectedOptionValues(options, m.choiceSelected)
+			labels := selectedOptionLabels(options, m.choiceSelected)
+			m.appendResolvedInteraction(pendingQuestion(m.pending), strings.Join(labels, ", "))
+			m.respond(InteractionInput{Kind: InputSelection, Key: request.Key, Values: values})
+			return
+		}
 		if len(options) > 0 {
 			selected := options[m.choiceIndex]
 			m.appendResolvedInteraction(pendingQuestion(m.pending), selected.Label)
@@ -341,6 +357,61 @@ func (m *Model) handlePendingKey(key string) {
 			m.respond(input)
 		}
 	}
+}
+
+func (m *Model) toggleChoice() {
+	request, ok := m.pending.(QuestionRequest)
+	if !ok || request.SelectionMode != SelectionMultiple || m.choiceIndex >= len(m.choiceSelected) {
+		return
+	}
+	if !m.choiceSelected[m.choiceIndex] && request.MaxSelections > 0 && m.selectedCount() >= request.MaxSelections {
+		m.refreshViewport()
+		return
+	}
+	m.choiceSelected[m.choiceIndex] = !m.choiceSelected[m.choiceIndex]
+	m.refreshViewport()
+}
+
+func (m Model) selectedCount() int {
+	count := 0
+	for _, selected := range m.choiceSelected {
+		if selected {
+			count++
+		}
+	}
+	return count
+}
+
+func (m Model) multipleSelectionValid(request QuestionRequest) bool {
+	count := m.selectedCount()
+	minimum := request.MinSelections
+	if minimum < 0 {
+		minimum = 0
+	}
+	if request.MaxSelections > 0 && minimum > request.MaxSelections {
+		return false
+	}
+	return count >= minimum && (request.MaxSelections <= 0 || count <= request.MaxSelections)
+}
+
+func selectedOptionValues(options []Option, selected []bool) []string {
+	values := make([]string, 0, len(options))
+	for i, option := range options {
+		if i < len(selected) && selected[i] {
+			values = append(values, option.Value)
+		}
+	}
+	return values
+}
+
+func selectedOptionLabels(options []Option, selected []bool) []string {
+	labels := make([]string, 0, len(options))
+	for i, option := range options {
+		if i < len(selected) && selected[i] {
+			labels = append(labels, option.Label)
+		}
+	}
+	return labels
 }
 
 func (m *Model) handleLocalAction(input InteractionInput) {
@@ -418,6 +489,9 @@ func (m *Model) syncChoiceFields() {
 	for i, option := range options {
 		m.choiceOptions[i] = option.Label
 	}
+	if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
+		m.choiceSelected = make([]bool, len(options))
+	}
 }
 
 func (m *Model) setPendingQuestion(prompt string, options []string) {
@@ -428,6 +502,7 @@ func (m *Model) setPendingQuestion(prompt string, options []string) {
 	m.pending = request
 	m.interactionMode = interactionModeChoice
 	m.choiceIndex = 0
+	m.choiceSelected = nil
 	m.syncChoiceFields()
 	m.resizeViewport()
 }
@@ -479,7 +554,7 @@ func (m *Model) refreshViewport() {
 		lines = append(lines, renderInteractionMessage(message.message), "")
 	}
 	if m.pending != nil {
-		lines = append(lines, renderActiveInteraction(m.pending, m.choiceIndex), "")
+		lines = append(lines, m.renderActiveInteraction(m.pending, m.choiceIndex), "")
 	}
 	if len(lines) == 0 {
 		lines = append(lines, "Todavía no hay mensajes. Iniciá una búsqueda para comenzar.")
@@ -492,17 +567,82 @@ func renderResolvedInteraction(interaction resolvedInteraction) string {
 }
 
 func renderActiveInteraction(message InteractionMessage, selected int) string {
+	return renderActiveInteractionWithSelection(message, selected, nil)
+}
+
+func (m Model) renderActiveInteraction(message InteractionMessage, selected int) string {
+	return renderActiveInteractionWithSelection(message, selected, m.choiceSelected)
+}
+
+func renderActiveInteractionWithSelection(message InteractionMessage, selected int, selection []bool) string {
 	lines := []string{renderInteractionMessage(message)}
 	options := pendingOptionsFor(message)
+	if request, ok := message.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
+		selectedState := make([]bool, len(options))
+		if len(selection) == len(options) {
+			selectedState = selection
+		}
+		lines = append(lines, selectionStatus(request, countSelected(selectedState)))
+		for i, option := range options {
+			lines = append(lines, renderMultipleOption(option, i == selected, i < len(selectedState) && selectedState[i]))
+		}
+		return strings.Join(lines, "\n")
+	}
 	for i, option := range options {
 		active := i == selected
 		label := "  " + option.Label
 		if active {
 			label = "❯ " + option.Label
 		}
-		lines = append(lines, interactionOptionStyle(active).Render(label))
+		lines = append(lines, interactionOptionStyle(active, false).Render(label))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func countSelected(selected []bool) int {
+	count := 0
+	for _, value := range selected {
+		if value {
+			count++
+		}
+	}
+	return count
+}
+
+func selectionStatus(request QuestionRequest, count int) string {
+	status := fmt.Sprintf("Seleccionadas: %d", count)
+	if request.MinSelections > 0 {
+		status += fmt.Sprintf(" · Mínimo: %d", request.MinSelections)
+	}
+	if request.MaxSelections > 0 {
+		status += fmt.Sprintf(" · Máximo: %d", request.MaxSelections)
+	} else {
+		status += " · Sin máximo"
+	}
+	minimum := request.MinSelections
+	if minimum < 0 {
+		minimum = 0
+	}
+	if request.MaxSelections > 0 && minimum > request.MaxSelections {
+		status += " · Restricciones inválidas"
+	} else if count < minimum {
+		status += " · Faltan selecciones"
+	} else if request.MaxSelections > 0 && count == request.MaxSelections {
+		status += " · Máximo alcanzado"
+	}
+	return status
+}
+
+func renderMultipleOption(option Option, focused, selected bool) string {
+	marker := "  "
+	if focused {
+		marker = "❯ "
+	}
+	check := "[ ]"
+	if selected {
+		check = "[x]"
+	}
+	return interactionOptionStyle(focused, selected).Render(marker + check + " " + option.Label)
 }
 
 func messageText(message InteractionMessage) string {

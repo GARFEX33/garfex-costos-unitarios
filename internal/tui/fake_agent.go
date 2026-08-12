@@ -24,6 +24,9 @@ func (a *FakeAgent) Respond(_ context.Context, input InteractionInput) (Interact
 		a.reset()
 		return textResponse("Está bien, volvemos a la conversación."), nil
 	}
+	if a.fixture.scenario == "multi" && input.Kind == InputSelection && input.Values != nil {
+		return multiSelectionResult(input.Values), nil
+	}
 	if input.Kind == InputText {
 		a.start(input.Value)
 		return a.decide(), nil
@@ -65,6 +68,8 @@ func scenarioFor(value string) string {
 		return "ambiguity"
 	case strings.Contains(value, "crear material"):
 		return "create"
+	case strings.Contains(value, "buscar") && strings.Contains(value, "material"):
+		return "multi"
 	case strings.Contains(value, "tuber") || strings.Contains(value, "tubo"):
 		return "pipe"
 	case strings.Contains(value, "cable") || strings.Contains(value, "conductor") || strings.Contains(value, "thw-ls") || strings.Contains(value, "xhhw-2"):
@@ -116,6 +121,14 @@ func (a *FakeAgent) decide() InteractionResponse {
 		}
 		a.fixture.pendingKey = "confirmation"
 		return confirmationResponse("¿Crear esta ficha de material?")
+	case "multi":
+		return a.multiQuestion("materials", "Selecciona las características que quieres considerar", []Option{
+			{Label: "THW-LS", Value: "thw-ls"},
+			{Label: "XHHW-2", Value: "xhhw-2"},
+			{Label: "Cobre", Value: "cobre"},
+			{Label: "Aluminio", Value: "aluminio"},
+			{Label: "Baja tensión", Value: "baja_tension"},
+		})
 	case "ambiguity":
 		if a.fixture.values["interpretation"] == "" {
 			return a.question("interpretation", "¿Cuál interpretación querés usar?", []Option{{Label: "THW-LS · 10 AWG · Negro", Value: "THW-LS · 10 AWG · Negro"}, {Label: "XHHW-2 · 10 AWG · Negro", Value: "XHHW-2 · 10 AWG · Negro"}}, 1, 1)
@@ -136,6 +149,22 @@ func (a *FakeAgent) decide() InteractionResponse {
 func (a *FakeAgent) question(key, prompt string, options []Option, step, total int) InteractionResponse {
 	a.fixture.pendingKey = key
 	return questionResponse(QuestionRequest{ID: key, Key: key, Prompt: prompt, Question: prompt, SelectionMode: SelectionSingle, Options: options, Step: step, TotalSteps: total})
+}
+
+func (a *FakeAgent) multiQuestion(key, prompt string, options []Option) InteractionResponse {
+	a.fixture.pendingKey = key
+	return questionResponse(QuestionRequest{
+		ID:            key,
+		Key:           key,
+		Prompt:        prompt,
+		Question:      prompt,
+		SelectionMode: SelectionMultiple,
+		Options:       options,
+		MinSelections: 2,
+		MaxSelections: 3,
+		Step:          1,
+		TotalSteps:    1,
+	})
 }
 
 func (a *FakeAgent) materialSpec() string {
@@ -237,6 +266,11 @@ func errorResponse() InteractionResponse {
 func textResponse(text string) InteractionResponse {
 	return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: text}}}
 }
+
+func multiSelectionResult(values []string) InteractionResponse {
+	return resultResponse("SELECCIÓN MÚLTIPLE RECIBIDA", []Field{{Label: "Valores recibidos", Value: strings.Join(values, ", ")}}, nil)
+}
+
 func questionResponse(question QuestionRequest) InteractionResponse {
 	return InteractionResponse{Pending: question}
 }
