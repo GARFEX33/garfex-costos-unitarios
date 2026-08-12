@@ -322,3 +322,28 @@ func TestDualEnterSubmitsCustomTextWhenInputNonEmpty(t *testing.T) {
 		})
 	}
 }
+
+// TestAllowCustomSearchableRenderFiltersByInput proves the render call site
+// (refreshViewport) uses the same query source as pendingOptions()/
+// syncChoiceFields() when AllowCustom is true: m.input, not the never-written
+// m.searchQuery. Regression test for the render/selection query mismatch bug.
+func TestAllowCustomSearchableRenderFiltersByInput(t *testing.T) {
+	m := customGaugeQuestion(t)
+	for _, char := range []rune("10") {
+		m, _ = update(t, m, key(char))
+	}
+	if m.input != "10" {
+		t.Fatalf("expected typed text to accumulate in m.input, got %q", m.input)
+	}
+	m.refreshViewport()
+	plain := ansi.Strip(m.viewport.GetContent())
+	if !strings.Contains(plain, "Buscar: 10") {
+		t.Fatalf("expected rendered search line to reflect typed input %q, got %q", m.input, plain)
+	}
+	if !strings.Contains(plain, "10 AWG") {
+		t.Fatalf("expected matching option %q still rendered, got %q", "10 AWG", plain)
+	}
+	if strings.Contains(plain, "12 AWG") {
+		t.Fatalf("expected non-matching option %q filtered out of render, got %q", "12 AWG", plain)
+	}
+}

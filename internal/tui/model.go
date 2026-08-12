@@ -891,7 +891,11 @@ func (m *Model) refreshViewport() {
 	}
 	if m.pending != nil {
 		if m.interactionMode == interactionModeSearchable {
-			lines = append(lines, renderActiveSearchable(m.pending, m.searchQuery, m.choiceIndex), "")
+			query := m.searchQuery
+			if m.pendingAllowsCustom() {
+				query = m.input
+			}
+			lines = append(lines, renderActiveSearchable(m.pending, query, m.choiceIndex), "")
 		} else {
 			lines = append(lines, m.renderActiveInteraction(m.pending, m.choiceIndex), "")
 		}
