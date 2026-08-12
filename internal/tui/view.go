@@ -295,7 +295,7 @@ func (m Model) renderPalette() string {
 		if i == m.paletteIndex {
 			label = "❯ " + option.Label
 		}
-		lines = append(lines, interactionOptionStyle(i == m.paletteIndex).Render(label))
+		lines = append(lines, interactionOptionStyle(i == m.paletteIndex, false).Render(label))
 	}
 	return strings.Join(lines, "\n")
 }
