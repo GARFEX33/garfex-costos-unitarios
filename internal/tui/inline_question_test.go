@@ -136,8 +136,8 @@ func TestContextualHelpFooterMatchesPendingQuestion(t *testing.T) {
 	m := submitText(t, workspaceChat(t), "cable 10")
 	footer := ansi.Strip(m.renderFooter(60))
 	for _, part := range questionHelpParts(m.pending, false) {
-		if !strings.Contains(footer, part) {
-			t.Fatalf("footer missing contextual hint %q: %q", part, footer)
+		if !strings.Contains(footer, part.Description) {
+			t.Fatalf("footer missing contextual hint %q: %q", part.Description, footer)
 		}
 	}
 }

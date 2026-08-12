@@ -178,24 +178,27 @@ func (m Model) renderManual(width int) string {
 	return lipgloss.NewStyle().Width(width).Padding(1, 1).Foreground(primaryText).Background(surface).Render(strings.Join(lines, "\n"))
 }
 
+// hintPart is one (key, description) contextual-help fragment.
+type hintPart struct{ Key, Description string }
+
 // questionHelpParts builds the contextual help fragments for the pending
 // question, shared by renderFooter (general footer) and renderInteractionDock
 // (composer hint) so both stay in sync instead of maintaining two separate
 // copies of the hint text. allowCustom is accepted for forward compatibility
 // with the AllowCustom-editable composer (wired in a follow-up change); it is
 // unused while that behavior is not yet implemented.
-func questionHelpParts(pending InteractionMessage, allowCustom bool) []string {
+func questionHelpParts(pending InteractionMessage, allowCustom bool) []hintPart {
 	if pending == nil {
 		return nil
 	}
 	_ = allowCustom
 	request, isQuestion := pending.(QuestionRequest)
 	if isQuestion && request.SelectionMode == SelectionSearchable {
-		return []string{"↑↓/j/k seleccionar", "enter confirmar", "esc cancelar"}
+		return []hintPart{{"↑↓/j/k", "seleccionar"}, {"enter", "confirmar"}, {"esc", "cancelar"}}
 	}
-	parts := []string{"↑↓ seleccionar", "enter confirmar", "esc cancelar"}
+	parts := []hintPart{{"↑↓", "seleccionar"}, {"enter", "confirmar"}, {"esc", "cancelar"}}
 	if isQuestion && request.SelectionMode == SelectionMultiple {
-		parts = append(parts, "espacio alternar")
+		parts = append(parts, hintPart{"espacio", "alternar"})
 	}
 	return parts
 }
@@ -226,11 +229,11 @@ func (m Model) renderInteractionDock(width int) string {
 	}
 	composer := lipgloss.NewStyle().Foreground(secondaryText).Render("❯ " + m.input)
 	parts := questionHelpParts(m.pending, false)
-	capitalized := make([]string, len(parts))
+	flat := make([]string, len(parts))
 	for i, part := range parts {
-		capitalized[i] = capitalizeHintWord(part)
+		flat[i] = capitalizeHintWord(part.Key + " " + part.Description)
 	}
-	hintLine := lipgloss.NewStyle().Foreground(secondaryText).Render(strings.Join(capitalized, " · "))
+	hintLine := lipgloss.NewStyle().Foreground(secondaryText).Render(strings.Join(flat, " · "))
 	return strings.Join([]string{composer, hintLine}, "\n")
 }
 
@@ -282,7 +285,10 @@ func (m Model) renderFooter(width int) string {
 		if m.interactionMode == interactionModePalette {
 			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "abrir"), hint("esc", "cerrar")}
 		} else if m.interactionMode == interactionModeSearchable || m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
-			parts = questionHelpParts(m.pending, false)
+			parts = nil
+			for _, part := range questionHelpParts(m.pending, false) {
+				parts = append(parts, hint(part.Key, part.Description))
+			}
 		} else if m.inputFocused {
 			parts = []string{hint("enter", "enviar"), hint("esc", "cancelar"), hint("ctrl+c", "salir")}
 		} else {
