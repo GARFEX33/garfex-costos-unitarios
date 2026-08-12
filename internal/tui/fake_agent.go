@@ -70,6 +70,8 @@ func scenarioFor(value string) string {
 		return "create"
 	case strings.Contains(value, "quiero buscar una opción") || strings.Contains(value, "buscar una opción"):
 		return "searchable-select"
+	case strings.Contains(value, "calibre personalizado"):
+		return "custom-gauge"
 	case strings.Contains(value, "buscar") && strings.Contains(value, "material"):
 		return "multi"
 	case strings.Contains(value, "tuber") || strings.Contains(value, "tubo"):
@@ -129,6 +131,22 @@ func (a *FakeAgent) decide() InteractionResponse {
 			return questionResponse(QuestionRequest{ID: "option", Key: "option", Prompt: "Selecciona una opción", Question: "Selecciona una opción", SelectionMode: SelectionSearchable, Options: searchableSelectOptions(), Step: 1, TotalSteps: 1})
 		}
 		return resultResponseWithActions("OPCIÓN SELECCIONADA", "Resultado simulado de la selección.", []Field{{Label: "Value", Value: a.fixture.values["option"]}}, nil)
+	case "custom-gauge":
+		if a.fixture.values["gauge"] == "" {
+			a.fixture.pendingKey = "gauge"
+			return questionResponse(QuestionRequest{
+				ID:            "gauge",
+				Key:           "gauge",
+				Prompt:        "Indica el calibre (o escribe uno personalizado)",
+				Question:      "Indica el calibre (o escribe uno personalizado)",
+				SelectionMode: SelectionSearchable,
+				AllowCustom:   true,
+				Options:       customGaugeOptions(),
+				Step:          1,
+				TotalSteps:    1,
+			})
+		}
+		return resultResponseWithActions("CALIBRE SELECCIONADO", "Resultado simulado de calibre personalizado.", []Field{{Label: "Valor", Value: a.fixture.values["gauge"]}}, nil)
 	case "multi":
 		return a.multiQuestion("materials", "Selecciona las características que quieres considerar", []Option{
 			{Label: "THW-LS", Value: "thw-ls"},
@@ -287,6 +305,13 @@ func resultResponse(title string, fields []Field, actions []Action) InteractionR
 }
 func colorOptions() []Option {
 	return []Option{{Label: "Negro", Value: "black"}, {Label: "Blanco", Value: "white"}, {Label: "Rojo", Value: "red"}, {Label: "Verde", Value: "green"}}
+}
+
+func customGaugeOptions() []Option {
+	return []Option{
+		{Label: "10 AWG", Value: "10awg", Description: "Uso residencial estándar"},
+		{Label: "12 AWG", Value: "12awg", Description: "Circuitos de menor carga"},
+	}
 }
 
 func searchableSelectOptions() []Option {

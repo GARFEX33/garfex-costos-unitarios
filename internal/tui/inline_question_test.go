@@ -160,3 +160,165 @@ func TestGeneralHelpRestoredWhenNoPending(t *testing.T) {
 		t.Fatalf("general footer should not show question hints: %q", footer)
 	}
 }
+
+// Phase 4 — AllowCustom free text + dual Enter.
+
+// customGaugeQuestion drives the FakeAgent's "custom-gauge" fixture
+// scenario (AllowCustom: true, searchable, two Options with Description)
+// through the normal chat submit path.
+func customGaugeQuestion(t *testing.T) Model {
+	t.Helper()
+	m := submitText(t, workspaceChat(t), "calibre personalizado")
+	if m.interactionMode != interactionModeSearchable {
+		t.Fatalf("expected searchable AllowCustom pending question, got mode %v pending %T", m.interactionMode, m.pending)
+	}
+	request, ok := m.pending.(QuestionRequest)
+	if !ok || !request.AllowCustom {
+		t.Fatalf("expected AllowCustom pending question, got %#v", m.pending)
+	}
+	return m
+}
+
+// allowCustomChoiceModel builds a single-select (non-searchable) AllowCustom
+// pending question directly, mirroring the searchableModel test helper.
+func allowCustomChoiceModel(agent InteractionAgent) Model {
+	m := NewWithAgent(Handlers{}, agent)
+	m.screen = screenWorkspace
+	m.pending = QuestionRequest{
+		Key:           "gauge",
+		Prompt:        "Indica el calibre (o escribe uno personalizado)",
+		SelectionMode: SelectionSingle,
+		AllowCustom:   true,
+		Options:       customGaugeOptions(),
+	}
+	m.interactionMode = interactionModeChoice
+	m.syncChoiceFields()
+	m.resizeViewport()
+	return m
+}
+
+// allowCustomSearchableModel builds a searchable AllowCustom pending
+// question directly, mirroring the searchableModel test helper.
+func allowCustomSearchableModel(agent InteractionAgent) Model {
+	m := NewWithAgent(Handlers{}, agent)
+	m.screen = screenWorkspace
+	m.pending = QuestionRequest{
+		Key:           "gauge",
+		Prompt:        "Indica el calibre (o escribe uno personalizado)",
+		SelectionMode: SelectionSearchable,
+		AllowCustom:   true,
+		Options:       customGaugeOptions(),
+	}
+	m.interactionMode = interactionModeSearchable
+	m.syncChoiceFields()
+	m.resizeViewport()
+	return m
+}
+
+func TestAllowCustomLiteralJKKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		key  rune
+	}{
+		{name: "j is typed, not navigation", key: 'j'},
+		{name: "k is typed, not navigation", key: 'k'},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := customGaugeQuestion(t)
+			startIndex := m.choiceIndex
+			m, _ = update(t, m, key(tt.key))
+			if m.choiceIndex != startIndex {
+				t.Fatalf("expected focus unchanged for literal %q, got index %d want %d", tt.key, m.choiceIndex, startIndex)
+			}
+			if m.input != string(tt.key) {
+				t.Fatalf("expected %q appended to m.input, got %q", tt.key, m.input)
+			}
+		})
+	}
+}
+
+func TestAllowCustomArrowsStillNavigate(t *testing.T) {
+	m := customGaugeQuestion(t)
+	if m.choiceIndex != 0 {
+		t.Fatalf("expected starting focus at 0, got %d", m.choiceIndex)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.choiceIndex != 1 {
+		t.Fatalf("expected down arrow to move focus, got %d", m.choiceIndex)
+	}
+	if m.input != "" {
+		t.Fatalf("expected arrow navigation to leave input text unchanged, got %q", m.input)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if m.choiceIndex != 0 {
+		t.Fatalf("expected up arrow to move focus back, got %d", m.choiceIndex)
+	}
+}
+
+func TestAllowCustomTypingAccumulatesInput(t *testing.T) {
+	m := customGaugeQuestion(t)
+	for _, char := range []rune("16 AWG") {
+		m, _ = update(t, m, key(char))
+	}
+	if m.input != "16 AWG" {
+		t.Fatalf("expected typed text to accumulate in m.input, got %q", m.input)
+	}
+	if m.choiceIndex != 0 {
+		t.Fatalf("expected focus unchanged while typing, got index %d", m.choiceIndex)
+	}
+}
+
+func TestDualEnterConfirmsFocusedOptionWhenInputEmpty(t *testing.T) {
+	tests := []struct {
+		name  string
+		model func(agent InteractionAgent) Model
+	}{
+		{name: "single-select", model: allowCustomChoiceModel},
+		{name: "searchable", model: allowCustomSearchableModel},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &recordingAgent{}
+			m := tt.model(agent)
+			m.choiceIndex = 1
+			m, _ = update(t, m, enter())
+			if agent.last.Kind != InputSelection || agent.last.Key != "gauge" || agent.last.Value != "12awg" {
+				t.Fatalf("expected focused option submitted when input is empty, got %#v", agent.last)
+			}
+		})
+	}
+}
+
+// The searchable-select case documents an intentional, flagged UX
+// follow-up from the spec: when AllowCustom is true and the input is
+// non-empty, the typed text wins over the visually-focused *filtered*
+// option, even if that focused option is still visible. This is the
+// approved literal spec wording (Dual Enter Behavior), not an
+// accidental side effect of sharing m.input as both the filter query
+// and the free-text candidate. Do not redesign; only revisit under an
+// explicit new requirement.
+func TestDualEnterSubmitsCustomTextWhenInputNonEmpty(t *testing.T) {
+	tests := []struct {
+		name  string
+		model func(agent InteractionAgent) Model
+	}{
+		{name: "single-select", model: allowCustomChoiceModel},
+		{name: "searchable", model: allowCustomSearchableModel},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &recordingAgent{}
+			m := tt.model(agent)
+			m.choiceIndex = 1 // focused option ("12awg") must be ignored in favor of typed text
+			m.input = "16 AWG"
+			m, _ = update(t, m, enter())
+			if agent.last.Kind != InputSelection || agent.last.Key != "gauge" || agent.last.Value != "16 AWG" {
+				t.Fatalf("expected typed text submitted over focused option, got %#v", agent.last)
+			}
+			if m.input != "" {
+				t.Fatalf("expected input cleared after submitting custom text, got %q", m.input)
+			}
+		})
+	}
+}
