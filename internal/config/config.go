@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -33,6 +34,14 @@ type Config struct {
 	DBPassword Secret
 	DBSSLMode  string
 	LogLevel   string
+}
+
+// DSN builds a postgres connection string from the validated fields. It
+// necessarily contains the real password since it is a real connection
+// string; callers must not log or print it.
+func (c Config) DSN() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		url.QueryEscape(c.DBUser), url.QueryEscape(c.DBPassword.Reveal()), c.DBHost, c.DBPort, c.DBName, c.DBSSLMode)
 }
 
 // ValidationError identifies an invalid environment variable without its value.

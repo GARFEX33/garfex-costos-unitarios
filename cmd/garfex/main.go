@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/app/materiales"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/config"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/postgres"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/tui"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var version = "dev"
@@ -18,19 +23,47 @@ type program interface {
 
 type programLauncher func(tea.Model) program
 
+// repositoryBuilder builds the real Materials repository from a DSN. It is
+// injected so run() is unit-testable without a real Postgres instance.
+type repositoryBuilder func(ctx context.Context, dsn string) (domain.MaterialRepository, error)
+
 func main() {
-	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram))
+	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram, newPostgresRepository))
 }
 
 func newProgram(model tea.Model) program { return tea.NewProgram(model) }
 
-func run(args []string, look func(string) (string, bool), out, errw io.Writer, launch programLauncher) int {
+func newPostgresRepository(ctx context.Context, dsn string) (domain.MaterialRepository, error) {
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping database: %w", err)
+	}
+	return postgres.NewMaterialRepository(pool), nil
+}
+
+func run(args []string, look func(string) (string, bool), out, errw io.Writer, launch programLauncher, buildRepository repositoryBuilder) int {
 	if len(args) == 0 {
-		if _, err := launch(tui.New(tui.Handlers{
+		cfg, err := config.Load(look)
+		if err != nil {
+			fmt.Fprintf(errw, "configuration is invalid: %v\n", err)
+			return 1
+		}
+		repo, err := buildRepository(context.Background(), cfg.DSN())
+		if err != nil {
+			fmt.Fprintf(errw, "database unavailable: %v\n", err)
+			return 1
+		}
+		service := materiales.NewService(repo)
+		adapter := tui.NewMaterialsWorkspaceAdapter(service)
+		if _, err := launch(tui.NewWithAgent(tui.Handlers{
 			Version: tui.Version(version),
 			Config:  tui.Config(look),
 			Status:  tui.Status(),
-		})).Run(); err != nil {
+		}, adapter)).Run(); err != nil {
 			fmt.Fprintf(errw, "TUI launcher failed: %v\n", err)
 			return 1
 		}
