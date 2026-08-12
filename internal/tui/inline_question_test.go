@@ -258,7 +258,7 @@ func TestAllowCustomArrowsStillNavigate(t *testing.T) {
 
 func TestAllowCustomTypingAccumulatesInput(t *testing.T) {
 	m := customGaugeQuestion(t)
-	for _, char := range []rune("16 AWG") {
+	for _, char := range "16 AWG" {
 		m, _ = update(t, m, key(char))
 	}
 	if m.input != "16 AWG" {
@@ -329,7 +329,7 @@ func TestDualEnterSubmitsCustomTextWhenInputNonEmpty(t *testing.T) {
 // m.searchQuery. Regression test for the render/selection query mismatch bug.
 func TestAllowCustomSearchableRenderFiltersByInput(t *testing.T) {
 	m := customGaugeQuestion(t)
-	for _, char := range []rune("10") {
+	for _, char := range "10" {
 		m, _ = update(t, m, key(char))
 	}
 	if m.input != "10" {

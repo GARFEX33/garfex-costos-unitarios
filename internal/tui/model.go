@@ -393,22 +393,6 @@ func (m *Model) leaveManual() {
 	}
 }
 
-func (m *Model) handleShortcut(id string) {
-	switch id {
-	case "new_search":
-		m.resetPending()
-		m.inputFocused = true
-	case "create_material":
-		m.resetPending()
-		m.appendGARFEX(TextMessage{Text: "Podés describir el material que querés crear."})
-		m.inputFocused = true
-	case "view_catalog":
-		m.appendGARFEX(TextMessage{Text: "El catálogo está listo para consultar familias y unidades."})
-	case "view_history":
-		m.viewport.GotoBottom()
-	}
-}
-
 func (m *Model) resetPending() {
 	m.pending = nil
 	m.workspacePending = false
@@ -1189,18 +1173,6 @@ func simulateInput(input string) tea.Cmd {
 		return resultMsg{text: "Encontré una coincidencia para: " + sanitize(strings.TrimSpace(input))}
 	}
 }
-func simulateShortcut(item int) tea.Cmd {
-	return func() tea.Msg { return resultMsg{text: shortcutResponse(item)} }
-}
-
-func shortcutResponse(item int) string {
-	responses := []string{"", "Podés describir el material y sus atributos para preparar una nueva ficha.", "El catálogo está listo para consultar familias y unidades.", "Las consultas recientes aparecen en esta conversación."}
-	if item < 0 || item >= len(responses) {
-		return ""
-	}
-	return responses[item]
-}
-
 func (m Model) View() tea.View {
 	if m.screen == screenMinSize {
 		return tea.NewView("La terminal debe tener al menos 40x10.")

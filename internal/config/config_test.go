@@ -86,7 +86,7 @@ func TestLoad(t *testing.T) {
 
 func TestSecretIsRedacted(t *testing.T) {
 	secret := Secret("a-secret-value")
-	for _, rendered := range []string{fmt.Sprintf("%s", secret), fmt.Sprintf("%v", secret), fmt.Sprintf("%+v", secret), fmt.Sprintf("%#v", secret)} {
+	for _, rendered := range []string{secret.String(), fmt.Sprintf("%v", secret), fmt.Sprintf("%+v", secret), fmt.Sprintf("%#v", secret)} {
 		if strings.Contains(rendered, secret.Reveal()) || rendered != "***REDACTED***" {
 			t.Fatalf("secret rendered as %q", rendered)
 		}

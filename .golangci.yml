@@ -1,0 +1,25 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      # fmt.Fprint*/Fprintln to a CLI's own stdout/stderr writers essentially
+      # never fail in practice; checking every call site adds boilerplate
+      # without real safety value for this project.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+  exclusions:
+    rules:
+      # User-facing Spanish sentences displayed directly in the TUI, not
+      # chain-wrapped Go errors — the trailing period is correct copy, not a
+      # violation of Go's internal-error-string convention.
+      - path: internal/tui/model.go
+        linters:
+          - staticcheck
+        text: "ST1005"

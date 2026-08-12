@@ -66,8 +66,11 @@ Los equivalentes locales de los controles no constructivos de CI son:
 ```powershell
 gofmt -l .
 go vet ./...
+golangci-lint run ./...
 go test ./... -count=1
 docker compose config -q
 ```
+
+`golangci-lint` requiere una versión compatible con Go 1.26.5 (probado con v2.12.2); instalala con `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`. Su configuración vive en `.golangci.yml`.
 
 CI ejecuta además `go test ./... -race -count=1`, `go build ./...`, construye una imagen Docker etiquetada, verifica `Config.User=65532:65532` y ejecuta `version`; no ejecutes esos builds localmente después de cambios.

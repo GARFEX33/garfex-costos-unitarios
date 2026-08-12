@@ -3,7 +3,7 @@
 - Smoke manual de la TUI: ejecutá `go run ./cmd/garfex`, navegá Version, Config check y GARFEX status con flechas o `j`/`k`, y elegí Exit.
 - `config check` exige `GARFEX_DB_HOST`, `GARFEX_DB_PORT`, `GARFEX_DB_NAME`, `GARFEX_DB_USER`, `GARFEX_DB_PASSWORD` y `GARFEX_DB_SSLMODE`; `GARFEX_LOG_LEVEL` admite `debug`, `info`, `warn` o `error` y por omisión es `info`.
 - La CLI no lee `.env`; para `go run`, cargá las variables `GARFEX_*` en el proceso actual.
-- Ejecutá `gofmt -l .`, `go vet ./...` y `go test ./... -count=1` localmente; CI ejecuta `go test ./... -race -count=1`, `go build ./...`, construye una imagen Docker etiquetada, verifica `Config.User=65532:65532` y ejecuta `version`.
+- Ejecutá `gofmt -l .`, `go vet ./...`, `golangci-lint run ./...` (config en `.golangci.yml`; usá una versión de `golangci-lint` compatible con Go 1.26.5, probado con v2.12.2 — versiones viejas compiladas con Go <1.22 no pueden ni tipar el módulo) y `go test ./... -count=1` localmente; CI ejecuta además `go test ./... -race -count=1`, `go build ./...`, construye una imagen Docker etiquetada, verifica `Config.User=65532:65532` y ejecuta `version`.
 - No ejecutes `go build` ni `docker build` localmente después de cambios; esos builds pertenecen a CI.
 - `docker compose up -d --wait db` inicia el único servicio `db`, que publica PostgreSQL solo en `127.0.0.1:5432` y conserva datos en `garfex_pgdata`.
 - `docker compose down -v` destruye `garfex_pgdata`; no lo ejecutes sin un reset explícito.
