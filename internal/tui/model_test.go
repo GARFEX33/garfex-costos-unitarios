@@ -981,6 +981,134 @@ func TestSelectionResizeAndPagingPreserveHighlightState(t *testing.T) {
 	}
 }
 
+func searchableModel(agent InteractionAgent) Model {
+	m := NewWithAgent(Handlers{}, agent)
+	m.screen = screenWorkspace
+	m.pending = QuestionRequest{
+		Key:           "material",
+		Prompt:        "Choose a material",
+		SelectionMode: SelectionSearchable,
+		Options: []Option{
+			{Label: "THW 10 Negro", Value: "black-10"},
+			{Label: "THW 12 Blanco", Value: "white-12"},
+			{Label: "XHHW 10 Negro", Value: "xhhw-black-10"},
+		},
+	}
+	m.interactionMode = interactionModeSearchable
+	m.syncChoiceFields()
+	m.resizeViewport()
+	return m
+}
+
+func TestSearchableSelectFiltering(t *testing.T) {
+	options := []Option{{Label: "THW 10 Negro"}, {Label: "THW 12 Blanco"}, {Label: "XHHW 10 Negro"}}
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "empty query", want: []string{"THW 10 Negro", "THW 12 Blanco", "XHHW 10 Negro"}},
+		{name: "case insensitive", query: "ThW", want: []string{"THW 10 Negro", "THW 12 Blanco"}},
+		{name: "tokens are AND and order independent", query: "negro 10 thw", want: []string{"THW 10 Negro"}},
+		{name: "substring", query: "hhw", want: []string{"XHHW 10 Negro"}},
+		{name: "no matches", query: "copper", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterOptions(options, tt.query)
+			if len(got) != len(tt.want) {
+				t.Fatalf("matches = %#v, want %#v", got, tt.want)
+			}
+			for i, option := range got {
+				if option.Label != tt.want[i] {
+					t.Fatalf("match[%d] = %q, want %q", i, option.Label, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestSearchableSelectJKNavigateWithPrintableText(t *testing.T) {
+	tests := []struct {
+		name string
+		key  rune
+		from int
+		want int
+	}{
+		{name: "j moves down", key: 'j', from: 0, want: 1},
+		{name: "k moves up", key: 'k', from: 1, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := searchableModel(&recordingAgent{})
+			m.choiceIndex = tt.from
+			m, _ = update(t, m, key(tt.key))
+			if m.choiceIndex != tt.want || m.searchQuery != "" {
+				t.Fatalf("state after %q = index %d query %q, want index %d and empty query", tt.key, m.choiceIndex, m.searchQuery, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearchableSelectUpdatesLocallyAndClampsCursor(t *testing.T) {
+	m := searchableModel(&recordingAgent{})
+	m.choiceIndex = 2
+	m, _ = update(t, m, key('n'))
+	m, _ = update(t, m, key('e'))
+	m, _ = update(t, m, key('g'))
+	m, _ = update(t, m, key('r'))
+	m, _ = update(t, m, key('o'))
+	if m.searchQuery != "negro" || m.choiceIndex != 1 || len(m.pendingOptions()) != 2 {
+		t.Fatalf("filtered state = query %q index %d options %#v", m.searchQuery, m.choiceIndex, m.pendingOptions())
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	if m.searchQuery != "negr" {
+		t.Fatalf("backspace query = %q", m.searchQuery)
+	}
+}
+
+func TestSearchableSelectEnterSendsVisibleValueInOrder(t *testing.T) {
+	agent := &recordingAgent{}
+	m := searchableModel(agent)
+	for _, char := range []rune("negro") {
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m, _ = update(t, m, enter())
+	if agent.last.Kind != InputSelection || agent.last.Key != "material" || agent.last.Value != "xhhw-black-10" || len(agent.last.Values) != 0 {
+		t.Fatalf("selection payload = %#v", agent.last)
+	}
+}
+
+func TestSearchableSelectDoesNotConfirmNoMatchAndCancels(t *testing.T) {
+	agent := &recordingAgent{}
+	m := searchableModel(agent)
+	for _, char := range []rune("copper") {
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, enter())
+	if agent.calls != 0 || m.pending == nil {
+		t.Fatalf("no-match enter changed state: calls=%d pending=%T", agent.calls, m.pending)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if agent.last.Kind != InputCancel || m.pending != nil || m.interactionMode != interactionModeChat || m.searchQuery != "" {
+		t.Fatalf("cancel state = input %#v pending %T mode %v query %q", agent.last, m.pending, m.interactionMode, m.searchQuery)
+	}
+}
+
+func TestSearchableSelectRendersPromptQueryCountAndFocus(t *testing.T) {
+	m := searchableModel(&recordingAgent{})
+	for _, char := range []rune("10") {
+		m, _ = update(t, m, key(char))
+	}
+	plain := ansi.Strip(m.viewport.GetContent())
+	for _, want := range []string{"Choose a material", "Buscar: 10", "Coincidencias: 2", "❯ THW 10 Negro", "XHHW 10 Negro"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("rendered searchable select missing %q: %q", want, plain)
+		}
+	}
+}
+
 func TestQuestionSelectionDoesNotUsePromptHistory(t *testing.T) {
 	m := workspaceChat(t)
 	m.promptHistory = []string{"previous prompt"}

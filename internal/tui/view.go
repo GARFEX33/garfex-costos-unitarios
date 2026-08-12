@@ -172,6 +172,9 @@ func (m Model) renderInteractionDock(width int) string {
 		}
 		return lipgloss.NewStyle().Foreground(secondaryText).Render("❯ ¿Qué necesitas?")
 	}
+	if m.interactionMode == interactionModeSearchable {
+		return lipgloss.NewStyle().Foreground(secondaryText).Render("↑↓/j/k seleccionar · Enter confirmar · Esc cancelar")
+	}
 	return lipgloss.NewStyle().Foreground(secondaryText).Render("↑↓ seleccionar · Enter confirmar · Esc cancelar")
 }
 
@@ -220,7 +223,9 @@ func (m Model) renderFooter(width int) string {
 	if m.screen == screenHome {
 		parts = []string{hint("flechas", "navegar"), hint("enter", "elegir"), hint("ctrl+c", "salir")}
 	} else if m.screen == screenWorkspace {
-		if m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
+		if m.interactionMode == interactionModeSearchable {
+			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
+		} else if m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
 			parts = []string{hint("↑↓", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
 		} else if m.inputFocused {
 			parts = []string{hint("enter", "enviar"), hint("esc", "cancelar"), hint("ctrl+c", "salir")}
@@ -236,4 +241,17 @@ func (m Model) renderFooter(width int) string {
 	}
 	return lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
 		Render(strings.Join(parts, "  "))
+}
+
+func renderActiveSearchable(message InteractionMessage, query string, selected int) string {
+	options := filterOptions(pendingOptionsFor(message), query)
+	lines := []string{renderInteractionMessage(message), "Buscar: " + query, fmt.Sprintf("Coincidencias: %d", len(options))}
+	for i, option := range options {
+		label := "  " + option.Label
+		if i == selected {
+			label = "❯ " + option.Label
+		}
+		lines = append(lines, interactionOptionStyle(i == selected).Render(label))
+	}
+	return strings.Join(lines, "\n")
 }

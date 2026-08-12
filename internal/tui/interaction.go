@@ -49,9 +49,10 @@ type QuestionRequest struct {
 type SelectionMode string
 
 const (
-	SelectionSingle   SelectionMode = "single"
-	SelectionMultiple SelectionMode = "multiple"
-	SelectionFreeText SelectionMode = "free-text"
+	SelectionSingle     SelectionMode = "single"
+	SelectionMultiple   SelectionMode = "multiple"
+	SelectionFreeText   SelectionMode = "free-text"
+	SelectionSearchable SelectionMode = "searchable"
 )
 
 type ConfirmationRequest struct {

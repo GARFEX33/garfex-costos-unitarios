@@ -65,6 +65,8 @@ func scenarioFor(value string) string {
 		return "ambiguity"
 	case strings.Contains(value, "crear material"):
 		return "create"
+	case strings.Contains(value, "quiero buscar una opción") || strings.Contains(value, "buscar una opción"):
+		return "searchable-select"
 	case strings.Contains(value, "tuber") || strings.Contains(value, "tubo"):
 		return "pipe"
 	case strings.Contains(value, "cable") || strings.Contains(value, "conductor") || strings.Contains(value, "thw-ls") || strings.Contains(value, "xhhw-2"):
@@ -116,6 +118,12 @@ func (a *FakeAgent) decide() InteractionResponse {
 		}
 		a.fixture.pendingKey = "confirmation"
 		return confirmationResponse("¿Crear esta ficha de material?")
+	case "searchable-select":
+		if a.fixture.values["option"] == "" {
+			a.fixture.pendingKey = "option"
+			return questionResponse(QuestionRequest{ID: "option", Key: "option", Prompt: "Selecciona una opción", Question: "Selecciona una opción", SelectionMode: SelectionSearchable, Options: searchableSelectOptions(), Step: 1, TotalSteps: 1})
+		}
+		return resultResponseWithActions("OPCIÓN SELECCIONADA", "Resultado simulado de la selección.", []Field{{Label: "Value", Value: a.fixture.values["option"]}}, nil)
 	case "ambiguity":
 		if a.fixture.values["interpretation"] == "" {
 			return a.question("interpretation", "¿Cuál interpretación querés usar?", []Option{{Label: "THW-LS · 10 AWG · Negro", Value: "THW-LS · 10 AWG · Negro"}, {Label: "XHHW-2 · 10 AWG · Negro", Value: "XHHW-2 · 10 AWG · Negro"}}, 1, 1)
@@ -245,4 +253,13 @@ func resultResponse(title string, fields []Field, actions []Action) InteractionR
 }
 func colorOptions() []Option {
 	return []Option{{Label: "Negro", Value: "black"}, {Label: "Blanco", Value: "white"}, {Label: "Rojo", Value: "red"}, {Label: "Verde", Value: "green"}}
+}
+
+func searchableSelectOptions() []Option {
+	return []Option{
+		{Label: "THW 10 AWG NEGRO", Value: "catalog-thw-10-negro"},
+		{Label: "THW 12 AWG BLANCO", Value: "catalog-thw-12-blanco"},
+		{Label: "XHHW 10 AWG ROJO", Value: "catalog-xhhw-10-rojo"},
+		{Label: "PVC 1/2 PARED DELGADA", Value: "catalog-pvc-1-2-delgada"},
+	}
 }

@@ -91,6 +91,55 @@ func TestFakeAgentUsesKnownAttributesAndReturnsGenericAction(t *testing.T) {
 	}
 }
 
+func TestFakeAgentNaturalSearchableSelectFixture(t *testing.T) {
+	engine := NewInteractionEngine(NewFakeAgent())
+	response := engine.Text(context.Background(), "quiero buscar una opción")
+	request, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("pending = %T, want question", response.Pending)
+	}
+	if request.SelectionMode != SelectionSearchable || request.Prompt != "Selecciona una opción" {
+		t.Fatalf("request = %#v, want searchable prompt", request)
+	}
+	if len(request.Options) != 4 {
+		t.Fatalf("options = %d, want 4", len(request.Options))
+	}
+	for _, token := range []string{"THW", "10", "NEGRO"} {
+		if !containsOptionLabel(request.Options, token) {
+			t.Fatalf("options %#v do not contain token %q", request.Options, token)
+		}
+	}
+}
+
+func TestFakeAgentSearchableSelectReturnsSelectedValue(t *testing.T) {
+	engine := NewInteractionEngine(NewFakeAgent())
+	engine.Text(context.Background(), "buscar una opción")
+	response := engine.Select(context.Background(), "catalog-xhhw-10-rojo")
+	result, ok := firstStructured(response)
+	if !ok {
+		t.Fatalf("response = %#v, want structured result", response.Messages)
+	}
+	if result.Title != "OPCIÓN SELECCIONADA" || len(result.Fields) != 1 || result.Fields[0].Label != "Value" || result.Fields[0].Value != "catalog-xhhw-10-rojo" {
+		t.Fatalf("result = %#v, want selected value", result)
+	}
+}
+
+func TestFakeAgentTechnicalSearchableTermDoesNotTriggerFixture(t *testing.T) {
+	response := NewInteractionEngine(NewFakeAgent()).Text(context.Background(), "searchable")
+	if _, ok := response.Pending.(QuestionRequest); ok {
+		t.Fatal("technical term unexpectedly triggered fixture")
+	}
+}
+
+func containsOptionLabel(options []Option, token string) bool {
+	for _, option := range options {
+		if strings.Contains(option.Label, token) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestInteractionEngineClearsPendingWhenResponseIsNotPending(t *testing.T) {
 	engine := NewInteractionEngine(NewFakeAgent())
 	first := engine.Text(context.Background(), "cable")

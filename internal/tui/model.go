@@ -72,6 +72,7 @@ type interactionMode uint8
 const (
 	interactionModeChat interactionMode = iota
 	interactionModeChoice
+	interactionModeSearchable
 	interactionModeConfirmation
 	interactionModeAction
 )
@@ -94,6 +95,7 @@ type Model struct {
 	choiceIndex            int
 	choicePrompt           string
 	choiceOptions          []string
+	searchQuery            string
 	workspacePending       bool
 }
 
@@ -151,7 +153,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.scrollHistory(msg) {
 					return m, nil
 				}
-				m.handlePendingKey(key)
+				m.handlePendingKey(msg)
 				return m, nil
 			}
 			if m.scrollChatHistory(msg) {
@@ -278,6 +280,7 @@ func (m *Model) resetPending() {
 	m.workspacePending = false
 	m.interactionMode = interactionModeChat
 	m.choiceIndex = 0
+	m.searchQuery = ""
 	m.syncChoiceFields()
 	m.refreshViewport()
 }
@@ -302,8 +305,11 @@ func isActivePendingMessage(message, pending InteractionMessage) bool {
 }
 
 func modeFor(pending InteractionMessage) interactionMode {
-	switch pending.(type) {
+	switch request := pending.(type) {
 	case QuestionRequest:
+		if request.SelectionMode == SelectionSearchable {
+			return interactionModeSearchable
+		}
 		return interactionModeChoice
 	case ConfirmationRequest:
 		return interactionModeConfirmation
@@ -314,7 +320,12 @@ func modeFor(pending InteractionMessage) interactionMode {
 	}
 }
 
-func (m *Model) handlePendingKey(key string) {
+func (m *Model) handlePendingKey(msg tea.KeyPressMsg) {
+	if m.interactionMode == interactionModeSearchable {
+		m.handleSearchableKey(msg)
+		return
+	}
+	key := msg.String()
 	options := m.pendingOptions()
 	switch key {
 	case "up":
@@ -343,6 +354,52 @@ func (m *Model) handlePendingKey(key string) {
 	}
 }
 
+func (m *Model) handleSearchableKey(msg tea.KeyPressMsg) {
+	key := msg.String()
+	if key == "esc" {
+		m.searchQuery = ""
+		m.respond(InteractionInput{Kind: InputCancel})
+		return
+	}
+	if key == "up" || key == "k" {
+		if m.choiceIndex > 0 {
+			m.choiceIndex--
+			m.refreshViewport()
+		}
+		return
+	}
+	if key == "down" || key == "j" {
+		options := m.pendingOptions()
+		if m.choiceIndex < len(options)-1 {
+			m.choiceIndex++
+			m.refreshViewport()
+		}
+		return
+	}
+	if key == "enter" {
+		options := m.pendingOptions()
+		if len(options) == 0 {
+			return
+		}
+		selected := options[m.choiceIndex]
+		m.appendResolvedInteraction(pendingQuestion(m.pending), selected.Label)
+		m.searchQuery = ""
+		m.respond(InteractionInput{Kind: InputSelection, Key: pendingKey(m.pending), Value: selected.Value})
+		return
+	}
+	if key == "backspace" {
+		m.searchQuery = trimLastRune(m.searchQuery)
+		m.syncChoiceFields()
+		m.refreshViewport()
+		return
+	}
+	if msg.Text != "" && !strings.ContainsAny(msg.Text, "\x00\x1b") {
+		m.searchQuery += msg.Text
+		m.syncChoiceFields()
+		m.refreshViewport()
+	}
+}
+
 func (m *Model) handleLocalAction(input InteractionInput) {
 	switch input.ActionID {
 	case "new_search":
@@ -363,7 +420,32 @@ func inputKindFor(pending InteractionMessage) InputKind {
 }
 
 func (m Model) pendingOptions() []Option {
+	if m.interactionMode == interactionModeSearchable {
+		return filterOptions(pendingOptionsFor(m.pending), m.searchQuery)
+	}
 	return pendingOptionsFor(m.pending)
+}
+
+func filterOptions(options []Option, query string) []Option {
+	tokens := strings.Fields(strings.ToLower(query))
+	if len(tokens) == 0 {
+		return append([]Option(nil), options...)
+	}
+	filtered := make([]Option, 0, len(options))
+	for _, option := range options {
+		label := strings.ToLower(option.Label)
+		matches := true
+		for _, token := range tokens {
+			if !strings.Contains(label, token) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			filtered = append(filtered, option)
+		}
+	}
+	return filtered
 }
 
 func pendingOptionsFor(message InteractionMessage) []Option {
@@ -414,6 +496,11 @@ func (m *Model) appendResolvedInteraction(prompt, selection string) {
 func (m *Model) syncChoiceFields() {
 	m.choicePrompt = pendingQuestion(m.pending)
 	options := m.pendingOptions()
+	if len(options) == 0 {
+		m.choiceIndex = 0
+	} else if m.choiceIndex >= len(options) {
+		m.choiceIndex = len(options) - 1
+	}
 	m.choiceOptions = make([]string, len(options))
 	for i, option := range options {
 		m.choiceOptions[i] = option.Label
@@ -427,6 +514,7 @@ func (m *Model) setPendingQuestion(prompt string, options []string) {
 	}
 	m.pending = request
 	m.interactionMode = interactionModeChoice
+	m.searchQuery = ""
 	m.choiceIndex = 0
 	m.syncChoiceFields()
 	m.resizeViewport()
@@ -479,7 +567,11 @@ func (m *Model) refreshViewport() {
 		lines = append(lines, renderInteractionMessage(message.message), "")
 	}
 	if m.pending != nil {
-		lines = append(lines, renderActiveInteraction(m.pending, m.choiceIndex), "")
+		if m.interactionMode == interactionModeSearchable {
+			lines = append(lines, renderActiveSearchable(m.pending, m.searchQuery, m.choiceIndex), "")
+		} else {
+			lines = append(lines, renderActiveInteraction(m.pending, m.choiceIndex), "")
+		}
 	}
 	if len(lines) == 0 {
 		lines = append(lines, "Todavía no hay mensajes. Iniciá una búsqueda para comenzar.")
