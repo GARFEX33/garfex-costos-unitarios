@@ -47,6 +47,7 @@ var (
 	secondaryText = lipgloss.Color(secondaryTextHex)
 	brandRed      = lipgloss.Color(brandRedHex)
 	accent        = lipgloss.Color(accentHex)
+	successColor  = lipgloss.Color(successHex)
 )
 
 func (m Model) render() string {
@@ -125,9 +126,12 @@ func menuItemStyle(active bool) lipgloss.Style {
 	return style
 }
 
-func interactionOptionStyle(selected bool) lipgloss.Style {
-	if selected {
+func interactionOptionStyle(focused, selected bool) lipgloss.Style {
+	if focused {
 		return lipgloss.NewStyle().Foreground(accent).Background(surface).Bold(true).Padding(0, 1)
+	}
+	if selected {
+		return lipgloss.NewStyle().Foreground(successColor).Bold(true).Padding(0, 1)
 	}
 	return lipgloss.NewStyle().Foreground(secondaryText).Padding(0, 1)
 }
@@ -175,7 +179,11 @@ func (m Model) renderInteractionDock(width int) string {
 	if m.interactionMode == interactionModeSearchable {
 		return lipgloss.NewStyle().Foreground(secondaryText).Render("↑↓/j/k seleccionar · Enter confirmar · Esc cancelar")
 	}
-	return lipgloss.NewStyle().Foreground(secondaryText).Render("↑↓ seleccionar · Enter confirmar · Esc cancelar")
+	hint := "↑↓ seleccionar · Enter confirmar · Esc cancelar"
+	if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
+		hint += " · Espacio alternar"
+	}
+	return lipgloss.NewStyle().Foreground(secondaryText).Render(hint)
 }
 
 func (m Model) renderState(width int) string {
@@ -227,6 +235,9 @@ func (m Model) renderFooter(width int) string {
 			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
 		} else if m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
 			parts = []string{hint("↑↓", "seleccionar"), hint("enter", "confirmar"), hint("esc", "cancelar")}
+			if request, ok := m.pending.(QuestionRequest); ok && request.SelectionMode == SelectionMultiple {
+				parts = append(parts, hint("espacio", "alternar"))
+			}
 		} else if m.inputFocused {
 			parts = []string{hint("enter", "enviar"), hint("esc", "cancelar"), hint("ctrl+c", "salir")}
 		} else {
@@ -251,7 +262,7 @@ func renderActiveSearchable(message InteractionMessage, query string, selected i
 		if i == selected {
 			label = "❯ " + option.Label
 		}
-		lines = append(lines, interactionOptionStyle(i == selected).Render(label))
+		lines = append(lines, interactionOptionStyle(i == selected, false).Render(label))
 	}
 	return strings.Join(lines, "\n")
 }
