@@ -140,9 +140,9 @@ func TestModelMissingContracts(t *testing.T) {
 	}{
 		{"home", screenHome, []string{"HOME · ÁREAS DE GARFEX", "› 01  Materiales Maestros", "05  Salir", "flechas", "enter elegir", "ctrl+c salir"}},
 		{"workspace", screenWorkspace, []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "esc volver", "ctrl+c salir"}},
-		{"loading", screenLoading, []string{"PROCESANDO", "Buscando...", "Espere un momento", "esc cancelar"}},
-		{"success", screenResult, []string{"OPERACIÓN COMPLETADA", "ok", "enter reintentar", "esc volver"}},
-		{"error", screenError, []string{"ERROR DE OPERACIÓN", "bad", "enter reintentar", "esc volver"}},
+		{"loading", screenLoading, []string{"Trabajando", "Buscando material...", "Esperá un momento", "esc cancelar"}},
+		{"success", screenResult, []string{"Resultado", "ok", "enter reintentar", "esc volver"}},
+		{"error", screenError, []string{"No se pudo completar la consulta", "bad", "enter reintentar", "esc volver"}},
 		{"minimum", screenMinSize, []string{"La terminal debe tener al menos 40x10."}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -314,20 +314,20 @@ func TestWorkspaceInputAndHistory(t *testing.T) {
 	}
 	message := m.input
 	m, cmd := update(t, m, enter())
-	if m.screen != screenLoading || m.inputFocused || m.input != "" || len(m.history) != 1 || m.history[0] != message || cmd == nil {
+	if m.screen != screenWorkspace || m.inputFocused || m.input != "" || len(m.history) != 1 || m.history[0].text != message || m.interactionMode != interactionModeChoice || cmd != nil {
 		t.Fatalf("submit = screen %v, focused %v, input %q, history %#v", m.screen, m.inputFocused, m.input, m.history)
 	}
-	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, message) || !strings.Contains(plain, "Buscando...") {
-		t.Fatalf("processing view = %q", plain)
+	if m.history[0].text != message || m.choicePrompt != "¿Qué aislamiento necesitas?" {
+		t.Fatalf("choice history = %#v", m.history)
 	}
-	m, _ = update(t, m, cmd())
-	if m.screen != screenResult || !strings.Contains(m.result, message) {
-		t.Fatalf("result = (%v, %q)", m.screen, m.result)
+	for _, forbidden := range []string{"PROCESSING", "RESULT", "VOS:", "Historial:", "HISTORIAL ·"} {
+		if strings.Contains(ansi.Strip(m.View().Content), forbidden) {
+			t.Fatalf("workspace leaked internal label %q: %q", forbidden, ansi.Strip(m.View().Content))
+		}
 	}
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	m, _ = update(t, m, enter())
-	m, _ = update(t, m, enter())
-	if !m.inputFocused || m.input != "" || strings.Count(ansi.Strip(m.View().Content), message) != 1 {
+	if !m.inputFocused || m.input != "" || len(m.history) != 2 || m.history[len(m.history)-1].text != "Está bien, volvemos a la conversación." {
 		t.Fatalf("history refocus = input %q, focused %v, view %q", m.input, m.inputFocused, ansi.Strip(m.View().Content))
 	}
 }
@@ -364,11 +364,648 @@ func TestEmptyInputDoesNotAddHistory(t *testing.T) {
 	m, _ = update(t, m, enter())
 	m, _ = update(t, m, enter())
 	m, cmd := update(t, m, enter())
-	if len(m.history) != 0 || m.input != "" || m.screen != screenLoading || cmd == nil {
+	if len(m.history) != 0 || m.input != "" || !m.inputFocused || m.screen != screenWorkspace || m.workspaceState != screenHome || cmd != nil {
 		t.Fatalf("empty submit = screen %v, input %q, history %#v, cmd=%v", m.screen, m.input, m.history, cmd)
 	}
-	m, _ = update(t, m, cmd())
-	if !strings.Contains(m.result, "Escribí un material") || len(m.history) != 0 {
-		t.Fatalf("empty validation = result %q, history %#v", m.result, m.history)
+	for _, char := range []rune("cable 10 negro") {
+		m, _ = update(t, m, key(char))
 	}
+	m, cmd = update(t, m, enter())
+	if cmd != nil || m.screen != screenWorkspace || m.inputFocused || m.input != "" || len(m.history) != 1 || m.interactionMode != interactionModeChoice {
+		t.Fatalf("new instruction = screen %v, state %v, focused %v, input %q, history %#v, cmd=%v", m.screen, m.workspaceState, m.inputFocused, m.input, m.history, cmd)
+	}
+}
+
+func TestPromptHistoryNavigationIsSeparateFromConversationHistory(t *testing.T) {
+	m := workspaceChat(t)
+	m = submitText(t, m, "primera consulta")
+	m, _ = update(t, m, enter())
+	m = submitText(t, m, "segunda consulta")
+	if len(m.promptHistory) != 2 || len(m.history) != 4 {
+		t.Fatalf("prompt history=%#v conversation history=%d", m.promptHistory, len(m.history))
+	}
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if m.input != "segunda consulta" {
+		t.Fatalf("up input=%q", m.input)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if m.input != "primera consulta" {
+		t.Fatalf("second up input=%q", m.input)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.input != "segunda consulta" {
+		t.Fatalf("down input=%q", m.input)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.input != "" || m.promptHistoryCursor != -1 {
+		t.Fatalf("final down input=%q cursor=%d", m.input, m.promptHistoryCursor)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	if m.input != "" {
+		t.Fatalf("page up changed draft=%q", m.input)
+	}
+}
+
+func TestSelectorKeysDoNotNavigatePromptHistoryOrViewport(t *testing.T) {
+	m := workspaceChat(t)
+	m.promptHistory = []string{"previous"}
+	m.promptHistoryCursor = -1
+	m.input = "draft"
+	m.setPendingQuestion("¿Qué opción?", []string{"Uno", "Dos"})
+	position := m.viewport.YOffset()
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.choiceIndex != 1 || m.promptHistoryCursor != -1 || m.input != "draft" || m.viewport.YOffset() != position {
+		t.Fatalf("selector down changed unrelated state: index=%d cursor=%d input=%q offset=%d", m.choiceIndex, m.promptHistoryCursor, m.input, m.viewport.YOffset())
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	if m.choiceIndex != 1 || m.promptHistoryCursor != -1 {
+		t.Fatalf("page up changed selection: index=%d cursor=%d", m.choiceIndex, m.promptHistoryCursor)
+	}
+}
+
+func TestWorkspaceShortcutsUseLocalIDs(t *testing.T) {
+	agent := &recordingAgent{}
+	m := NewWithAgent(Handlers{}, agent)
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, enter())
+	if !m.inputFocused {
+		t.Fatal("search shortcut did not focus chat")
+	}
+	if agent.calls != 0 {
+		t.Fatalf("shortcut called agent %d times", agent.calls)
+	}
+}
+
+func TestWorkspaceConversationScrollAndDraftAreIndependent(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	m.screen = screenWorkspace
+	m.inputFocused = true
+	for i := 0; i < 12; i++ {
+		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "turno largo con suficiente contenido para envolver líneas"})
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("new messages must initially stay at the bottom")
+	}
+	m.input = "draft independiente"
+	for range 4 {
+		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	}
+	if m.viewport.AtBottom() {
+		t.Fatal("up must scroll the history")
+	}
+	if m.input != "draft independiente" {
+		t.Fatalf("scroll changed draft: %q", m.input)
+	}
+	position := m.viewport.YOffset()
+	m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "mensaje nuevo mientras se lee arriba"})
+	if m.viewport.YOffset() != position {
+		t.Fatal("new message forced a jump while reading history")
+	}
+	for range 30 {
+		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("down must stop at the bottom")
+	}
+	m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "mensaje que sigue al retorno"})
+	if !m.viewport.AtBottom() {
+		t.Fatal("messages must auto-scroll after returning to the bottom")
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	if m.viewport.AtBottom() {
+		t.Fatal("page up must leave the bottom")
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	if !m.viewport.AtBottom() {
+		t.Fatal("page down must reach the bottom")
+	}
+	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "draft independiente") {
+		t.Fatalf("workspace view lost fixed input: %q", plain)
+	}
+}
+
+func TestWorkspaceConversationScrollsWhenChatIsNotFocused(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	m.screen = screenWorkspace
+	for i := 0; i < 12; i++ {
+		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "turno largo para desplazar la conversación"})
+	}
+	if m.inputFocused {
+		t.Fatal("test setup unexpectedly focused chat input")
+	}
+	m.workspaceItem = 1
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	if m.viewport.AtBottom() || m.workspaceItem != 1 {
+		t.Fatalf("page up changed wrong state: offset=%d workspace item=%d", m.viewport.YOffset(), m.workspaceItem)
+	}
+	position := m.viewport.YOffset()
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if m.workspaceItem != 0 || m.viewport.YOffset() != position {
+		t.Fatalf("up did not navigate workspace: item=%d offset=%d", m.workspaceItem, m.viewport.YOffset())
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.workspaceItem != 1 || m.viewport.YOffset() != position {
+		t.Fatalf("down did not navigate workspace: item=%d offset=%d", m.workspaceItem, m.viewport.YOffset())
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	if !m.viewport.AtBottom() || m.workspaceItem != 1 {
+		t.Fatalf("page down changed wrong state: offset=%d workspace item=%d", m.viewport.YOffset(), m.workspaceItem)
+	}
+}
+
+func TestWorkspaceConversationHomeEndWhenChatIsNotFocused(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	m.screen = screenWorkspace
+	for i := 0; i < 12; i++ {
+		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "turno largo para desplazar la conversación"})
+	}
+	if m.inputFocused {
+		t.Fatal("test setup unexpectedly focused chat input")
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("new messages must initially stay at the bottom")
+	}
+
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyHome}))
+	if !m.viewport.AtTop() {
+		t.Fatalf("home did not move conversation to the top: offset=%d", m.viewport.YOffset())
+	}
+
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnd}))
+	if !m.viewport.AtBottom() {
+		t.Fatalf("end did not move conversation to the bottom: offset=%d", m.viewport.YOffset())
+	}
+	m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "mensaje que sigue al retorno"})
+	if !m.viewport.AtBottom() {
+		t.Fatal("messages must auto-scroll after returning to the bottom")
+	}
+}
+
+func TestWorkspaceResizeAndOperationMessages(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 70, Height: 24})
+	m.screen = screenWorkspace
+	m.appendMessage(conversationMessage{role: roleUser, kind: kindText, text: "consulta"})
+	m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindProgress, text: "Procesando"})
+	if m.workspaceState != screenHome {
+		t.Fatal("idle conversation should not report a terminal state")
+	}
+	m.workspaceState = screenLoading
+	m.workspacePending = true
+	m, _ = update(t, m, resultMsg{text: "resultado simulado"})
+	if m.workspaceState != screenResult || m.history[len(m.history)-1].kind != kindResult {
+		t.Fatalf("result state = %v, history = %#v", m.workspaceState, m.history)
+	}
+	m.workspaceState = screenLoading
+	m.workspacePending = true
+	m, _ = update(t, m, resultMsg{err: errors.New("falló la simulación")})
+	if m.workspaceState != screenError || m.history[len(m.history)-1].kind != kindError {
+		t.Fatalf("error state = %v, history = %#v", m.workspaceState, m.history)
+	}
+	if len(m.history) != 4 {
+		t.Fatalf("turn count = %d, want 4 typed messages", len(m.history))
+	}
+	oldHistory := m.viewport.GetContent()
+	oldDraft := m.input
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 55, Height: 18})
+	if m.viewport.Width() != 51 || m.viewport.Height() != workspaceViewportHeight(18, interactionModeChat) || m.viewport.GetContent() != oldHistory || m.input != oldDraft {
+		t.Fatalf("resize lost state: viewport=%dx%d draft=%q", m.viewport.Width(), m.viewport.Height(), m.input)
+	}
+}
+
+func TestWorkspaceChromeStaysVisibleWhenConversationScrolls(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	m.screen = screenWorkspace
+	m.inputFocused = true
+	m.input = "cable THW-LS 10 AWG"
+	for i := 0; i < 12; i++ {
+		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindResult, text: "La ficha técnica incluye unidad metro, color y atributos de aislación para comparar alternativas."})
+	}
+	for range 6 {
+		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	}
+
+	plain := ansi.Strip(m.View().Content)
+	for _, visible := range []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "Crear material", "Catálogo", "Historial", "cable THW-LS 10 AWG"} {
+		if !strings.Contains(plain, visible) {
+			t.Fatalf("fixed workspace chrome lost %q after scroll: %q", visible, plain)
+		}
+	}
+	for _, forbidden := range []string{"PROCESSING", "RESULT", "ERROR", "VOS:", "Historial:", "HISTORIAL ·"} {
+		if strings.Contains(plain, forbidden) {
+			t.Fatalf("workspace leaked internal label %q: %q", forbidden, plain)
+		}
+	}
+}
+
+func TestChoiceViewUsesSelectionControlsAndStableViewport(t *testing.T) {
+	m := submitText(t, workspaceChat(t), "cable 10")
+	plain := ansi.Strip(m.View().Content)
+	if m.inputFocused || strings.Contains(plain, "▌") || strings.Contains(plain, "❯ escribí una consulta") {
+		t.Fatalf("choice view rendered chat input: %q", plain)
+	}
+	for _, want := range []string{"¿Qué aislamiento necesitas?", "THW-LS", "↑↓ seleccionar · Enter confirmar · Esc cancelar", "GARFEX / MATERIALES MAESTROS", "Buscar material", "enter confirmar", "esc cancelar"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("choice view missing %q: %q", want, plain)
+		}
+	}
+	for _, size := range []tea.WindowSizeMsg{{Width: 40, Height: 10}, {Width: 60, Height: 20}, {Width: 100, Height: 30}} {
+		m, _ = update(t, m, size)
+		wantHeight := max(1, size.Height-fixedWorkspaceHeight-interactionDockHeight)
+		if m.viewport.Height() != wantHeight {
+			t.Fatalf("viewport height for %dx%d = %d, want %d", size.Width, size.Height, m.viewport.Height(), wantHeight)
+		}
+	}
+	for i := 0; i < 12; i++ {
+		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "mensaje largo para desplazar la conversación"})
+	}
+	for range 6 {
+		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	}
+	plain = ansi.Strip(m.View().Content)
+	for _, want := range []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "enter confirmar", "esc cancelar"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("fixed choice chrome missing after scroll %q: %q", want, plain)
+		}
+	}
+}
+
+func workspaceChat(t *testing.T) Model {
+	t.Helper()
+	m := New(Handlers{})
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, enter())
+	return m
+}
+
+func submitText(t *testing.T, m Model, text string) Model {
+	t.Helper()
+	for _, char := range []rune(text) {
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, enter())
+	return m
+}
+
+func TestGuidedMaterialFixtures(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantPrompt string
+		wantOption string
+	}{
+		{name: "cable asks insulation", input: "cable 10", wantPrompt: "¿Qué aislamiento necesitas?", wantOption: "THW-LS"},
+		{name: "cable with color asks insulation", input: "cable 10 negro", wantPrompt: "¿Qué aislamiento necesitas?", wantOption: "THW-LS"},
+		{name: "tube asks type", input: "tubería 1/2", wantPrompt: "¿Qué tipo de tubería necesitas?", wantOption: "PVC conduit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := submitText(t, workspaceChat(t), tt.input)
+			if m.interactionMode != interactionModeChoice || m.choicePrompt != tt.wantPrompt || !containsString(m.choiceOptions, tt.wantOption) {
+				t.Fatalf("choice = (%v, %q, %#v)", m.interactionMode, m.choicePrompt, m.choiceOptions)
+			}
+		})
+	}
+}
+
+func TestCableGuidedFlow(t *testing.T) {
+	m := submitText(t, workspaceChat(t), "cable 10")
+	m, _ = update(t, m, enter())
+	if m.choiceOptions[0] != "Negro" || m.choicePrompt != "¿Qué color necesitas?" {
+		t.Fatalf("after insulation = prompt %q options %#v", m.choicePrompt, m.choiceOptions)
+	}
+	m, _ = update(t, m, enter())
+	if m.choiceOptions[0] != "Buscar" || !historyContains(m.history, "Buscaré: THW-LS · 10 AWG · Negro") {
+		t.Fatalf("after color = %#v, history %#v", m.choiceOptions, m.history)
+	}
+	m, _ = update(t, m, enter())
+	plain := m.history[len(m.history)-1].text
+	for _, want := range []string{"MATERIAL ENCONTRADO", "THW-LS · 10 AWG · Negro", "Voltaje: 600 V", "Unidad: m", "Precio: simulado"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("result missing %q in %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "[") || strings.Contains(plain, "Ver precios") || strings.Contains(plain, "Proveedores") || strings.Contains(plain, "Usar en APU") {
+		t.Fatalf("result duplicated pending actions: %q", plain)
+	}
+	if got := strings.Count(ansi.Strip(m.View().Content), "Ver precios"); got != 1 {
+		t.Fatalf("dock action count = %d, want one", got)
+	}
+}
+
+func TestResolvedSelectionStaysInlineBeforeNextPending(t *testing.T) {
+	m := submitText(t, workspaceChat(t), "cable 10")
+	plain := ansi.Strip(m.View().Content)
+	for _, want := range []string{"¿Qué aislamiento necesitas?", "THW-LS", "XHHW-2", "DESNUDO"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("active question missing %q: %q", want, plain)
+		}
+	}
+	m, _ = update(t, m, enter())
+	plain = ansi.Strip(m.View().Content)
+	if !strings.Contains(ansi.Strip(m.viewport.GetContent()), "¿Qué aislamiento necesitas?\n✓ THW-LS") {
+		t.Fatalf("resolved interaction not compact: %q", m.viewport.GetContent())
+	}
+	if !strings.Contains(plain, "¿Qué color necesitas?") || strings.Count(plain, "THW-LS") != 1 {
+		t.Fatalf("next pending or resolved selection rendered incorrectly: %q", plain)
+	}
+	if strings.Contains(plain, "XHHW-2") || strings.Contains(plain, "DESNUDO") {
+		t.Fatalf("previous options remained active: %q", plain)
+	}
+}
+
+func TestPendingAutoScrollShowsCompleteInlineBlock(t *testing.T) {
+	m := submitText(t, workspaceChat(t), "cable 10")
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"¿Qué aislamiento necesitas?", "THW-LS", "XHHW-2", "DESNUDO"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("sticky bottom hid active interaction %q: %q", want, content)
+		}
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("pending response should remain sticky at the bottom")
+	}
+}
+
+func TestCableProvidedAttributesAreNotAskedAgain(t *testing.T) {
+	for _, input := range []string{"cable 10 negro", "THW-LS 10 negro"} {
+		t.Run(input, func(t *testing.T) {
+			m := submitText(t, workspaceChat(t), input)
+			if input == "cable 10 negro" {
+				if m.choicePrompt != "¿Qué aislamiento necesitas?" {
+					t.Fatalf("prompt = %q", m.choicePrompt)
+				}
+				m, _ = update(t, m, enter())
+				if m.choicePrompt == "¿Qué color necesitas?" {
+					t.Fatal("color was asked again")
+				}
+			} else if m.interactionMode != interactionModeAction || m.pending == nil || !strings.Contains(m.history[len(m.history)-1].text, "Buscaré:") {
+				t.Fatalf("direct action = mode %v, history %#v", m.interactionMode, m.history)
+			}
+		})
+	}
+}
+
+func TestTubeChoiceRendersResult(t *testing.T) {
+	m := submitText(t, workspaceChat(t), "tubo 1/2")
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m, _ = update(t, m, enter())
+	result := m.history[len(m.history)-1].text
+	for _, want := range []string{"MATERIAL ENCONTRADO", `1/2" · Conduit pared gruesa`, "Unidad: m", "Precio: simulado"} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("missing %q in %q", want, result)
+		}
+	}
+}
+
+func TestChoiceKeysDoNotScrollOrChangeDraft(t *testing.T) {
+	m := workspaceChat(t)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	for i := 0; i < 20; i++ {
+		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "mensaje largo para llenar la conversación"})
+	}
+	m.input = "draft independiente"
+	m.setPendingQuestion("¿Qué opción?", []string{"Uno", "Dos"})
+	position := m.viewport.YOffset()
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.choiceIndex != 1 || m.viewport.YOffset() != position || m.input != "draft independiente" {
+		t.Fatalf("down changed unrelated state")
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	if m.choiceIndex != 0 || m.viewport.YOffset() != position {
+		t.Fatalf("up changed scroll")
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.interactionMode != interactionModeChat || m.input != "draft independiente" {
+		t.Fatalf("esc changed draft or mode")
+	}
+}
+
+func TestPendingModesRenderSelectorControlsAndKeepViewportFixed(t *testing.T) {
+	tests := []struct {
+		name  string
+		model func(*testing.T) Model
+	}{
+		{name: "confirmation", model: func(t *testing.T) Model {
+			m := submitText(t, workspaceChat(t), "crear material")
+			m, _ = update(t, m, enter())
+			return m
+		}},
+		{name: "action", model: func(t *testing.T) Model {
+			m := submitText(t, workspaceChat(t), "cable 10")
+			m, _ = update(t, m, enter())
+			m, _ = update(t, m, enter())
+			m, _ = update(t, m, enter())
+			return m
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.model(t)
+			m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+			for i := 0; i < 20; i++ {
+				m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "mensaje largo para llenar la conversación"})
+			}
+			position := m.viewport.YOffset()
+			plain := ansi.Strip(m.View().Content)
+			for _, want := range []string{"↑↓ seleccionar", "enter confirmar", "esc cancelar"} {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("missing control %q: %q", want, plain)
+				}
+			}
+			for _, forbidden := range []string{"PROCESSING", "RESULT", "MessageType", "VOS", "▌", "❯ escribí una consulta"} {
+				if strings.Contains(plain, forbidden) {
+					t.Fatalf("pending view leaked %q: %q", forbidden, plain)
+				}
+			}
+			m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+			if m.choiceIndex != 1 || m.viewport.YOffset() != position {
+				t.Fatalf("down changed selector/viewport: index=%d offset=%d want=%d", m.choiceIndex, m.viewport.YOffset(), position)
+			}
+			m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+			if m.choiceIndex != 0 || m.viewport.YOffset() != position {
+				t.Fatalf("up changed selector/viewport: index=%d offset=%d want=%d", m.choiceIndex, m.viewport.YOffset(), position)
+			}
+			m, _ = update(t, m, enter())
+			if tt.name == "confirmation" && (m.interactionMode != interactionModeChat || m.pending != nil) {
+				t.Fatalf("enter did not confirm selector: mode=%v pending=%T", m.interactionMode, m.pending)
+			}
+			if tt.name == "action" && (m.interactionMode != interactionModeAction || m.pending == nil) {
+				t.Fatalf("action result lost its action request: mode=%v pending=%T", m.interactionMode, m.pending)
+			}
+
+			m = tt.model(t)
+			m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+			if m.interactionMode != interactionModeChat || m.pending != nil || m.inputFocused {
+				t.Fatalf("esc did not cancel selector: mode=%v pending=%T focused=%v", m.interactionMode, m.pending, m.inputFocused)
+			}
+		})
+	}
+}
+
+func TestRendererKeepsPendingGenericAndInline(t *testing.T) {
+	m := submitText(t, workspaceChat(t), "cable 10")
+	plain := ansi.Strip(m.View().Content)
+	for _, forbidden := range []string{"missing field", "question_request", "fixture", "confidence", "state", "Seleccioná una opción", "wizard"} {
+		if strings.Contains(strings.ToLower(plain), strings.ToLower(forbidden)) {
+			t.Fatalf("renderer leaked %q: %q", forbidden, plain)
+		}
+	}
+	if strings.Count(plain, "¿Qué aislamiento necesitas?") != 1 || strings.Count(plain, "THW-LS") != 1 {
+		t.Fatalf("pending was duplicated or omitted: %q", plain)
+	}
+}
+
+func TestQuestionViewportOwnsPendingAndHistoryScroll(t *testing.T) {
+	m := workspaceChat(t)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	for i := 0; i < 30; i++ {
+		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "historial suficientemente largo para desplazarse"})
+	}
+	m.input = "draft que debe sobrevivir"
+	m.setPendingQuestion("¿Qué opción?", []string{"Uno", "Dos", "Tres", "Cuatro"})
+	content := m.viewport.GetContent()
+	for _, visible := range []string{"¿Qué opción?", "Uno", "Dos", "Tres", "Cuatro"} {
+		if !strings.Contains(content, visible) {
+			t.Fatalf("pending missing from viewport content %q: %q", visible, content)
+		}
+	}
+	plain := ansi.Strip(m.View().Content)
+	for _, visible := range []string{"¿Qué opción?", "Uno", "Dos", "Tres", "Cuatro", "GARFEX / MATERIALES MAESTROS", "esc cancelar"} {
+		if !strings.Contains(plain, visible) {
+			t.Fatalf("dock or fixed chrome missing %q: %q", visible, plain)
+		}
+	}
+	selection, offset := m.choiceIndex, m.viewport.YOffset()
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	if m.choiceIndex != selection || m.viewport.YOffset() >= offset || m.pending == nil {
+		t.Fatalf("page up changed pending state: selection=%d offset=%d pending=%T", m.choiceIndex, m.viewport.YOffset(), m.pending)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.choiceIndex != selection+1 || m.input != "draft que debe sobrevivir" || m.viewport.YOffset() >= offset {
+		t.Fatalf("down changed history or draft: selection=%d offset=%d draft=%q", m.choiceIndex, m.viewport.YOffset(), m.input)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyHome}))
+	if !m.viewport.AtTop() || m.choiceIndex != selection+1 || m.pending == nil {
+		t.Fatal("home did not move only the viewport")
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnd}))
+	if !m.viewport.AtBottom() || m.choiceIndex != selection+1 || m.pending == nil {
+		t.Fatal("end did not return only the viewport to the bottom")
+	}
+}
+
+func TestQuestionResizeKeepsDockSelectionAndDraft(t *testing.T) {
+	m := workspaceChat(t)
+	m.input = "draft persistente"
+	m.setPendingQuestion("¿Qué opción?", []string{"Uno", "Dos", "Tres"})
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	selection := m.choiceIndex
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 40, Height: 10})
+	if m.choiceIndex != selection || m.input != "draft persistente" {
+		t.Fatalf("small resize lost selection or draft: selection=%d draft=%q", m.choiceIndex, m.input)
+	}
+	smallHeight := m.viewport.Height()
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	if m.viewport.Height() <= smallHeight || m.choiceIndex != selection || m.input != "draft persistente" {
+		t.Fatalf("large resize did not expand viewport or preserve state: height=%d selection=%d draft=%q", m.viewport.Height(), m.choiceIndex, m.input)
+	}
+}
+
+func TestActiveInteractionHighlightsSelectedOptionForEveryPendingType(t *testing.T) {
+	tests := []struct {
+		name    string
+		pending InteractionMessage
+		labels  []string
+	}{
+		{name: "question", pending: QuestionRequest{Question: "Pick", Options: []Option{{Label: "One"}, {Label: "Two"}}}, labels: []string{"One", "Two"}},
+		{name: "confirmation", pending: ConfirmationRequest{Question: "Continue?", ConfirmLabel: "Confirm", CancelLabel: "Cancel"}, labels: []string{"Confirm", "Cancel"}},
+		{name: "action", pending: ActionRequest{Question: "Choose", Actions: []Action{{Label: "Run"}, {Label: "Stop"}}}, labels: []string{"Run", "Stop"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := renderActiveInteraction(tt.pending, 0)
+			second := renderActiveInteraction(tt.pending, 1)
+			plain := ansi.Strip(first)
+			if !strings.Contains(plain, "❯ "+tt.labels[0]) || !strings.Contains(plain, "  "+tt.labels[1]) {
+				t.Fatalf("plain selection = %q", plain)
+			}
+			if strings.Contains(plain, "❯ "+tt.labels[1]) {
+				t.Fatalf("unselected option has active marker = %q", plain)
+			}
+			if first == ansi.Strip(first) || second == ansi.Strip(second) {
+				t.Fatalf("selection has no visual styling: first=%q second=%q", first, second)
+			}
+			if first == second {
+				t.Fatalf("changing selected index did not change rendered output")
+			}
+		})
+	}
+}
+
+func TestSelectionNavigationRebuildsVisibleHighlight(t *testing.T) {
+	m := workspaceChat(t)
+	m.setPendingQuestion("Pick", []string{"One", "Two", "Three"})
+	first := ansi.Strip(m.View().Content)
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	second := ansi.Strip(m.View().Content)
+	if m.choiceIndex != 1 || !strings.Contains(first, "❯ One") || !strings.Contains(second, "❯ Two") || strings.Contains(second, "❯ One") {
+		t.Fatalf("down highlight = index %d, view %q", m.choiceIndex, second)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	third := ansi.Strip(m.View().Content)
+	if m.choiceIndex != 0 || !strings.Contains(third, "❯ One") || strings.Contains(third, "❯ Two") {
+		t.Fatalf("up highlight = index %d, view %q", m.choiceIndex, third)
+	}
+}
+
+func TestSelectionResizeAndPagingPreserveHighlightState(t *testing.T) {
+	m := workspaceChat(t)
+	m.setPendingQuestion("Pick", []string{"One", "Two", "Three"})
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	selection := m.choiceIndex
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 40, Height: 10})
+	if m.choiceIndex != selection || !strings.Contains(ansi.Strip(m.viewport.GetContent()), "❯ Two") {
+		t.Fatalf("resize changed selection or highlight: index=%d", m.choiceIndex)
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	if m.choiceIndex != selection || !strings.Contains(ansi.Strip(m.viewport.GetContent()), "❯ Two") {
+		t.Fatalf("paging changed selection or highlight: index=%d", m.choiceIndex)
+	}
+}
+
+func TestQuestionSelectionDoesNotUsePromptHistory(t *testing.T) {
+	m := workspaceChat(t)
+	m.promptHistory = []string{"previous prompt"}
+	m.input = "draft"
+	m.setPendingQuestion("Pick", []string{"One", "Two"})
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.choiceIndex != 1 || m.promptHistoryCursor != -1 || m.input != "draft" {
+		t.Fatalf("question selection interfered with prompt history: index=%d cursor=%d input=%q", m.choiceIndex, m.promptHistoryCursor, m.input)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func historyContains(values []conversationMessage, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value.text, want) {
+			return true
+		}
+	}
+	return false
 }
