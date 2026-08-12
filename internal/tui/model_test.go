@@ -31,6 +31,7 @@ func TestModelMenuAndCommands(t *testing.T) {
 	called := false
 	handlers := Handlers{Version: func() tea.Cmd { called = true; return func() tea.Msg { return resultMsg{text: "ok"} } }, Config: Status(), Status: Status()}
 	m := New(handlers)
+	m.screen = screenHome
 	if got := ansi.Strip(m.View().Content); containsFullWordmark(got) || !strings.Contains(got, "GARFEX") || !strings.Contains(normalized(got), officialTagline) || !strings.Contains(got, "› 01  Materiales Maestros") || !strings.Contains(got, "02  Versión") || !strings.Contains(got, "03  Verificar configuración") || !strings.Contains(got, "04  Estado de GARFEX") || !strings.Contains(got, "05  Salir") || !strings.Contains(got, "flechas") || strings.Contains(got, "/\\/") || strings.Contains(got, "╭") {
 		t.Fatalf("menu = %q", got)
 	}
@@ -51,7 +52,9 @@ func TestModelMenuAndCommands(t *testing.T) {
 	if quit == nil || called {
 		t.Fatal("localized exit must quit without calling a handler")
 	}
-	m, _ = update(t, New(handlers), tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = New(handlers)
+	m.screen = screenHome
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m, cmd := update(t, m, enter())
 	if m.screen != screenLoading || !called || cmd == nil {
 		t.Fatalf("loading=%v called=%v cmd=%v", m.screen, called, cmd)
@@ -66,6 +69,7 @@ func TestModelMenuAndCommands(t *testing.T) {
 
 func TestModelResultsSizingAndView(t *testing.T) {
 	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+	m.screen = screenHome
 	m.cursor = 2
 	m, _ = update(t, m, resultMsg{text: "ok\x1b"})
 	if got := ansi.Strip(m.View().Content); m.screen != screenResult || strings.Contains(got, "\x1b") {
@@ -96,6 +100,7 @@ func TestModelResultsSizingAndView(t *testing.T) {
 
 func TestModelMissingContracts(t *testing.T) {
 	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+	m.screen = screenHome
 	if len(m.items) != 5 || m.items[0].Label != "Materiales Maestros" || m.items[1].Label != "Versión" || m.items[2].Label != "Verificar configuración" || m.items[3].Label != "Estado de GARFEX" || m.items[4].Label != "Salir" || !m.items[4].Quit {
 		t.Fatalf("items = %#v", m.items)
 	}
@@ -128,7 +133,9 @@ func TestModelMissingContracts(t *testing.T) {
 	if m, cmd = update(t, m, enter()); m.screen != screenLoading || cmd != nil {
 		t.Fatal("loading must ignore retry")
 	}
-	m, _ = update(t, New(Handlers{Version: Status(), Config: Status(), Status: Status()}), resultMsg{text: "ok"})
+	legacy := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+	legacy.screen = screenHome
+	m, _ = update(t, legacy, resultMsg{text: "ok"})
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	if m.screen != screenHome {
 		t.Fatal("esc must return to home")
@@ -139,7 +146,7 @@ func TestModelMissingContracts(t *testing.T) {
 		want []string
 	}{
 		{"home", screenHome, []string{"HOME · ÁREAS DE GARFEX", "› 01  Materiales Maestros", "05  Salir", "flechas", "enter elegir", "ctrl+c salir"}},
-		{"workspace", screenWorkspace, []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "esc volver", "ctrl+c salir"}},
+		{"workspace", screenWorkspace, []string{"GARFEX / ASSISTANT", "Pregúntame o escribe / para ver acciones...", "esc volver", "ctrl+c salir"}},
 		{"loading", screenLoading, []string{"Trabajando", "Buscando material...", "Esperá un momento", "esc cancelar"}},
 		{"success", screenResult, []string{"Resultado", "ok", "enter reintentar", "esc volver"}},
 		{"error", screenError, []string{"No se pudo completar la consulta", "bad", "enter reintentar", "esc volver"}},
@@ -148,6 +155,7 @@ func TestModelMissingContracts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m.width, m.height = 102, 24
 			m.screen, m.result = tt.s, "bad"
+			m.heroActive = tt.s != screenWorkspace
 			if tt.s == screenResult {
 				m.result = "ok"
 			}
@@ -180,6 +188,7 @@ func TestModelViewResponsiveShell(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+			m.screen = screenHome
 			m, _ = update(t, m, tea.WindowSizeMsg{Width: tt.width, Height: tt.height})
 			got := m.View().Content
 			wantHeight := tt.height
@@ -237,6 +246,7 @@ func TestFullWordmark(t *testing.T) {
 	}
 
 	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+	m.screen = screenHome
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 102, Height: 24})
 	one, two := m.View().Content, m.View().Content
 	if one != two {
@@ -304,11 +314,9 @@ func TestBrandPalette(t *testing.T) {
 
 func TestWorkspaceInputAndHistory(t *testing.T) {
 	m := New(Handlers{})
-	m, _ = update(t, m, enter())
-	if m.screen != screenWorkspace || m.inputFocused {
+	if m.screen != screenWorkspace || !m.inputFocused {
 		t.Fatalf("workspace entry = (%v, %v)", m.screen, m.inputFocused)
 	}
-	m, _ = update(t, m, enter())
 	for _, char := range []rune("búscame cable 10 negro") {
 		m, _ = update(t, m, key(char))
 	}
@@ -490,6 +498,7 @@ func TestWorkspaceConversationScrollsWhenChatIsNotFocused(t *testing.T) {
 	m := New(Handlers{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
 	m.screen = screenWorkspace
+	m.inputFocused = false
 	for i := 0; i < 12; i++ {
 		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "turno largo para desplazar la conversación"})
 	}
@@ -503,12 +512,12 @@ func TestWorkspaceConversationScrollsWhenChatIsNotFocused(t *testing.T) {
 	}
 	position := m.viewport.YOffset()
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
-	if m.workspaceItem != 0 || m.viewport.YOffset() != position {
-		t.Fatalf("up did not navigate workspace: item=%d offset=%d", m.workspaceItem, m.viewport.YOffset())
+	if m.workspaceItem != 1 || m.viewport.YOffset() != position {
+		t.Fatalf("up changed assistant state: item=%d offset=%d", m.workspaceItem, m.viewport.YOffset())
 	}
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	if m.workspaceItem != 1 || m.viewport.YOffset() != position {
-		t.Fatalf("down did not navigate workspace: item=%d offset=%d", m.workspaceItem, m.viewport.YOffset())
+		t.Fatalf("down changed assistant state: item=%d offset=%d", m.workspaceItem, m.viewport.YOffset())
 	}
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
 	if !m.viewport.AtBottom() || m.workspaceItem != 1 {
@@ -520,6 +529,7 @@ func TestWorkspaceConversationHomeEndWhenChatIsNotFocused(t *testing.T) {
 	m := New(Handlers{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
 	m.screen = screenWorkspace
+	m.inputFocused = false
 	for i := 0; i < 12; i++ {
 		m.appendMessage(conversationMessage{role: roleGARFEX, kind: kindText, text: "turno largo para desplazar la conversación"})
 	}
@@ -579,6 +589,7 @@ func TestWorkspaceResizeAndOperationMessages(t *testing.T) {
 
 func TestWorkspaceChromeStaysVisibleWhenConversationScrolls(t *testing.T) {
 	m := New(Handlers{})
+	m.heroActive = false
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
 	m.screen = screenWorkspace
 	m.inputFocused = true
@@ -591,7 +602,7 @@ func TestWorkspaceChromeStaysVisibleWhenConversationScrolls(t *testing.T) {
 	}
 
 	plain := ansi.Strip(m.View().Content)
-	for _, visible := range []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "Crear material", "Catálogo", "Historial", "cable THW-LS 10 AWG"} {
+	for _, visible := range []string{"GARFEX / ASSISTANT", "cable THW-LS 10 AWG"} {
 		if !strings.Contains(plain, visible) {
 			t.Fatalf("fixed workspace chrome lost %q after scroll: %q", visible, plain)
 		}
@@ -609,16 +620,16 @@ func TestChoiceViewUsesSelectionControlsAndStableViewport(t *testing.T) {
 	if m.inputFocused || strings.Contains(plain, "▌") || strings.Contains(plain, "❯ escribí una consulta") {
 		t.Fatalf("choice view rendered chat input: %q", plain)
 	}
-	for _, want := range []string{"¿Qué aislamiento necesitas?", "THW-LS", "↑↓ seleccionar · Enter confirmar · Esc cancelar", "GARFEX / MATERIALES MAESTROS", "Buscar material", "enter confirmar", "esc cancelar"} {
+	for _, want := range []string{"¿Qué aislamiento necesitas?", "THW-LS", "↑↓ seleccionar · Enter confirmar · Esc cancelar", "GARFEX / ASSISTANT", "enter confirmar", "esc cancelar"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("choice view missing %q: %q", want, plain)
 		}
 	}
 	for _, size := range []tea.WindowSizeMsg{{Width: 40, Height: 10}, {Width: 60, Height: 20}, {Width: 100, Height: 30}} {
 		m, _ = update(t, m, size)
-		wantHeight := max(1, size.Height-fixedWorkspaceHeight-interactionDockHeight)
-		if m.viewport.Height() != wantHeight {
-			t.Fatalf("viewport height for %dx%d = %d, want %d", size.Width, size.Height, m.viewport.Height(), wantHeight)
+		maxHeight := max(1, size.Height-fixedWorkspaceHeight-interactionDockHeight)
+		if m.viewport.Height() <= 0 || m.viewport.Height() > maxHeight {
+			t.Fatalf("viewport height for %dx%d = %d, want 1..%d", size.Width, size.Height, m.viewport.Height(), maxHeight)
 		}
 	}
 	for i := 0; i < 12; i++ {
@@ -628,7 +639,7 @@ func TestChoiceViewUsesSelectionControlsAndStableViewport(t *testing.T) {
 		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
 	}
 	plain = ansi.Strip(m.View().Content)
-	for _, want := range []string{"GARFEX / MATERIALES MAESTROS", "Buscar material", "enter confirmar", "esc cancelar"} {
+	for _, want := range []string{"GARFEX / ASSISTANT", "enter confirmar", "esc cancelar"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("fixed choice chrome missing after scroll %q: %q", want, plain)
 		}
@@ -638,6 +649,7 @@ func TestChoiceViewUsesSelectionControlsAndStableViewport(t *testing.T) {
 func workspaceChat(t *testing.T) Model {
 	t.Helper()
 	m := New(Handlers{})
+	m.heroActive = false
 	m, _ = update(t, m, enter())
 	m, _ = update(t, m, enter())
 	return m
@@ -877,7 +889,7 @@ func TestQuestionViewportOwnsPendingAndHistoryScroll(t *testing.T) {
 		}
 	}
 	plain := ansi.Strip(m.View().Content)
-	for _, visible := range []string{"¿Qué opción?", "Uno", "Dos", "Tres", "Cuatro", "GARFEX / MATERIALES MAESTROS", "esc cancelar"} {
+	for _, visible := range []string{"¿Qué opción?", "Uno", "Dos", "Tres", "Cuatro", "GARFEX / ASSISTANT", "esc cancelar"} {
 		if !strings.Contains(plain, visible) {
 			t.Fatalf("dock or fixed chrome missing %q: %q", visible, plain)
 		}
@@ -1120,6 +1132,137 @@ func TestQuestionSelectionDoesNotUsePromptHistory(t *testing.T) {
 	}
 }
 
+func TestAssistantShellFlow(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"order independent partial filter", "buscar material", "Buscar material"},
+		{"case insensitive filter", "APU", "APU"},
+		{"whitespace token AND", "material proveedores", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New(Handlers{})
+			if m.screen != screenWorkspace || !m.inputFocused || len(m.items) != 5 {
+				t.Fatalf("initial shell = screen %v focused %v items %d", m.screen, m.inputFocused, len(m.items))
+			}
+			m, _ = update(t, m, key('/'))
+			if m.interactionMode != interactionModePalette || m.engine.History() != nil {
+				t.Fatalf("palette open = mode %v engine history %#v", m.interactionMode, m.engine.History())
+			}
+			for _, char := range []rune(tt.query) {
+				m, _ = update(t, m, key(char))
+			}
+			options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+			if len(options) == 0 && tt.want != "" {
+				t.Fatalf("query %q has no matches", tt.query)
+			}
+			if tt.want != "" && options[0].Label != tt.want {
+				t.Fatalf("query %q first match %q, want %q", tt.query, options[0].Label, tt.want)
+			}
+		})
+	}
+}
+
+func TestAssistantStartupIsFocusedAndPaletteStaysInline(t *testing.T) {
+	m := New(Handlers{})
+	if !m.inputFocused || m.interactionMode != interactionModeChat {
+		t.Fatalf("startup focus = %v mode = %v", m.inputFocused, m.interactionMode)
+	}
+	m, _ = update(t, m, key('/'))
+	plain := ansi.Strip(m.View().Content)
+	lines := strings.Split(plain, "\n")
+	prompt, palette := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "❯ /▌") {
+			prompt = i
+		}
+		if strings.Contains(line, "❯ Materiales") {
+			palette = i
+		}
+	}
+	if m.input != "/" || m.interactionMode != interactionModePalette || prompt < 0 || palette != prompt+1 {
+		t.Fatalf("inline palette prompt=%d palette=%d input=%q mode=%v view=%q", prompt, palette, m.input, m.interactionMode, plain)
+	}
+	if m.viewport.Height() != 1 {
+		t.Fatalf("empty conversation height = %d, want 1", m.viewport.Height())
+	}
+}
+
+func TestAssistantTextUsesAgentAndPaletteEscDoesNot(t *testing.T) {
+	agent := &recordingAgent{}
+	m := NewWithAgent(Handlers{}, agent)
+	m, _ = update(t, m, enter())
+	for _, char := range []rune("hola") {
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, enter())
+	if agent.calls != 1 || agent.last.Kind != InputText || len(m.history) != 1 {
+		t.Fatalf("assistant text calls=%d input=%#v history=%d", agent.calls, agent.last, len(m.history))
+	}
+	m.resetPending()
+	m.inputFocused = true
+	m, _ = update(t, m, key('/'))
+	for _, char := range []rune("material") {
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if agent.calls != 1 || m.interactionMode != interactionModeChat || !m.inputFocused || m.input != "/material" || len(m.history) != 1 {
+		t.Fatalf("palette escape changed assistant state: calls=%d mode=%v focused=%v history=%d", agent.calls, m.interactionMode, m.inputFocused, len(m.history))
+	}
+}
+
+func TestWorkspaceConversationGrowsWithShortContent(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	if m.viewport.Height() != 1 {
+		t.Fatalf("empty conversation height = %d, want 1", m.viewport.Height())
+	}
+	m.appendUser(TextMessage{Text: "hola"})
+	m.appendGARFEX(TextMessage{Text: "respuesta breve"})
+	if m.viewport.Height() <= 1 || m.viewport.Height() >= 10 {
+		t.Fatalf("short conversation height = %d, want compact growth below available space", m.viewport.Height())
+	}
+}
+
+func TestManualMaterialSearchPreservesAssistantContext(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, enter())
+	for _, char := range []rune("hola") {
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, enter())
+	prior := len(m.history)
+	m, _ = update(t, m, enter())
+	for _, char := range []rune("/material buscar") {
+		if char == '/' {
+			m, _ = update(t, m, key(char))
+			continue
+		}
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, enter())
+	manualView := ansi.Strip(m.View().Content)
+	if m.screen != screenManual || m.pending == nil || !strings.Contains(manualView, "GARFEX › Materiales › Buscar") || !strings.Contains(manualView, "Buscar material") || strings.Contains(manualView, "hola") {
+		t.Fatalf("manual route = screen %v pending %T view %q", m.screen, m.pending, ansi.Strip(m.View().Content))
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.screen != screenWorkspace || m.pending != nil || m.interactionMode != interactionModeChat || !m.inputFocused || len(m.history) != prior || !strings.Contains(ansi.Strip(m.View().Content), "hola") {
+		t.Fatalf("manual cancel = screen %v pending %T mode %v focused %v history %d", m.screen, m.pending, m.interactionMode, m.inputFocused, len(m.history))
+	}
+	m.openManualSearch()
+	for _, char := range []rune("xhhw") {
+		m, _ = update(t, m, key(char))
+	}
+	m, _ = update(t, m, enter())
+	assistantView := ansi.Strip(m.View().Content)
+	if m.screen != screenWorkspace || m.pending != nil || m.interactionMode != interactionModeChat || len(m.history) <= prior || !historyContains(m.history, "XHHW-2 10 AWG Negro") || !strings.Contains(assistantView, "hola") {
+		t.Fatalf("manual completion = screen %v pending %T mode %v history %#v", m.screen, m.pending, m.interactionMode, m.history)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -1136,4 +1279,218 @@ func historyContains(values []conversationMessage, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestWelcomeModeShowsHeroBranding(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 102, Height: 24})
+	if !m.heroActive {
+		t.Fatal("startup must begin in welcome mode")
+	}
+	plain := ansi.Strip(m.View().Content)
+	if !containsFullWordmark(plain) {
+		t.Fatal("welcome mode must show the full wordmark")
+	}
+	if !strings.Contains(normalized(plain), officialTagline) {
+		t.Fatal("welcome mode must show the tagline")
+	}
+	if strings.Contains(plain, "GARFEX / ASSISTANT") {
+		t.Fatal("welcome mode must not show the compact workspace header")
+	}
+}
+
+func TestWorkspaceModeTransitionDeactivatesHero(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 102, Height: 24})
+	if !m.heroActive {
+		t.Fatal("startup must begin in welcome mode")
+	}
+	for _, char := range []rune("hola") {
+		m, _ = update(t, m, key(char))
+	}
+	if m.heroActive {
+		t.Fatal("typing must deactivate hero")
+	}
+	plain := ansi.Strip(m.View().Content)
+	if containsFullWordmark(plain) {
+		t.Fatal("workspace mode must not show the full wordmark")
+	}
+	if !strings.Contains(plain, "GARFEX / ASSISTANT") {
+		t.Fatal("workspace mode must show the compact header")
+	}
+}
+
+func TestPaletteOpeningDeactivatesHero(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, key('/'))
+	if m.heroActive {
+		t.Fatal("opening palette must deactivate hero")
+	}
+	plain := ansi.Strip(m.View().Content)
+	if !strings.Contains(plain, "GARFEX / ASSISTANT") {
+		t.Fatal("workspace mode after palette must show the compact header")
+	}
+}
+
+func TestCompactHeaderInWorkspaceMode(t *testing.T) {
+	m := New(Handlers{})
+	m.heroActive = false
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+	plain := ansi.Strip(m.View().Content)
+	if !strings.Contains(plain, "GARFEX / ASSISTANT") {
+		t.Fatalf("workspace mode missing compact header: %q", plain)
+	}
+	if containsFullWordmark(plain) {
+		t.Fatal("workspace mode must not render the full braille wordmark")
+	}
+}
+
+func TestPaletteShowsOnlyTopLevelModulesInitially(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, key('/'))
+	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+	for _, option := range options {
+		for _, forbidden := range []string{"Buscar material"} {
+			if option.Label == forbidden {
+				t.Fatalf("top-level palette must not show leaf actions like %q", forbidden)
+			}
+		}
+	}
+	topLabels := make([]string, len(options))
+	for i, o := range options {
+		topLabels[i] = o.Label
+	}
+	for _, want := range []string{"Materiales", "Conceptos", "APU", "Proveedores"} {
+		if !containsString(topLabels, want) {
+			t.Fatalf("top-level palette missing %q in %v", want, topLabels)
+		}
+	}
+}
+
+func TestPaletteDrillsIntoModuleActions(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, key('/'))
+	m, _ = update(t, m, enter())
+	if m.paletteTitle != "Materiales" {
+		t.Fatalf("after entering module, title = %q", m.paletteTitle)
+	}
+	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+	if len(options) != 1 || options[0].Label != "Buscar material" {
+		t.Fatalf("module children = %#v, want [Buscar material]", options)
+	}
+}
+
+func TestPaletteDirectFilteringToConcreteActions(t *testing.T) {
+	m := New(Handlers{})
+	for _, char := range []rune("/buscar") {
+		if char == '/' {
+			m, _ = update(t, m, key(char))
+			continue
+		}
+		m, _ = update(t, m, key(char))
+	}
+	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+	if len(options) != 1 || options[0].Label != "Buscar material" {
+		t.Fatalf("direct filtering = %#v, want [Buscar material]", options)
+	}
+}
+
+func TestPaletteDoesNotShowDuplicateEntries(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, key('/'))
+	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+	for _, option := range options {
+		if strings.Contains(option.Label, "Materiales / Buscar") {
+			t.Fatalf("palette still contains the duplicate flat entry: %q", option.Label)
+		}
+	}
+}
+
+func TestPaletteDoesNotRenderDescriptions(t *testing.T) {
+	m := New(Handlers{})
+	for _, char := range []rune("/mat") {
+		if char == '/' {
+			m, _ = update(t, m, key(char))
+			continue
+		}
+		m, _ = update(t, m, key(char))
+	}
+	plain := ansi.Strip(m.View().Content)
+	for _, forbidden := range []string{"Consultar y gestionar", "Buscar en el catálogo"} {
+		if strings.Contains(plain, forbidden) {
+			t.Fatalf("palette rendered a long description: %q", forbidden)
+		}
+	}
+}
+
+func TestPaletteDoesNotRenderHeaderOrCounter(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, key('/'))
+	plain := ansi.Strip(m.View().Content)
+	for _, forbidden := range []string{"/ Acciones", "coincidencias"} {
+		if strings.Contains(plain, forbidden) {
+			t.Fatalf("palette rendered chrome that should be removed: %q in %q", forbidden, plain)
+		}
+	}
+}
+
+func TestHelpLineIsNotDuplicated(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, key('/'))
+	plain := ansi.Strip(m.View().Content)
+	count := strings.Count(plain, "seleccionar")
+	if count > 1 {
+		t.Fatalf("help line duplicated %d times: %q", count, plain)
+	}
+}
+
+func TestManualScreenOpeningDeactivatesHero(t *testing.T) {
+	m := New(Handlers{})
+	m.openManualSearch()
+	if m.heroActive {
+		t.Fatal("opening manual screen must deactivate hero")
+	}
+	if m.screen != screenManual {
+		t.Fatalf("screen = %v, want manual", m.screen)
+	}
+}
+
+func TestPaletteBackspaceToEmptyRestoresTopLevel(t *testing.T) {
+	m := New(Handlers{})
+	for _, char := range []rune("/buscar") {
+		if char == '/' {
+			m, _ = update(t, m, key(char))
+			continue
+		}
+		m, _ = update(t, m, key(char))
+	}
+	if !m.paletteFlat {
+		t.Fatal("non-empty query must activate flat mode")
+	}
+	for range len("buscar") {
+		m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	}
+	if m.paletteFlat {
+		t.Fatal("empty query must deactivate flat mode")
+	}
+	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
+	topLabels := make([]string, len(options))
+	for i, o := range options {
+		topLabels[i] = o.Label
+	}
+	if !containsString(topLabels, "Materiales") {
+		t.Fatalf("top-level not restored after clearing query: %v", topLabels)
+	}
+}
+
+func TestPaletteModuleDrillDownResetsFlatMode(t *testing.T) {
+	m := New(Handlers{})
+	m, _ = update(t, m, key('/'))
+	m, _ = update(t, m, enter())
+	if m.paletteFlat {
+		t.Fatal("module drill-down must not be in flat mode")
+	}
+	if m.paletteTitle != "Materiales" {
+		t.Fatalf("title = %q, want Materiales", m.paletteTitle)
+	}
 }
