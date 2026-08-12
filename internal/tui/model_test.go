@@ -21,6 +21,14 @@ func containsFullWordmark(value string) bool {
 	}
 	return true
 }
+func containsCompactWordmark(value string) bool {
+	for _, line := range strings.Split(compactWordmark, "\n") {
+		if !strings.Contains(value, strings.TrimSpace(line)) {
+			return false
+		}
+	}
+	return true
+}
 func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
 	next, cmd := m.Update(msg)
@@ -177,14 +185,23 @@ func TestModelViewResponsiveShell(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
 		width, height int
-		full          bool
+		full, compact bool
 	}{
-		{"full", 120, 30, true},
-		{"exact banner width", 102, 24, true},
-		{"exact full height", 102, 21, false},
-		{"insufficient full height", 102, 20, false},
-		{"ordinary terminal", 80, 24, false},
-		{"minimum boundary", 40, 10, false},
+		{"full", 120, 30, true, false},
+		{"exact banner width", 102, 24, true, false},
+		// cardWidth is 100 here, wide enough for the full wordmark, but the
+		// full-tier card no longer fits the available height, so this now
+		// falls to the compact tier (cardWidth 100 >= compactWordmark's 35).
+		{"exact full height", 102, 21, false, true},
+		{"insufficient full height", 102, 20, false, true},
+		// cardWidth is 78 here: below fullWordmark's 100-column threshold but
+		// above compactWordmark's 35-column threshold, so the compact tier
+		// now renders instead of the old plain-text fallback.
+		{"ordinary terminal", 80, 24, false, true},
+		// cardWidth is 38 here: wide enough for compactWordmark's 35 columns,
+		// but the compact card's height does not fit the 8-row budget
+		// (height-2), so this remains the plain-text fallback.
+		{"minimum boundary", 40, 10, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
@@ -205,8 +222,11 @@ func TestModelViewResponsiveShell(t *testing.T) {
 			if tt.full != containsFullWordmark(plain) {
 				t.Fatalf("full wordmark presence = %v, want %v", containsFullWordmark(plain), tt.full)
 			}
-			if !tt.full && (!strings.Contains(plain, "GARFEX") || strings.Contains(plain, "G A R F E X") || strings.Contains(plain, "MENÚ PRINCIPAL")) {
-				t.Fatalf("compact shell fallback is invalid: %q", plain)
+			if tt.compact != containsCompactWordmark(plain) {
+				t.Fatalf("compact wordmark presence = %v, want %v", containsCompactWordmark(plain), tt.compact)
+			}
+			if !tt.full && !tt.compact && (!strings.Contains(plain, "GARFEX") || strings.Contains(plain, "G A R F E X") || strings.Contains(plain, "MENÚ PRINCIPAL")) {
+				t.Fatalf("plain-text shell fallback is invalid: %q", plain)
 			}
 		})
 	}
@@ -253,6 +273,9 @@ func TestFullWordmark(t *testing.T) {
 		t.Fatal("full wordmark render must be deterministic")
 	}
 	plain := ansi.Strip(one)
+	if containsCompactWordmark(plain) {
+		t.Fatal("full wordmark render must not also contain the compact wordmark")
+	}
 	lines := strings.Split(plain, "\n")
 	first := -1
 	for i, line := range lines {
@@ -291,6 +314,55 @@ func TestFullWordmark(t *testing.T) {
 		if left-right < -1 || left-right > 1 {
 			t.Fatalf("wordmark row %d is not centered: left=%d right=%d", row, left, right)
 		}
+	}
+}
+
+func TestCompactWordmark(t *testing.T) {
+	const (
+		wantRows    = 4
+		wantColumns = 35
+	)
+	wordmarkLines := strings.Split(compactWordmark, "\n")
+	if len(wordmarkLines) != wantRows {
+		t.Fatalf("compact wordmark lines = %d, want %d", len(wordmarkLines), wantRows)
+	}
+	for row, line := range wordmarkLines {
+		if got := lipgloss.Width(line); got != wantColumns {
+			t.Fatalf("compact wordmark row %d width = %d, want %d", row, got, wantColumns)
+		}
+		for column, glyph := range []rune(line) {
+			if glyph < '⠀' || glyph > '⣿' {
+				t.Fatalf("compact wordmark row %d column %d contains non-Braille glyph %q", row, column, glyph)
+			}
+			if got := lipgloss.Width(string(glyph)); got != 1 {
+				t.Fatalf("compact wordmark glyph %q width = %d, want 1", glyph, got)
+			}
+		}
+	}
+
+	styled := wordmarkStyle(lipgloss.Width(compactWordmark)).GetForeground()
+	wantR, wantG, wantB, wantA := brandRed.RGBA()
+	gotR, gotG, gotB, gotA := styled.RGBA()
+	if gotR != wantR || gotG != wantG || gotB != wantB || gotA != wantA {
+		t.Fatal("compact wordmark does not use GARFEX corporate red")
+	}
+
+	// cardWidth here is 78: below fullWordmark's 100-column threshold, but
+	// above compactWordmark's 35-column threshold, so the compact tier must
+	// render (not the full wordmark, not the plain-text fallback).
+	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
+	m.screen = screenHome
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	one, two := m.View().Content, m.View().Content
+	if one != two {
+		t.Fatal("compact wordmark render must be deterministic")
+	}
+	plain := ansi.Strip(one)
+	if containsFullWordmark(plain) {
+		t.Fatal("narrow width must not render the full wordmark")
+	}
+	if !containsCompactWordmark(plain) {
+		t.Fatal("narrow-but-not-tiny width must render the compact wordmark")
 	}
 }
 

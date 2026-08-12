@@ -32,6 +32,11 @@ const (
 ⠈⢿⠡⢌⢂⣿⣿⣷⣾⣾⣿⣿⣿⣿⡟⠀⢀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⢘⣿⣿⣿⣿⡇⠈⢿⣿⣿⣿⣿⣄⠀⠀⠀⠀⣽⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⢀⣾⣿⣿⣿⣿⠟⠘⢿⣿⣿⣿⣿⣆⠀⠀⠀⠀⠀
 ⠀⠀⡘⢠⣾⣿⣿⣿⣿⣿⣿⣿⡿⠋⠀⠀⣼⣿⣿⣿⣿⡏⠁⠉⠈⠁⠙⣿⣿⣿⣿⣷⡀⠀⢨⣿⣿⣿⣿⡇⠀⠈⢿⣿⣿⣿⣿⣆⠀⠀⠀⢾⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⣠⣿⣿⣿⣿⣿⠋⠀⠀⠈⢻⣿⣿⣿⣿⣧⡀⠀⠀⠀
 ⠀⠀⠀⠀⠈⠉⠛⠛⠛⠋⠉⠁⠀⠀⠀⠐⠉⠋⠙⠉⠙⠀⠀⠀⠀⠀⠀⠉⠋⠙⠉⠋⠁⠀⠀⠋⠙⠉⠋⠁⠀⠀⠈⠋⠙⠉⠋⠙⠀⠀⠀⠉⠋⠙⠉⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⠙⠉⠋⠙⠉⠋⠉⠉⠉⠙⠁⠀⠀⠋⠙⠉⠋⠙⠁⠀⠀⠀⠀⠀⠙⠉⠋⠙⠉⠃⠀⠀⠀`
+
+	compactWordmark = `⣤⠛⠛⠛⠀⠀⠀⣤⠛⣤⠀⠀⣿⠛⠛⠛⣤⠀⣿⠛⠛⠛⠛⠀⣿⠛⠛⠛⠛⠀⣿⠀⠀⠀⣿
+⣿⠀⣤⣤⣤⠀⣿⠀⠀⠀⣿⠀⣿⣤⣤⣤⠛⠀⣿⣤⣤⣤⠀⠀⣿⣤⣤⣤⠀⠀⠀⠛⣤⠛⠀
+⣿⠀⠀⠀⣿⠀⣿⠛⠛⠛⣿⠀⣿⠀⠛⣤⠀⠀⣿⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⣤⠛⠀⠛⣤
+⠀⠛⠛⠛⠀⠀⠛⠀⠀⠀⠛⠀⠛⠀⠀⠀⠛⠀⠛⠀⠀⠀⠀⠀⠛⠛⠛⠛⠛⠀⠛⠀⠀⠀⠛`
 )
 
 var workspaceShortcuts = []Option{
@@ -51,6 +56,17 @@ var (
 	successColor  = lipgloss.Color(successHex)
 )
 
+// wordmarkTier selects which GARFEX wordmark asset renders for a given card
+// width: the full Braille wordmark, a smaller dedicated compact Braille
+// wordmark, or the plain-text fallback.
+type wordmarkTier int
+
+const (
+	wordmarkPlain wordmarkTier = iota
+	wordmarkCompact
+	wordmarkFull
+)
+
 func (m Model) render() string {
 	width, height := m.width, m.height
 	if width == 0 {
@@ -61,27 +77,29 @@ func (m Model) render() string {
 	}
 
 	cardWidth := min(width-2, maxCardWidth)
-	full := cardWidth >= lipgloss.Width(fullWordmark)
-	if full {
-		full = lipgloss.Height(m.renderCard(cardWidth, true)) <= height-2
+	tier := wordmarkPlain
+	if cardWidth >= lipgloss.Width(fullWordmark) && lipgloss.Height(m.renderCard(cardWidth, wordmarkFull)) <= height-2 {
+		tier = wordmarkFull
+	} else if cardWidth >= lipgloss.Width(compactWordmark) && lipgloss.Height(m.renderCard(cardWidth, wordmarkCompact)) <= height-2 {
+		tier = wordmarkCompact
 	}
-	card := m.renderCard(cardWidth, full)
+	card := m.renderCard(cardWidth, tier)
 	canvas := lipgloss.NewStyle().Background(background)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, card,
 		lipgloss.WithWhitespaceStyle(canvas))
 }
 
-func (m Model) renderCard(width int, full bool) string {
+func (m Model) renderCard(width int, tier wordmarkTier) string {
 	sections := make([]string, 0, 4)
 	if m.screen == screenHome {
-		sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
-		if full {
+		sections = append(sections, renderWordmark(width, tier), renderTagline(width), renderDivider(width, tier))
+		if tier == wordmarkFull {
 			sections = append(sections, lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("HOME · ÁREAS DE GARFEX"))
 		}
 		sections = append(sections, m.renderMenu(width))
 	} else if m.screen == screenWorkspace {
 		if m.heroActive {
-			sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
+			sections = append(sections, renderWordmark(width, tier), renderTagline(width), renderDivider(width, tier))
 		}
 		sections = append(sections, m.renderWorkspace(width))
 	} else if m.screen == screenManual {
@@ -93,13 +111,16 @@ func (m Model) renderCard(width int, full bool) string {
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-func renderWordmark(width int, full bool) string {
+func renderWordmark(width int, tier wordmarkTier) string {
 	wordmark := "GARFEX"
-	if full {
+	switch tier {
+	case wordmarkFull:
 		wordmark = fullWordmark
+	case wordmarkCompact:
+		wordmark = compactWordmark
 	}
 	style := wordmarkStyle(width)
-	if full {
+	if tier != wordmarkPlain {
 		style = style.PaddingBottom(1)
 	}
 	return style.Render(wordmark)
@@ -114,9 +135,9 @@ func renderTagline(width int) string {
 		Render(officialTagline)
 }
 
-func renderDivider(width int, full bool) string {
+func renderDivider(width int, tier wordmarkTier) string {
 	style := lipgloss.NewStyle().Width(width).Foreground(surface)
-	if full {
+	if tier != wordmarkPlain {
 		style = style.PaddingBottom(1)
 	}
 	return style.Render(strings.Repeat("-", width))
