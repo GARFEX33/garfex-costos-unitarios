@@ -120,9 +120,19 @@ func New(handlers Handlers) Model {
 	return m
 }
 
+// greeter is an optional capability an InteractionAgent may implement to
+// seed an initial status message into the workspace before any user input.
+type greeter interface {
+	Greeting() InteractionMessage
+}
+
 func NewWithAgent(handlers Handlers, agent InteractionAgent) Model {
 	m := New(handlers)
 	m.engine = NewInteractionEngine(agent)
+	if g, ok := agent.(greeter); ok {
+		m.appendGARFEX(g.Greeting())
+		m.refreshViewport()
+	}
 	return m
 }
 
