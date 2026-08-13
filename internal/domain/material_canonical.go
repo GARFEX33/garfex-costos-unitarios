@@ -3,8 +3,6 @@ package domain
 import (
 	"fmt"
 	"strings"
-
-	"github.com/shopspring/decimal"
 )
 
 func (c MaterialsCatalog) canonicalValue(definition AttributeDefinition, value MaterialAttributeValue) (MaterialAttributeValue, error) {
@@ -23,14 +21,7 @@ func (c MaterialsCatalog) canonicalValue(definition AttributeDefinition, value M
 		if value.Quantity == nil || value.Quantity.Value.IsNegative() || value.Quantity.Value.IsZero() {
 			return MaterialAttributeValue{}, validation("quantity %q must be positive", value.AttributeCode)
 		}
-		unit := canonical(value.Quantity.UnitCode)
-		if value.AttributeCode != "voltage" || !isVoltageUnit(unit) {
-			return MaterialAttributeValue{}, validation("quantity %q has invalid unit %q", value.AttributeCode, unit)
-		}
-		if !allowedVoltage(value.Quantity.Value, unit) {
-			return MaterialAttributeValue{}, validation("quantity %q is not an approved conductor voltage", value.AttributeCode)
-		}
-		value.Quantity.UnitCode = unit
+		value.Quantity.UnitCode = canonical(value.Quantity.UnitCode)
 	case ValueTypeInteger:
 		if value.Integer == nil {
 			return MaterialAttributeValue{}, validation("integer %q is missing", value.AttributeCode)
@@ -83,14 +74,6 @@ func (v MaterialAttributeValue) canonical(definition AttributeDefinition) string
 
 func canonicalQuantity(dimension string, quantity Quantity) string {
 	unit := canonical(quantity.UnitCode)
-	if dimension == "VOLTAGE" {
-		if unit == "KV" {
-			return quantity.Value.Mul(decimal.NewFromInt(1000)).String() + " V"
-		}
-		if unit == "V" {
-			return quantity.Value.String() + " V"
-		}
-	}
 	return quantity.Value.String() + " " + unit
 }
 
@@ -102,19 +85,4 @@ func canonical(value string) string {
 
 func canonicalAttribute(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
-}
-
-func isVoltageUnit(unit string) bool { return unit == "V" || unit == "KV" }
-
-func allowedVoltage(value decimal.Decimal, unit string) bool {
-	volts := value
-	if unit == "KV" {
-		volts = value.Mul(decimal.NewFromInt(1000))
-	}
-	for _, approved := range []int64{300, 600, 1000, 5000, 15000, 25000, 35000} {
-		if volts.Equal(decimal.NewFromInt(approved)) {
-			return true
-		}
-	}
-	return false
 }

@@ -60,7 +60,7 @@ func catalogDefinitions() []AttributeDefinition {
 		{Code: "gauge", Name: "Gauge", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "insulation", Name: "Insulation", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "color", Name: "Color", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
-		{Code: "voltage", Name: "Voltage", ValueType: ValueTypeQuantity, Dimension: "VOLTAGE", DefaultIdentityParticipates: true},
+		{Code: "voltage", Name: "Voltage", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "tipo", Name: "Tipo", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "diameter_inch", Name: "Diameter inch", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "diameter_mm", Name: "Diameter mm", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: false},
@@ -78,6 +78,7 @@ func conductorOptions() []AttributeOption {
 	add("gauge", "14 AWG", "12 AWG", "10 AWG", "8 AWG", "6 AWG", "4 AWG", "2 AWG", "1 AWG", "1/0 AWG", "2/0 AWG", "3/0 AWG", "4/0 AWG")
 	add("insulation", "DESNUDO", "THW", "THW-LS", "THHN", "THHN/THWN-2", "XHHW-2", "RHH/RHW-2")
 	add("color", "NEGRO", "BLANCO", "ROJO", "AZUL", "VERDE")
+	add("voltage", "300 V", "600 V", "1000 V", "5000 V", "15000 V", "25000 V", "35000 V")
 	return options
 }
 

@@ -50,13 +50,9 @@ func TestOptionsForReturnsColorOptions(t *testing.T) {
 }
 
 // TestOptionsForAttributeWithNoOptionsReturnsEmpty covers OptionsFor for an
-// attribute that has no AttributeOption entries at all (voltage is a
-// QUANTITY, not a CONTROLLED_OPTION) and for an unknown attribute code.
+// unknown attribute code, which has no AttributeOption entries at all.
 func TestOptionsForAttributeWithNoOptionsReturnsEmpty(t *testing.T) {
 	catalog := NewMaterialsCatalog()
-	if got := catalog.OptionsFor("voltage"); len(got) != 0 {
-		t.Fatalf("OptionsFor(\"voltage\") = %v, want empty", got)
-	}
 	if got := catalog.OptionsFor("nope"); len(got) != 0 {
 		t.Fatalf("OptionsFor(\"nope\") = %v, want empty", got)
 	}

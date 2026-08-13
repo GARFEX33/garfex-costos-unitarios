@@ -18,7 +18,7 @@ func TestDescribeCableComposesInsulationGaugeColor(t *testing.T) {
 		OptionValue("gauge", "12 AWG"),
 		OptionValue("insulation", "THHN"),
 		OptionValue("color", "BLANCO"),
-		QuantityValue("voltage", "600", "V"),
+		OptionValue("voltage", "600 V"),
 	})
 	if err != nil {
 		t.Fatalf("NewMaterial() error = %v", err)

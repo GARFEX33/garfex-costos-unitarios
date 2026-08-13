@@ -57,13 +57,15 @@ func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGett
 	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer, creator: creator}
 }
 
-const materialsGreeting = "Materiales Maestros está conectado al catálogo real (PostgreSQL). Escribí un término para buscar. Escribí \"nuevo material\" para crear uno."
+const materialsGreeting = "Materiales Maestros está conectado al catálogo real (PostgreSQL). Buscá un material o usá / para acciones."
 
-// createMaterialTrigger is the free-text trigger phrase that starts the
-// "nuevo material" create flow, matched case-insensitively (see Respond).
-// The Greeting message cannot carry a Pending action (see materials_workspace_adapter.go's
-// Greeting doc comment), so this free-text trigger is the entry point.
-const createMaterialTrigger = "nuevo material"
+// createMaterialActionID is the Action.ID/InteractionInput.ActionID for the
+// "Crear material" entry in the materials-workspace-scoped "/" palette (see
+// commands.go's materialsActions and model.go's activePaletteActions). It
+// starts the "nuevo material" create flow — the free-text trigger this
+// replaced is gone entirely, per the project owner's explicit "no keywords
+// mágicas escondidas dentro de la búsqueda" direction.
+const createMaterialActionID = "create-material"
 
 // searchResultLimit requests one row beyond the visible page (10) so the
 // adapter can tell "exactly 10 results" apart from "at least 11 results
@@ -112,7 +114,7 @@ func (a *MaterialsWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 		}
 	}
 	switch {
-	case input.Kind == InputText && strings.EqualFold(strings.TrimSpace(input.Value), createMaterialTrigger):
+	case input.Kind == InputAction && input.ActionID == createMaterialActionID:
 		return a.startCreateEditor()
 	case input.Kind == InputText:
 		return a.searchResponse(ctx, input.Value)

@@ -467,13 +467,25 @@ func (m *Model) respond(input InteractionInput) {
 	}
 }
 
+// activePaletteActions returns the action tree the "/" palette should show:
+// materials-workspace-scoped actions while inside that workspace, the
+// global assistant actions otherwise. Reused everywhere the palette
+// (re)builds its action list so backspacing to an empty query or retyping
+// "/" never silently falls back to the wrong tree.
+func (m Model) activePaletteActions() []assistantAction {
+	if m.activeCatalog == "materials" {
+		return materialsActions
+	}
+	return assistantActions
+}
+
 func (m *Model) openPalette(query string) {
 	m.heroActive = false
 	m.paletteFlat = query != ""
 	if query == "" {
-		m.paletteActions = assistantActions
+		m.paletteActions = m.activePaletteActions()
 	} else {
-		m.paletteActions = flattenLeafActions(assistantActions)
+		m.paletteActions = flattenLeafActions(m.activePaletteActions())
 	}
 	m.paletteTitle = ""
 	m.paletteQuery = query
@@ -507,11 +519,11 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 		if m.paletteQuery == "" {
 			if m.paletteFlat {
 				m.paletteFlat = false
-				m.paletteActions = assistantActions
+				m.paletteActions = m.activePaletteActions()
 			}
 		} else if !m.paletteFlat {
 			m.paletteFlat = true
-			m.paletteActions = flattenLeafActions(assistantActions)
+			m.paletteActions = flattenLeafActions(m.activePaletteActions())
 		}
 	case "enter":
 		if len(options) == 0 {
@@ -543,6 +555,13 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 				m.input = ""
 				m.interactionMode = interactionModeChat
 				m.enterMaterialsWorkspace()
+			} else {
+				m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
+				m.paletteTitle = ""
+				m.paletteFlat = false
+				m.input = ""
+				m.interactionMode = interactionModeChat
+				m.respond(InteractionInput{Kind: InputAction, ActionID: action.id, Value: action.id, Target: ActionTargetAgent})
 			}
 			return
 		}
@@ -553,7 +572,7 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 			m.paletteIndex = 0
 			if !m.paletteFlat {
 				m.paletteFlat = true
-				m.paletteActions = flattenLeafActions(assistantActions)
+				m.paletteActions = flattenLeafActions(m.activePaletteActions())
 			}
 		}
 	}

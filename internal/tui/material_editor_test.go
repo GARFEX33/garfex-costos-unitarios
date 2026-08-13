@@ -50,7 +50,7 @@ func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 	creator := &fakeMaterialCreator{}
 	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, creator)
 
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "nuevo material"})
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
 		t.Fatalf("Respond(trigger) error = %v, want nil", err)
 	}
@@ -61,8 +61,27 @@ func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 	response = answerQuestion(t, adapter, response, "10 AWG")      // gauge
 	response = answerQuestion(t, adapter, response, "THW")         // insulation (not DESNUDO)
 	response = answerQuestion(t, adapter, response, "NEGRO")       // color
-	response = answerQuestion(t, adapter, response, "600 V")       // voltage (typed)
-	response = answerQuestion(t, adapter, response, "M")           // natural unit
+
+	// voltage is now a controlled option (Adjustment A): assert its
+	// question offers exactly the 7 approved values, in catalog order,
+	// before picking one — the same shape as any other controlled-option
+	// step, not typed free text.
+	voltageRequest, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (voltage)", response.Pending)
+	}
+	wantVoltageOptions := []string{"300 V", "600 V", "1000 V", "5000 V", "15000 V", "25000 V", "35000 V"}
+	if len(voltageRequest.Options) != len(wantVoltageOptions) {
+		t.Fatalf("voltage Options = %v, want %v", voltageRequest.Options, wantVoltageOptions)
+	}
+	for i, want := range wantVoltageOptions {
+		if voltageRequest.Options[i].Value != want {
+			t.Fatalf("voltage Options[%d] = %q, want %q", i, voltageRequest.Options[i].Value, want)
+		}
+	}
+
+	response = answerQuestion(t, adapter, response, "600 V") // voltage
+	response = answerQuestion(t, adapter, response, "M")     // natural unit
 
 	if len(response.Messages) != 1 {
 		t.Fatalf("Messages = %v, want exactly one message", response.Messages)
@@ -83,7 +102,7 @@ func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 		domain.OptionValue("gauge", "10 AWG"),
 		domain.OptionValue("insulation", "THW"),
 		domain.OptionValue("color", "NEGRO"),
-		domain.QuantityValue("voltage", "600", "V"),
+		domain.OptionValue("voltage", "600 V"),
 	})
 	if err != nil {
 		t.Fatalf("NewMaterial(want) error = %v, want nil", err)
@@ -118,7 +137,7 @@ func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 func TestMaterialEditorDesnudoSkipsColorAndVoltage(t *testing.T) {
 	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
 
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "nuevo material"})
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
 		t.Fatalf("Respond(trigger) error = %v, want nil", err)
 	}
@@ -149,7 +168,7 @@ func TestMaterialEditorDesnudoSkipsColorAndVoltage(t *testing.T) {
 func TestMaterialEditorNarrowsDiameterMmByDiameterInch(t *testing.T) {
 	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
 
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "nuevo material"})
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
 		t.Fatalf("Respond(trigger) error = %v, want nil", err)
 	}
@@ -181,7 +200,7 @@ func TestMaterialEditorDuplicateIdentityShowsExistingMaterial(t *testing.T) {
 	getter := &fakeMaterialGetter{material: existing}
 	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, creator)
 
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "nuevo material"})
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
 		t.Fatalf("Respond(trigger) error = %v, want nil", err)
 	}
@@ -217,57 +236,6 @@ func TestMaterialEditorDuplicateIdentityShowsExistingMaterial(t *testing.T) {
 	}
 }
 
-// TestMaterialEditorUnparseableVoltageReasksSameQuestion covers the QUANTITY
-// parse-failure path: typing something with no whitespace (so it cannot
-// split into value+unit) must not advance the flow — the same voltage
-// question is re-offered with an error, and a subsequent valid "600 V"
-// completes the flow normally from there.
-func TestMaterialEditorUnparseableVoltageReasksSameQuestion(t *testing.T) {
-	creator := &fakeMaterialCreator{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, creator)
-
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "nuevo material"})
-	if err != nil {
-		t.Fatalf("Respond(trigger) error = %v, want nil", err)
-	}
-	response = answerQuestion(t, adapter, response, "CONDUCTORES")
-	response = answerQuestion(t, adapter, response, "CABLE")
-	response = answerQuestion(t, adapter, response, "COBRE")
-	response = answerQuestion(t, adapter, response, "10 AWG")
-	response = answerQuestion(t, adapter, response, "THW")
-	response = answerQuestion(t, adapter, response, "NEGRO")
-
-	// Invalid: no whitespace, cannot split into value + unit.
-	invalid, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: materialEditorKey, Value: "notanumber"})
-	if err != nil {
-		t.Fatalf("Respond(invalid voltage) error = %v, want nil", err)
-	}
-	if len(invalid.Messages) != 1 {
-		t.Fatalf("Messages = %v, want exactly one error message", invalid.Messages)
-	}
-	if _, ok := invalid.Messages[0].(ErrorMessage); !ok {
-		t.Fatalf("Messages[0] = %T, want ErrorMessage", invalid.Messages[0])
-	}
-	request, ok := invalid.Pending.(QuestionRequest)
-	if !ok {
-		t.Fatalf("Pending = %T, want QuestionRequest (same question re-offered)", invalid.Pending)
-	}
-	if request.Key != materialEditorKey || !request.AllowCustom {
-		t.Fatalf("Pending = %+v, want the same voltage question (AllowCustom) re-offered", request)
-	}
-
-	// Now retry with a valid answer and confirm the flow completes.
-	response = answerQuestion(t, adapter, invalid, "600 V")
-	response = answerQuestion(t, adapter, response, "M")
-
-	if creator.callCount != 1 {
-		t.Fatalf("Create call count = %d, want 1 (flow completed after retry)", creator.callCount)
-	}
-	if response.Pending != nil {
-		t.Fatalf("Pending = %#v, want nil after successful create", response.Pending)
-	}
-}
-
 // TestMaterialEditorCancelResetsAndOrdinarySearchStillWorks covers
 // cancellation mid-flow: InputCancel resets a.editor, and a subsequent
 // ordinary text search is handled normally afterward, not swallowed by
@@ -278,7 +246,7 @@ func TestMaterialEditorCancelResetsAndOrdinarySearchStillWorks(t *testing.T) {
 	}}
 	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
 
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "nuevo material"})
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
 		t.Fatalf("Respond(trigger) error = %v, want nil", err)
 	}
@@ -310,24 +278,6 @@ func TestMaterialEditorCancelResetsAndOrdinarySearchStillWorks(t *testing.T) {
 	}
 	if _, ok := searchResponse.Pending.(QuestionRequest); !ok {
 		t.Fatalf("Pending = %T, want a normal search-results QuestionRequest", searchResponse.Pending)
-	}
-}
-
-// TestMaterialEditorTriggerMatchesCaseInsensitiveWithWhitespace covers the
-// trigger phrase's matching discipline: case-insensitive and tolerant of
-// surrounding whitespace.
-func TestMaterialEditorTriggerMatchesCaseInsensitiveWithWhitespace(t *testing.T) {
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "  Nuevo Material  "})
-	if err != nil {
-		t.Fatalf("Respond(trigger) error = %v, want nil", err)
-	}
-	request, ok := response.Pending.(QuestionRequest)
-	if !ok {
-		t.Fatalf("Pending = %T, want QuestionRequest (trigger must fire despite case/whitespace)", response.Pending)
-	}
-	if request.Key != materialEditorKey {
-		t.Fatalf("Pending.Key = %q, want %q", request.Key, materialEditorKey)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 
 func TestConductorCatalogCreatesValidMaterials(t *testing.T) {
 	catalog := NewMaterialsCatalog()
-	base := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW-LS"), OptionValue("color", "NEGRO"), QuantityValue("voltage", "600", "V")}
+	base := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW-LS"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	tests := []struct {
 		name   string
 		unit   string
@@ -31,12 +31,12 @@ func TestConductorCatalogCreatesValidMaterials(t *testing.T) {
 
 func TestConductorValidationRejectsMissingForbiddenInvalidAndUnitValues(t *testing.T) {
 	catalog := NewMaterialsCatalog()
-	valid := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), QuantityValue("voltage", "600", "V")}
+	valid := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	tests := []struct {
 		name   string
 		unit   string
 		values []MaterialAttributeValue
-	}{{"missing insulation", "M", without(valid, "insulation")}, {"missing required color", "M", without(valid, "color")}, {"missing required voltage", "M", without(valid, "voltage")}, {"bare conductor has forbidden color", "M", []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "12 AWG"), OptionValue("insulation", "DESNUDO"), OptionValue("color", "NEGRO")}}, {"bare conductor has forbidden voltage", "M", []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "12 AWG"), OptionValue("insulation", "DESNUDO"), QuantityValue("voltage", "600", "V")}}, {"invalid option", "M", replace(valid, OptionValue("gauge", "13"))}, {"invalid unit", "KG", valid}, {"empty insulation is not bare", "M", replace(valid, OptionValue("insulation", ""))}}
+	}{{"missing insulation", "M", without(valid, "insulation")}, {"missing required color", "M", without(valid, "color")}, {"missing required voltage", "M", without(valid, "voltage")}, {"bare conductor has forbidden color", "M", []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "12 AWG"), OptionValue("insulation", "DESNUDO"), OptionValue("color", "NEGRO")}}, {"bare conductor has forbidden voltage", "M", []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "12 AWG"), OptionValue("insulation", "DESNUDO"), OptionValue("voltage", "600 V")}}, {"invalid option", "M", replace(valid, OptionValue("gauge", "13"))}, {"invalid unit", "KG", valid}, {"empty insulation is not bare", "M", replace(valid, OptionValue("insulation", ""))}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := NewMaterial(catalog, "CONDUCTORES", "CABLE", tt.unit, tt.values)
@@ -49,7 +49,7 @@ func TestConductorValidationRejectsMissingForbiddenInvalidAndUnitValues(t *testi
 
 func TestNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
 	catalog := NewMaterialsCatalog()
-	values := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), QuantityValue("voltage", "600", "V")}
+	values := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	a, err := NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", values)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
 func TestExactDuplicateDetectionAndTechnicalDifferences(t *testing.T) {
 	catalog := NewMaterialsCatalog()
 	makeMaterial := func(color, insulation, gauge string) Material {
-		m, err := NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", gauge), OptionValue("insulation", insulation), OptionValue("color", color), QuantityValue("voltage", "600", "V")})
+		m, err := NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", gauge), OptionValue("insulation", insulation), OptionValue("color", color), OptionValue("voltage", "600 V")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,7 +87,7 @@ func TestExactDuplicateDetectionAndTechnicalDifferences(t *testing.T) {
 
 func TestControlledOptionsRequireOfficialCodes(t *testing.T) {
 	catalog := NewMaterialsCatalog()
-	base := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), QuantityValue("voltage", "600", "V")}
+	base := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	for _, test := range []struct {
 		name  string
 		value MaterialAttributeValue
@@ -107,32 +107,41 @@ func TestControlledOptionsRequireOfficialCodes(t *testing.T) {
 	}
 }
 
-func TestVoltageIdentityUsesNormalizedDimension(t *testing.T) {
+// TestVoltageBehavesLikeAnyControlledOption covers voltage's move to
+// ValueTypeControlledOption (Adjustment A): an approved value builds a
+// CABLE material normally and appears correctly in IdentityKey/Attributes,
+// while an unapproved value is rejected — the exact same shape already used
+// above for gauge/insulation/color.
+func TestVoltageBehavesLikeAnyControlledOption(t *testing.T) {
 	catalog := NewMaterialsCatalog()
-	makeMaterial := func(value, unit string) Material {
-		material, err := NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), QuantityValue("voltage", value, unit)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return material
+	base := []MaterialAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
+
+	material, err := NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", base)
+	if err != nil {
+		t.Fatalf("NewMaterial() error = %v", err)
 	}
-	for _, test := range []struct{ value, unit, want string }{{"1", "kV", "CONDUCTORES|CABLE|color=NEGRO|conductor_material=COBRE|gauge=10 AWG|insulation=THW|voltage=1000 V"}, {"1000", "V", "CONDUCTORES|CABLE|color=NEGRO|conductor_material=COBRE|gauge=10 AWG|insulation=THW|voltage=1000 V"}, {"5", "kV", "CONDUCTORES|CABLE|color=NEGRO|conductor_material=COBRE|gauge=10 AWG|insulation=THW|voltage=5000 V"}, {"5000", "V", "CONDUCTORES|CABLE|color=NEGRO|conductor_material=COBRE|gauge=10 AWG|insulation=THW|voltage=5000 V"}} {
-		t.Run(test.value+test.unit, func(t *testing.T) {
-			material := makeMaterial(test.value, test.unit)
-			if material.IdentityKey != test.want {
-				t.Errorf("IdentityKey = %q, want %q", material.IdentityKey, test.want)
-			}
-		})
+	want := "CONDUCTORES|CABLE|color=NEGRO|conductor_material=COBRE|gauge=10 AWG|insulation=THW|voltage=600 V"
+	if material.IdentityKey != want {
+		t.Errorf("IdentityKey = %q, want %q", material.IdentityKey, want)
 	}
-	if !ExactDuplicate(makeMaterial("1", "kV"), makeMaterial("1000", "V")) {
-		t.Fatal("equivalent voltage quantities must be exact duplicates")
+
+	if _, err := NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", replace(base, OptionValue("voltage", "700 V"))); err == nil {
+		t.Fatal("unapproved voltage option was accepted")
 	}
 }
 
-func TestVoltageIsNotAControlledOption(t *testing.T) {
-	for _, option := range NewMaterialsCatalog().Options {
-		if option.AttributeCode == "voltage" {
-			t.Fatalf("voltage option %q must not be present", option.Code)
+// TestVoltageOptionsMatchApprovedCatalogValues covers OptionsFor("voltage")
+// exposing exactly the 7 approved values, in catalog order.
+func TestVoltageOptionsMatchApprovedCatalogValues(t *testing.T) {
+	catalog := NewMaterialsCatalog()
+	want := []string{"300 V", "600 V", "1000 V", "5000 V", "15000 V", "25000 V", "35000 V"}
+	options := catalog.OptionsFor("voltage")
+	if len(options) != len(want) {
+		t.Fatalf("OptionsFor(voltage) = %v, want %v", options, want)
+	}
+	for i, option := range options {
+		if option.Code != want[i] {
+			t.Errorf("OptionsFor(voltage)[%d].Code = %q, want %q", i, option.Code, want[i])
 		}
 	}
 }
