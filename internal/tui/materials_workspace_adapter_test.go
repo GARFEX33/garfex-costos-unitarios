@@ -334,8 +334,8 @@ func TestMaterialsWorkspaceAdapterRespondSelectResultOpensDetail(t *testing.T) {
 	if !ok {
 		t.Fatalf("Pending = %T, want ActionRequest", response.Pending)
 	}
-	if len(action.Actions) != 2 || action.Actions[0].ID != editActionID || action.Actions[1].ID != backActionID {
-		t.Fatalf("Actions = %+v, want exactly [%q, %q] in that order", action.Actions, editActionID, backActionID)
+	if len(action.Actions) != 3 || action.Actions[0].ID != editActionID || action.Actions[1].ID != duplicateActionID || action.Actions[2].ID != backActionID {
+		t.Fatalf("Actions = %+v, want exactly [%q, %q, %q] in that order", action.Actions, editActionID, duplicateActionID, backActionID)
 	}
 }
 

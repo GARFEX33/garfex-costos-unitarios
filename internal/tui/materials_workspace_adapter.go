@@ -105,6 +105,14 @@ const backActionID = "back"
 // applicable attribute, since Family/ProductType are fixed during edit.
 const editActionID = "edit-material"
 
+// duplicateActionID is the Action.ID/InteractionInput.ActionID for
+// "Duplicar" from the detail view. It starts the "duplicar material" flow
+// (see startDuplicateEditor in material_editor.go), reusing the same
+// field-picker loop "Editar" uses, pre-loaded with the source material's
+// current values, but persisting via Create (a brand-new Material) rather
+// than Update.
+const duplicateActionID = "duplicate-material"
+
 // notApplicableAttributeText mirrors internal/postgres's notApplicableState
 // sentinel ("NOT_APPLICABLE"), the literal domain.MaterialAttributeValue.Text
 // value the repository decodes onto a NOT_APPLICABLE attribute regardless of
@@ -123,10 +131,10 @@ func (a *MaterialsWorkspaceAdapter) Greeting() InteractionMessage {
 
 // Respond handles the interactions this workspace supports: a text search,
 // selecting a search result to open its detail, "volver" back to the same
-// result list, and the "nuevo material" create flow (see material_editor.go).
-// An in-progress editor gets first refusal on any input keyed to it (or a
-// cancellation); everything else falls through to the unchanged
-// status/greeting fallback — Search/Get are not called.
+// result list, and the "nuevo material"/"Editar"/"Duplicar" flows (see
+// material_editor.go). An in-progress editor gets first refusal on any input
+// keyed to it (or a cancellation); everything else falls through to the
+// unchanged status/greeting fallback — Search/Get are not called.
 func (a *MaterialsWorkspaceAdapter) Respond(ctx context.Context, input InteractionInput) (InteractionResponse, error) {
 	if a.editor != nil {
 		if response, handled := a.respondToEditor(ctx, input); handled {
@@ -142,6 +150,8 @@ func (a *MaterialsWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 		return a.detailResponse(ctx, input.Value)
 	case input.Kind == InputAction && input.ActionID == editActionID:
 		return a.startEditEditor()
+	case input.Kind == InputAction && input.ActionID == duplicateActionID:
+		return a.startDuplicateEditor()
 	case input.Kind == InputAction && input.ActionID == backActionID:
 		return a.searchResponse(ctx, a.lastQuery)
 	}
@@ -230,6 +240,7 @@ func (a *MaterialsWorkspaceAdapter) detailResponse(ctx context.Context, value st
 			Question: "¿Qué querés hacer?",
 			Actions: []Action{
 				{ID: editActionID, Label: "Editar", Value: editActionID, Target: ActionTargetAgent},
+				{ID: duplicateActionID, Label: "Duplicar", Value: duplicateActionID, Target: ActionTargetAgent},
 				{ID: backActionID, Label: "Volver a los resultados", Value: backActionID, Target: ActionTargetAgent},
 			},
 		},

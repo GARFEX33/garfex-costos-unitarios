@@ -28,15 +28,16 @@ const (
 	editorStepAttribute
 	editorStepUnit
 	// editorStepAttributePicker, editorStepAttributeEdit, and
-	// editorStepConfirm are edit-only steps (see startEditEditor): the picker
-	// shows a single-select menu of the material's currently-set fields (plus
-	// a "Terminar edición" sentinel), attributeEdit asks about the ONE picked
-	// field, and confirm shows a summary of every field actually edited this
-	// session before anything is persisted. Picking a field from the picker
-	// loops back to the SAME picker (now showing that field's updated value)
-	// so the user can keep editing more fields, or re-edit one already
-	// touched, until they pick "Terminar edición". CREATE never reaches any
-	// of these — it still walks editorStepFamily -> editorStepProductType ->
+	// editorStepConfirm are the "Editar"/"Duplicar" steps (see
+	// startEditEditor/startDuplicateEditor): the picker shows a single-select
+	// menu of the material's currently-set fields (plus a "Terminar edición"
+	// sentinel), attributeEdit asks about the ONE picked field, and confirm
+	// shows a summary of every field actually edited this session before
+	// anything is persisted. Picking a field from the picker loops back to
+	// the SAME picker (now showing that field's updated value) so the user
+	// can keep editing more fields, or re-edit one already touched, until
+	// they pick "Terminar edición". CREATE never reaches any of these — it
+	// still walks editorStepFamily -> editorStepProductType ->
 	// editorStepAttribute -> editorStepUnit exactly as before.
 	editorStepAttributePicker
 	editorStepAttributeEdit
@@ -57,16 +58,25 @@ const editNaturalUnitFieldCode = "__natural_unit__"
 const editFinishFieldCode = "__finish_edit__"
 
 // materialEditorMode distinguishes the "nuevo material" create flow from the
-// "Editar" flow — both drive the exact same state machine below, the mode
-// only decides (a) which step the flow starts at (create asks Family/
-// ProductType first; edit, per approved decision D3, jumps straight to
-// editorStepAttribute since ProductType is fixed during edit) and (b) which
-// operation finishEditor calls to persist the result.
+// "Editar" and "Duplicar" flows — all three drive the exact same state
+// machine below, the mode only decides (a) which step the flow starts at
+// (create asks Family/ProductType first; edit and duplicate, per approved
+// decision D3, jump straight to editorStepAttributePicker since
+// Family/ProductType are fixed for both) and (b) which operation
+// finishEditor calls to persist the result: Update (targeting the source
+// material's original ID) for editorModeEdit, Create (never carrying the
+// source's ID) for both editorModeCreate and editorModeDuplicate.
+// editorModeDuplicate also differs from editorModeEdit in one respect:
+// "Terminar edición" with zero changes must NOT silently cancel (see
+// answerAttributePicker) — an unmodified duplicate is still a meaningful
+// attempt at an exact copy, and Create's existing duplicate-collision
+// handling is what correctly detects it.
 type materialEditorMode int
 
 const (
 	editorModeCreate materialEditorMode = iota
 	editorModeEdit
+	editorModeDuplicate
 )
 
 // materialEditorState is the in-progress "nuevo material"/"Editar" flow's
@@ -169,6 +179,31 @@ func (a *MaterialsWorkspaceAdapter) startEditEditor() (InteractionResponse, erro
 	return a.attributePickerQuestion(), nil
 }
 
+// startDuplicateEditor begins the "Duplicar" flow for the material currently
+// shown in the detail view (a.lastDetail): the same field-picker loop
+// Editar uses, pre-loaded with the source material's current values, but
+// building a brand-new Material (Create, never Update) rather than
+// modifying the one it started from — originalID is deliberately left zero.
+// Family/ProductType stay fixed to the source's, same restriction as Editar
+// (D3) — reclassifying to a different ProductType via Duplicar is out of
+// scope here.
+func (a *MaterialsWorkspaceAdapter) startDuplicateEditor() (InteractionResponse, error) {
+	material := a.lastDetail
+	catalog := domain.NewMaterialsCatalog()
+	a.editor = &materialEditorState{
+		mode:           editorModeDuplicate,
+		step:           editorStepAttributePicker,
+		family:         material.FamilyCode,
+		productType:    material.ProductTypeCode,
+		attributes:     catalog.AttributesFor(material.FamilyCode, material.ProductTypeCode),
+		values:         append([]domain.MaterialAttributeValue(nil), material.Attributes...),
+		originalValues: material.Attributes,
+		originalUnit:   material.NaturalUnit,
+		currentUnit:    material.NaturalUnit,
+	}
+	return a.attributePickerQuestion(), nil
+}
+
 // respondToEditor handles one InteractionInput while a.editor is
 // in-progress. The returned bool reports whether input actually belonged to
 // the editor (its own Key, or a cancellation) — when false, the caller
@@ -205,7 +240,7 @@ func (a *MaterialsWorkspaceAdapter) respondToEditor(ctx context.Context, input I
 	case editorStepAttributeEdit:
 		return a.answerSingleAttributeEdit(catalog, input.Value), true
 	case editorStepUnit:
-		if state.mode == editorModeEdit {
+		if state.mode == editorModeEdit || state.mode == editorModeDuplicate {
 			state.currentUnit = input.Value
 			state.editedCodes = appendUnique(state.editedCodes, editNaturalUnitFieldCode)
 			return a.attributePickerQuestion(), true
@@ -270,6 +305,9 @@ func (a *MaterialsWorkspaceAdapter) attributePickerQuestion() InteractionRespons
 	options = append(options, Option{ID: editNaturalUnitFieldCode, Label: "Unidad natural: " + state.currentUnit, Value: editNaturalUnitFieldCode})
 	options = append(options, Option{ID: editFinishFieldCode, Label: "Terminar edición", Value: editFinishFieldCode})
 	prompt := "¿Qué campo querés editar?"
+	if state.mode == editorModeDuplicate {
+		prompt = "¿Qué campo querés modificar en la copia?"
+	}
 	return InteractionResponse{Pending: QuestionRequest{
 		ID:            materialEditorKey,
 		Key:           materialEditorKey,
@@ -282,17 +320,21 @@ func (a *MaterialsWorkspaceAdapter) attributePickerQuestion() InteractionRespons
 
 // answerAttributePicker handles the (single-select) answer to
 // attributePickerQuestion, routing three ways: "Terminar edición" ends the
-// loop (a plain cancel message if nothing was changed, or the confirmation
-// summary otherwise); the NaturalUnit sentinel routes to unitQuestion (the
-// exact same question CREATE's last step asks, reused unchanged); any other
-// code must match one of state.attributes and routes to that attribute's
-// question via the untouched attributeQuestion — answering it (see
-// answerSingleAttributeEdit) loops back to this same picker rather than
-// advancing through a queue.
+// loop — for editorModeEdit, a plain cancel message if nothing was changed
+// (there's nothing to save), or the confirmation summary otherwise; for
+// editorModeDuplicate, ALWAYS the confirmation summary, even with zero
+// changes, since an unmodified duplicate is still a meaningful attempt at an
+// exact copy (finishEditor's existing ErrDuplicateMaterial handling is what
+// then correctly detects that exact-copy case); the NaturalUnit sentinel
+// routes to unitQuestion (the exact same question CREATE's last step asks,
+// reused unchanged); any other code must match one of state.attributes and
+// routes to that attribute's question via the untouched attributeQuestion —
+// answering it (see answerSingleAttributeEdit) loops back to this same
+// picker rather than advancing through a queue.
 func (a *MaterialsWorkspaceAdapter) answerAttributePicker(catalog domain.MaterialsCatalog, code string) InteractionResponse {
 	state := a.editor
 	if code == editFinishFieldCode {
-		if len(state.editedCodes) == 0 {
+		if len(state.editedCodes) == 0 && state.mode == editorModeEdit {
 			a.editor = nil
 			return InteractionResponse{Messages: []InteractionMessage{
 				TextMessage{Text: "No hiciste ningún cambio."},
@@ -635,7 +677,10 @@ func (a *MaterialsWorkspaceAdapter) originalOptionCode(attributeCode string) str
 // of every field the user actually edited this session, showing its CURRENT
 // value (reusing formatAttributeValue, the same renderer the picker menu and
 // detail view already use) and a ConfirmationRequest — nothing has been
-// persisted yet at this point.
+// persisted yet at this point. The header differs by mode: editorModeEdit
+// says "guardar estos cambios" (an existing material is being modified);
+// editorModeDuplicate says "crear un nuevo material" (a brand-new Material
+// is about to be built, possibly with zero edited fields).
 func (a *MaterialsWorkspaceAdapter) editConfirmationQuestion() InteractionResponse {
 	state := a.editor
 	state.step = editorStepConfirm
@@ -643,7 +688,11 @@ func (a *MaterialsWorkspaceAdapter) editConfirmationQuestion() InteractionRespon
 	for _, value := range state.values {
 		byCode[value.AttributeCode] = value
 	}
-	lines := []string{"Vas a guardar estos cambios:"}
+	header := "Vas a guardar estos cambios:"
+	if state.mode == editorModeDuplicate {
+		header = "Vas a crear un nuevo material con estos valores:"
+	}
+	lines := []string{header}
 	for _, code := range state.editedCodes {
 		if code == editNaturalUnitFieldCode {
 			lines = append(lines, "Unidad natural: "+state.currentUnit)
@@ -716,11 +765,12 @@ func filterApplicableValues(attributes []domain.FamilyAttribute, values []domain
 }
 
 // finishEditor builds the candidate Material from the fully-answered editor
-// state and persists it (Create for editorModeCreate, Update targeting the
-// original Material.ID for editorModeEdit). It always resets a.editor to
-// nil — success, validation failure, and every Create/Update error all end
-// the flow; simplicity over cleverness, an edge case a fresh "nuevo
-// material"/"Editar" can retry.
+// state and persists it (Update targeting the original Material.ID for
+// editorModeEdit; Create — never carrying an ID — for both editorModeCreate
+// and editorModeDuplicate). It always resets a.editor to nil — success,
+// validation failure, and every Create/Update error all end the flow;
+// simplicity over cleverness, an edge case a fresh "nuevo material"/
+// "Editar"/"Duplicar" can retry.
 func (a *MaterialsWorkspaceAdapter) finishEditor(ctx context.Context, catalog domain.MaterialsCatalog, unit string) InteractionResponse {
 	state := a.editor
 	values := filterApplicableValues(state.attributes, state.values)
@@ -743,10 +793,11 @@ func (a *MaterialsWorkspaceAdapter) finishEditor(ctx context.Context, catalog do
 	}
 
 	var opErr error
-	if state.mode == editorModeEdit {
+	switch state.mode {
+	case editorModeEdit:
 		material.ID = state.originalID
 		opErr = a.updater.Update(ctx, material)
-	} else {
+	default: // editorModeCreate, editorModeDuplicate
 		opErr = a.creator.Create(ctx, material)
 	}
 	if opErr != nil {

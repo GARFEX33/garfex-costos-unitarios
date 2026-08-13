@@ -1317,3 +1317,143 @@ func TestMaterialEditorEditSameFieldTwiceKeepsLatestValueOnly(t *testing.T) {
 		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
 	}
 }
+
+// TestMaterialEditorDuplicateChangesOneAttributeCreatesNewMaterial covers the
+// "Duplicar" happy path: opening a material's detail, selecting
+// duplicateActionID, picking one field, changing it, "Terminar edición",
+// confirming "yes" — the resulting Material must be built via Create (never
+// Update), must never carry the source material's ID, must have the changed
+// attribute, and every other attribute must match the source unchanged.
+func TestMaterialEditorDuplicateChangesOneAttributeCreatesNewMaterial(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	creator := &fakeMaterialCreator{}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: duplicateActionID, Value: duplicateActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(duplicate) error = %v, want nil", err)
+	}
+
+	pickerRequest, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (field picker)", response.Pending)
+	}
+	if !strings.Contains(strings.ToLower(pickerRequest.Prompt), "campo") {
+		t.Fatalf("Prompt = %q, want the field picker prompt", pickerRequest.Prompt)
+	}
+
+	response = answerQuestion(t, adapter, response, "color")
+	response = answerQuestion(t, adapter, response, "BLANCO") // changed from NEGRO
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
+	response = answerConfirmation(t, adapter, response, "yes")
+
+	if updater.callCount != 0 {
+		t.Fatalf("Update call count = %d, want 0 (Duplicar must never call Update)", updater.callCount)
+	}
+	if creator.callCount != 1 {
+		t.Fatalf("Create call count = %d, want 1", creator.callCount)
+	}
+	if creator.gotMaterial.ID != 0 {
+		t.Fatalf("gotMaterial.ID = %d, want 0 (never the source material's ID)", creator.gotMaterial.ID)
+	}
+	foundDuplicateColor := false
+	for _, value := range creator.gotMaterial.Attributes {
+		if value.AttributeCode == "color" {
+			foundDuplicateColor = true
+			if value.OptionCode != "BLANCO" {
+				t.Fatalf("color attribute = %q, want %q", value.OptionCode, "BLANCO")
+			}
+			continue
+		}
+		var want string
+		for _, original := range existing.Attributes {
+			if original.AttributeCode == value.AttributeCode {
+				want = original.OptionCode
+			}
+		}
+		if value.OptionCode != want {
+			t.Fatalf("%s attribute = %q, want unchanged %q", value.AttributeCode, value.OptionCode, want)
+		}
+	}
+	if !foundDuplicateColor {
+		t.Fatalf("gotMaterial.Attributes = %+v, want a color attribute", creator.gotMaterial.Attributes)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful duplicate", response.Pending)
+	}
+}
+
+// TestMaterialEditorDuplicateZeroChangesStillProceedsAndDetectsCollision
+// covers the critical Duplicar-specific behavior: going straight to
+// "Terminar edición" without changing anything must NOT show Edit's silent
+// "No hiciste ningún cambio." shortcut — it must still reach the
+// confirmation step. Confirming "yes" then builds a candidate with the exact
+// same identity as the source, so Create correctly fails with
+// domain.ErrDuplicateMaterial, and the existing duplicate-collision handling
+// must show the ORIGINAL material's detail instead of creating a second row.
+func TestMaterialEditorDuplicateZeroChangesStillProceedsAndDetectsCollision(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	creator := &fakeMaterialCreator{err: domain.ErrDuplicateMaterial}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: duplicateActionID, Value: duplicateActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(duplicate) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
+
+	if _, ok := response.Pending.(ConfirmationRequest); !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest (Duplicar must proceed to confirmation even with zero changes)", response.Pending)
+	}
+	for _, message := range response.Messages {
+		if text, ok := message.(TextMessage); ok && text.Text == "No hiciste ningún cambio." {
+			t.Fatalf("Messages = %v, want no silent-cancel shortcut for Duplicar", response.Messages)
+		}
+	}
+
+	// getter.material stays the original source material — finishEditor's
+	// duplicate-collision lookup resolves it by the (unchanged) candidate
+	// identity, which is exactly the source's own identity here.
+	response = answerConfirmation(t, adapter, response, "yes")
+
+	if updater.callCount != 0 {
+		t.Fatalf("Update call count = %d, want 0 (Duplicar must never call Update)", updater.callCount)
+	}
+	if creator.callCount != 1 {
+		t.Fatalf("Create call count = %d, want 1", creator.callCount)
+	}
+	found := false
+	for _, message := range response.Messages {
+		if result, ok := message.(StructuredResult); ok {
+			found = true
+			if !strings.HasPrefix(result.Title, "CONDUCTORES") {
+				t.Fatalf("existing material Title = %q, want it to start with %q", result.Title, "CONDUCTORES")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Messages = %v, want a StructuredResult showing the existing (original) material, proving no second row was created", response.Messages)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil (editor reset after duplicate collision)", response.Pending)
+	}
+}
