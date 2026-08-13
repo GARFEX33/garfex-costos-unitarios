@@ -1164,6 +1164,56 @@ func TestMaterialEditorEditDiameterInchShowsAllOptionsWhenDiameterMmUntouched(t 
 	}
 }
 
+// TestMaterialEditorFinishEditorSurfacesTheSpecificValidationReason covers a
+// real usability gap the project owner flagged: picking a diameter_inch that
+// no longer matches the untouched diameter_mm (now possible precisely
+// because narrowingContext, above, stopped over-constraining the first field
+// touched in a session) makes domain.NewMaterial's own validateRelations
+// reject the candidate with a specific, human-decipherable reason
+// ("incoherent relation between ...") — but finishEditor used to discard
+// that real reason and show only a generic "no pude guardar los cambios con
+// esos datos.", leaving the user with no idea why. The message must now
+// include the real reason (with the internal ErrMaterialValidation wrapper
+// prefix stripped), not just the generic phrasing.
+func TestMaterialEditorFinishEditorSurfacesTheSpecificValidationReason(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", tuberiaAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 7
+
+	getter := &fakeMaterialGetter{material: existing}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, "diameter_inch")
+	// diameter_mm stays untouched at "13 mm" (paired with 1/2", not 3/4") —
+	// this candidate is genuinely incoherent.
+	response = answerQuestion(t, adapter, response, `3/4"`)
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
+	response = answerConfirmation(t, adapter, response, "yes")
+
+	if len(response.Messages) != 1 {
+		t.Fatalf("Messages = %v, want exactly one message", response.Messages)
+	}
+	message, ok := response.Messages[0].(ErrorMessage)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want ErrorMessage", response.Messages[0])
+	}
+	if strings.Contains(message.Text, "con esos datos") {
+		t.Fatalf("Text = %q, still the old generic message — want the specific validation reason", message.Text)
+	}
+	if !strings.Contains(message.Text, "diameter_inch") || !strings.Contains(message.Text, "diameter_mm") {
+		t.Fatalf("Text = %q, want it to name the actual conflicting attributes", message.Text)
+	}
+}
+
 // TestMaterialEditorEditDiameterInchNarrowsByFreshlyEditedDiameterMm proves
 // the fix does not disable narrowing altogether: when diameter_mm is
 // genuinely re-chosen EARLIER in the same edit session (so its code lands

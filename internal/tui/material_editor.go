@@ -727,9 +727,17 @@ func (a *MaterialsWorkspaceAdapter) finishEditor(ctx context.Context, catalog do
 	material, err := domain.NewMaterial(catalog, state.family, state.productType, unit, values)
 	if err != nil {
 		a.editor = nil
-		errorText := "No pude crear el material con esos datos."
+		// NewMaterial's validation errors are deliberately human-decipherable
+		// domain messages (e.g. "incoherent relation between \"diameter_inch\"
+		// and \"diameter_mm\""), not raw infrastructure failures — unlike a
+		// Postgres/network error, surfacing this one is the whole point: the
+		// user needs to know WHY the combination they just picked is invalid,
+		// not just that it is. Strip the generic ErrMaterialValidation prefix
+		// so only the specific reason shows.
+		reason := strings.TrimPrefix(err.Error(), domain.ErrMaterialValidation.Error()+": ")
+		errorText := fmt.Sprintf("No pude crear el material: %s.", reason)
 		if state.mode == editorModeEdit {
-			errorText = "No pude guardar los cambios con esos datos."
+			errorText = fmt.Sprintf("No pude guardar los cambios: %s.", reason)
 		}
 		return InteractionResponse{Messages: []InteractionMessage{ErrorMessage{Text: errorText}}}
 	}
