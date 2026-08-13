@@ -58,6 +58,21 @@ func (s *Service) Describe(material domain.Material) string {
 	return s.catalog.Describe(material)
 }
 
+// Create persists a new material built by the caller via domain.NewMaterial
+// (this method does not itself validate — NewMaterial already did).
+func (s *Service) Create(ctx context.Context, material domain.Material) error {
+	if err := s.repo.Create(ctx, material); err != nil {
+		if errors.Is(err, domain.ErrDuplicateMaterial) {
+			return domain.ErrDuplicateMaterial
+		}
+		if errors.Is(err, domain.ErrMaterialReference) {
+			return domain.ErrMaterialReference
+		}
+		return fmt.Errorf("create material: %w", err)
+	}
+	return nil
+}
+
 // Update persists changes to an existing material, identified by its stable
 // ID (independent of IdentityKey, which the update itself may change).
 func (s *Service) Update(ctx context.Context, material domain.Material) error {

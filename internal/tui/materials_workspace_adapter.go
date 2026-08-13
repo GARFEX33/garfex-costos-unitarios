@@ -23,6 +23,12 @@ type materialDescriber interface {
 	Describe(material domain.Material) string
 }
 
+// materialCreator is the minimal surface the generic MaterialEditor needs to
+// persist a newly-built candidate Material.
+type materialCreator interface {
+	Create(ctx context.Context, material domain.Material) error
+}
+
 // MaterialsWorkspaceAdapter is the production InteractionAgent for the
 // Materiales Maestros workspace. It is a thin TUI-to-application-service
 // adapter — not the Materials domain, not materiales.Service itself, and
@@ -33,21 +39,31 @@ type MaterialsWorkspaceAdapter struct {
 	materials       materialSearcher
 	materialsGetter materialGetter
 	describer       materialDescriber
+	creator         materialCreator
 	// lastQuery remembers the text of the most recent successful search so
 	// the "volver a los resultados" action can reproduce the identical
 	// result list deterministically, without a separate cache of results.
 	lastQuery string
+	// editor holds the in-progress "nuevo material" create flow, if any; nil
+	// means no create/edit flow is in progress. See material_editor.go.
+	editor *materialEditorState
 }
 
 // NewMaterialsWorkspaceAdapter returns the production agent for the
-// Materiales Maestros workspace. searcher, getter and describer are
+// Materiales Maestros workspace. searcher, getter, describer and creator are
 // satisfied structurally by *materiales.Service — composed for real in
 // cmd/garfex/main.go.
-func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter, describer materialDescriber) *MaterialsWorkspaceAdapter {
-	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer}
+func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter, describer materialDescriber, creator materialCreator) *MaterialsWorkspaceAdapter {
+	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer, creator: creator}
 }
 
-const materialsGreeting = "Materiales Maestros está conectado al catálogo real (PostgreSQL). Escribí un término para buscar."
+const materialsGreeting = "Materiales Maestros está conectado al catálogo real (PostgreSQL). Escribí un término para buscar. Escribí \"nuevo material\" para crear uno."
+
+// createMaterialTrigger is the free-text trigger phrase that starts the
+// "nuevo material" create flow, matched case-insensitively (see Respond).
+// The Greeting message cannot carry a Pending action (see materials_workspace_adapter.go's
+// Greeting doc comment), so this free-text trigger is the entry point.
+const createMaterialTrigger = "nuevo material"
 
 // searchResultLimit requests one row beyond the visible page (10) so the
 // adapter can tell "exactly 10 results" apart from "at least 11 results
@@ -83,12 +99,21 @@ func (a *MaterialsWorkspaceAdapter) Greeting() InteractionMessage {
 	return TextMessage{Text: materialsGreeting}
 }
 
-// Respond handles the three interactions this workspace supports: a text
-// search, selecting a search result to open its detail, and "volver" back
-// to the same result list. Any other InteractionInput falls through to the
-// unchanged status/greeting fallback — Search/Get are not called.
+// Respond handles the interactions this workspace supports: a text search,
+// selecting a search result to open its detail, "volver" back to the same
+// result list, and the "nuevo material" create flow (see material_editor.go).
+// An in-progress editor gets first refusal on any input keyed to it (or a
+// cancellation); everything else falls through to the unchanged
+// status/greeting fallback — Search/Get are not called.
 func (a *MaterialsWorkspaceAdapter) Respond(ctx context.Context, input InteractionInput) (InteractionResponse, error) {
+	if a.editor != nil {
+		if response, handled := a.respondToEditor(ctx, input); handled {
+			return response, nil
+		}
+	}
 	switch {
+	case input.Kind == InputText && strings.EqualFold(strings.TrimSpace(input.Value), createMaterialTrigger):
+		return a.startCreateEditor()
 	case input.Kind == InputText:
 		return a.searchResponse(ctx, input.Value)
 	case input.Kind == InputSelection && input.Key == searchResultsKey:

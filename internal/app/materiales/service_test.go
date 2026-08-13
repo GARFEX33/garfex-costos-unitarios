@@ -25,9 +25,15 @@ type fakeRepo struct {
 	gotSetActiveID    int64
 	gotSetActiveValue bool
 	setActiveErr      error
+
+	gotCreate domain.Material
+	createErr error
 }
 
-func (f *fakeRepo) Create(context.Context, domain.Material) error { return nil }
+func (f *fakeRepo) Create(_ context.Context, material domain.Material) error {
+	f.gotCreate = material
+	return f.createErr
+}
 
 func (f *fakeRepo) Get(_ context.Context, familyCode, identityKey string) (domain.Material, error) {
 	f.gotFamily, f.gotIdentity = familyCode, identityKey
@@ -150,6 +156,37 @@ func TestServiceUpdate(t *testing.T) {
 			}
 			if tt.repoErr == repositoryError && !strings.Contains(err.Error(), "update material") {
 				t.Fatalf("Update() error = %v, want prefix %q", err, "update material")
+			}
+		})
+	}
+}
+
+func TestServiceCreate(t *testing.T) {
+	repositoryError := errors.New("connection lost")
+	cases := []struct {
+		name    string
+		repoErr error
+		wantErr error
+	}{
+		{name: "happy path calls through", repoErr: nil, wantErr: nil},
+		{name: "propagates duplicate", repoErr: domain.ErrDuplicateMaterial, wantErr: domain.ErrDuplicateMaterial},
+		{name: "propagates reference error", repoErr: domain.ErrMaterialReference, wantErr: domain.ErrMaterialReference},
+		{name: "wraps repository error", repoErr: repositoryError, wantErr: repositoryError},
+	}
+
+	material := domain.Material{FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "CONDUCTORES|a"}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepo{createErr: tt.repoErr}
+			err := NewService(repo, domain.NewMaterialsCatalog()).Create(context.Background(), material)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Create() error = %v, want %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(repo.gotCreate, material) {
+				t.Fatalf("repository called with %+v, want %+v", repo.gotCreate, material)
+			}
+			if tt.repoErr == repositoryError && !strings.Contains(err.Error(), "create material") {
+				t.Fatalf("Create() error = %v, want prefix %q", err, "create material")
 			}
 		})
 	}

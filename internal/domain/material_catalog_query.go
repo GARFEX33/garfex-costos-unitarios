@@ -100,6 +100,19 @@ func (c MaterialsCatalog) ValidOptions(attributeCode string, current []MaterialA
 	return narrowed
 }
 
+// ProductTypesFor returns the ProductTypes belonging to family, in catalog
+// declaration order.
+func (c MaterialsCatalog) ProductTypesFor(family string) []ProductType {
+	family = canonical(family)
+	var productTypes []ProductType
+	for _, productType := range c.ProductTypes {
+		if canonical(productType.FamilyCode) == family {
+			productTypes = append(productTypes, productType)
+		}
+	}
+	return productTypes
+}
+
 // Effective resolves a's mode, identity participation, and applicability
 // given current — the same conditional-rule evaluation NewMaterial already
 // applies internally, exposed so a UI can decide whether to ask about this

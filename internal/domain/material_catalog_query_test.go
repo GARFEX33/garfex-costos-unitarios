@@ -167,6 +167,29 @@ func TestValidOptionsWithNoRelationsReturnsFullListRegardlessOfCurrent(t *testin
 	}
 }
 
+// TestProductTypesForReturnsCatalogDeclarationOrder covers ProductTypesFor's
+// core contract against the real catalog: each family has exactly one
+// ProductType today.
+func TestProductTypesForReturnsCatalogDeclarationOrder(t *testing.T) {
+	catalog := NewMaterialsCatalog()
+	if got := catalog.ProductTypesFor("CONDUCTORES"); len(got) != 1 || got[0].Code != "CABLE" {
+		t.Fatalf("ProductTypesFor(\"CONDUCTORES\") = %v, want [CABLE]", got)
+	}
+	if got := catalog.ProductTypesFor("CANALIZACIONES"); len(got) != 1 || got[0].Code != "TUBERIA" {
+		t.Fatalf("ProductTypesFor(\"CANALIZACIONES\") = %v, want [TUBERIA]", got)
+	}
+}
+
+// TestProductTypesForUnknownFamilyReturnsEmpty covers ProductTypesFor's
+// read-query contract: an unknown family yields an empty result, not an
+// error.
+func TestProductTypesForUnknownFamilyReturnsEmpty(t *testing.T) {
+	catalog := NewMaterialsCatalog()
+	if got := catalog.ProductTypesFor("NOPE"); len(got) != 0 {
+		t.Fatalf("ProductTypesFor(unknown family) = %v, want empty", got)
+	}
+}
+
 // TestFamilyAttributeEffectiveAppliesConditionalRule covers
 // FamilyAttribute.Effective for CONDUCTORES/CABLE's color attribute: when
 // insulation=DESNUDO is already chosen, its ModeConditional rule fires and
