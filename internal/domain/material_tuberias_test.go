@@ -6,10 +6,10 @@ func TestTuberiasCatalogCreatesValidMaterials(t *testing.T) {
 	catalog := NewMaterialsCatalog()
 	tests := []struct {
 		name, tipo, diameterInch, diameterMM, wantIdentity string
-	}{{"conduit pared delgada 1/2", "CONDUIT PARED DELGADA", `1/2"`, "13 mm", `TUBERIAS|diameter_inch=1/2"|tipo=CONDUIT PARED DELGADA`}, {"conduit pared gruesa 3/4", "CONDUIT PARED GRUESA", `3/4"`, "19 mm", `TUBERIAS|diameter_inch=3/4"|tipo=CONDUIT PARED GRUESA`}, {"pvc conduit 1", "PVC CONDUIT", `1"`, "25 mm", `TUBERIAS|diameter_inch=1"|tipo=PVC CONDUIT`}, {"conduit pared delgada 4", "CONDUIT PARED DELGADA", `4"`, "100 mm", `TUBERIAS|diameter_inch=4"|tipo=CONDUIT PARED DELGADA`}}
+	}{{"conduit pared delgada 1/2", "CONDUIT PARED DELGADA", `1/2"`, "13 mm", `CANALIZACIONES|TUBERIA|diameter_inch=1/2"|tipo=CONDUIT PARED DELGADA`}, {"conduit pared gruesa 3/4", "CONDUIT PARED GRUESA", `3/4"`, "19 mm", `CANALIZACIONES|TUBERIA|diameter_inch=3/4"|tipo=CONDUIT PARED GRUESA`}, {"pvc conduit 1", "PVC CONDUIT", `1"`, "25 mm", `CANALIZACIONES|TUBERIA|diameter_inch=1"|tipo=PVC CONDUIT`}, {"conduit pared delgada 4", "CONDUIT PARED DELGADA", `4"`, "100 mm", `CANALIZACIONES|TUBERIA|diameter_inch=4"|tipo=CONDUIT PARED DELGADA`}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			material, err := NewMaterial(catalog, "TUBERIAS", "PZA", []MaterialAttributeValue{OptionValue("tipo", tt.tipo), OptionValue("diameter_inch", tt.diameterInch), OptionValue("diameter_mm", tt.diameterMM)})
+			material, err := NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", []MaterialAttributeValue{OptionValue("tipo", tt.tipo), OptionValue("diameter_inch", tt.diameterInch), OptionValue("diameter_mm", tt.diameterMM)})
 			if err != nil {
 				t.Fatalf("NewMaterial() error = %v", err)
 			}
@@ -33,7 +33,7 @@ func TestTuberiasValidationRejectsInvalidTypeDiameterAndPair(t *testing.T) {
 	}{{"missing tipo", "PZA", without(valid, "tipo")}, {"missing diameter_inch", "PZA", without(valid, "diameter_inch")}, {"missing diameter_mm", "PZA", without(valid, "diameter_mm")}, {"invalid tipo option", "PZA", replace(valid, OptionValue("tipo", "EMT"))}, {"invalid diameter_inch option", "PZA", replace(valid, OptionValue("diameter_inch", `1/8"`))}, {"invalid diameter_mm option", "PZA", replace(valid, OptionValue("diameter_mm", "10 mm"))}, {"incoherent inch/mm pair", "PZA", replace(valid, OptionValue("diameter_mm", "25 mm"))}, {"invalid natural unit", "M", valid}, {"invalid natural unit KG", "KG", valid}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewMaterial(catalog, "TUBERIAS", tt.unit, tt.values)
+			_, err := NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", tt.unit, tt.values)
 			if err == nil {
 				t.Fatal("NewMaterial() error = nil, want validation error")
 			}
@@ -44,11 +44,11 @@ func TestTuberiasValidationRejectsInvalidTypeDiameterAndPair(t *testing.T) {
 func TestTuberiasNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
 	catalog := NewMaterialsCatalog()
 	values := []MaterialAttributeValue{OptionValue("tipo", "CONDUIT PARED DELGADA"), OptionValue("diameter_inch", `1/2"`), OptionValue("diameter_mm", "13 mm")}
-	a, err := NewMaterial(catalog, "TUBERIAS", "PZA", values)
+	a, err := NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", values)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewMaterial(catalog, "TUBERIAS", "PZA", values)
+	b, err := NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", values)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +61,11 @@ func TestTuberiasNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
 func TestTuberiasDuplicateIdentity(t *testing.T) {
 	catalog := NewMaterialsCatalog()
 	values := []MaterialAttributeValue{OptionValue("tipo", "CONDUIT PARED DELGADA"), OptionValue("diameter_inch", `1/2"`), OptionValue("diameter_mm", "13 mm")}
-	a, err := NewMaterial(catalog, "TUBERIAS", "PZA", values)
+	a, err := NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", values)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewMaterial(catalog, "TUBERIAS", "PZA", values)
+	b, err := NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", values)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestTuberiasDuplicateIdentity(t *testing.T) {
 func TestTuberiasDistinctIdentitiesForTechnicalDifferences(t *testing.T) {
 	catalog := NewMaterialsCatalog()
 	makeMaterial := func(tipo, diameterInch, diameterMM string) Material {
-		m, err := NewMaterial(catalog, "TUBERIAS", "PZA", []MaterialAttributeValue{OptionValue("tipo", tipo), OptionValue("diameter_inch", diameterInch), OptionValue("diameter_mm", diameterMM)})
+		m, err := NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", []MaterialAttributeValue{OptionValue("tipo", tipo), OptionValue("diameter_inch", diameterInch), OptionValue("diameter_mm", diameterMM)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestTuberiasOnlyApprovedAttributesAndOptions(t *testing.T) {
 	catalog := NewMaterialsCatalog()
 	approvedAttributes := map[string]bool{"tipo": true, "diameter_inch": true, "diameter_mm": true}
 	for _, fa := range catalog.FamilyAttributes {
-		if fa.FamilyCode != "TUBERIAS" {
+		if fa.FamilyCode != "CANALIZACIONES" {
 			continue
 		}
 		if !approvedAttributes[fa.Definition.Code] {

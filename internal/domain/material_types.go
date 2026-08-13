@@ -42,6 +42,12 @@ type MaterialFamily struct {
 	Category string
 }
 
+type ProductType struct {
+	FamilyCode string
+	Code       string
+	Name       string
+}
+
 type UnitDefinition struct {
 	Code      string
 	Symbol    string
@@ -79,6 +85,7 @@ type AttributeRule struct {
 
 type FamilyAttribute struct {
 	FamilyCode           string
+	ProductTypeCode      string // "" = shared by every ProductType of this Family; non-empty scopes it to exactly one ProductType
 	Definition           AttributeDefinition
 	Mode                 AttributeMode
 	IdentityParticipates bool
@@ -140,10 +147,11 @@ func ControlledTextValue(attribute, value string) MaterialAttributeValue {
 }
 
 type Material struct {
-	FamilyCode  string
-	NaturalUnit string
-	Attributes  []MaterialAttributeValue
-	IdentityKey string
+	FamilyCode      string
+	ProductTypeCode string
+	NaturalUnit     string
+	Attributes      []MaterialAttributeValue
+	IdentityKey     string
 }
 
 // SearchCriteria narrows a Search over the material catalog. All fields
@@ -190,6 +198,7 @@ type AttributeOptionRelation struct {
 type MaterialsCatalog struct {
 	Categories       []MaterialCategory
 	Families         []MaterialFamily
+	ProductTypes     []ProductType
 	Units            []UnitDefinition
 	UnitPolicies     []FamilyUnitPolicy
 	Definitions      []AttributeDefinition
