@@ -57,29 +57,6 @@ func answerQuestion(t *testing.T, adapter *MaterialsWorkspaceAdapter, response I
 	return next
 }
 
-// answerMultiQuestion is answerQuestion's counterpart for the field picker's
-// SelectionMultiple QuestionRequest: it asserts response.Pending is a
-// multi-select QuestionRequest keyed materialEditorKey and drives the next
-// Respond call with the given Values slice.
-func answerMultiQuestion(t *testing.T, adapter *MaterialsWorkspaceAdapter, response InteractionResponse, values []string) InteractionResponse {
-	t.Helper()
-	request, ok := response.Pending.(QuestionRequest)
-	if !ok {
-		t.Fatalf("Pending = %T, want QuestionRequest", response.Pending)
-	}
-	if request.Key != materialEditorKey {
-		t.Fatalf("Pending.Key = %q, want %q", request.Key, materialEditorKey)
-	}
-	if request.SelectionMode != SelectionMultiple {
-		t.Fatalf("Pending.SelectionMode = %q, want %q", request.SelectionMode, SelectionMultiple)
-	}
-	next, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: request.Key, Values: values})
-	if err != nil {
-		t.Fatalf("Respond(%v) error = %v, want nil", values, err)
-	}
-	return next
-}
-
 // answerConfirmation is answerQuestion's counterpart for a ConfirmationRequest:
 // it asserts response.Pending is a ConfirmationRequest keyed materialEditorKey
 // and drives the next Respond call with the given value ("yes"/"no").
@@ -397,12 +374,13 @@ func cableAttributeValues() []domain.MaterialAttributeValue {
 	}
 }
 
-// TestMaterialEditorEditFullHappyPathReproducesSameMaterial covers the new
+// TestMaterialEditorEditFullHappyPathReproducesSameMaterial covers the
 // picker-based EDIT flow end to end: opening a CONDUCTORES/CABLE material's
 // detail, selecting "Editar", confirming the wizard opens on the field
 // picker (never Family/ProductType), picking ONE field, confirming its
-// question defaults to the material's current value, and confirming that
-// answering with that SAME value calls updater.Update (never
+// question defaults to the material's current value, answering with that
+// SAME value, looping back to the picker, and picking "Terminar edición" to
+// reach the confirmation — confirming it calls updater.Update (never
 // creator.Create) with the original Material.ID preserved and the exact
 // same IdentityKey — proving a no-op single-field edit truly changes
 // nothing.
@@ -434,7 +412,7 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 		t.Fatalf("Prompt = %q, want the field picker prompt", pickerRequest.Prompt)
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{"conductor_material"})
+	response = answerQuestion(t, adapter, response, "conductor_material")
 
 	request, ok := response.Pending.(QuestionRequest)
 	if !ok {
@@ -445,6 +423,7 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 	}
 
 	response = answerQuestion(t, adapter, response, "COBRE") // unchanged
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 	response = answerConfirmation(t, adapter, response, "yes")
 
 	if creator.callCount != 0 {
@@ -509,6 +488,7 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 		"color":                  "Color: NEGRO",
 		"voltage":                "Voltage: 600 V",
 		editNaturalUnitFieldCode: "Unidad natural: M",
+		editFinishFieldCode:      "Terminar edición",
 	}
 	if len(pickerRequest.Options) != len(wantLabels) {
 		t.Fatalf("picker Options = %v, want %d entries: %v", pickerRequest.Options, len(wantLabels), wantLabels)
@@ -523,8 +503,9 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 		}
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{"color"})
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO") // changed from NEGRO
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 	response = answerConfirmation(t, adapter, response, "yes")
 
 	if updater.callCount != 1 {
@@ -562,8 +543,9 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 }
 
 // TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial covers
-// finishEditor's ErrDuplicateMaterial path for EDIT through the new 2-step
-// (picker -> single answer) flow: when Update reports a collision with a
+// finishEditor's ErrDuplicateMaterial path for EDIT through the picker
+// loop (pick field -> single answer -> Terminar edición) flow: when Update
+// reports a collision with a
 // DIFFERENT already-existing material, the response must show that other
 // material's detail — never a bare failure, never a silent overwrite of
 // either material.
@@ -599,8 +581,9 @@ func TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial(t *testing.T) 
 	// affects the later duplicate-lookup Get call in finishEditor.
 	getter.material = other
 
-	response = answerMultiQuestion(t, adapter, response, []string{"color"})
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO")
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 	response = answerConfirmation(t, adapter, response, "yes")
 
 	if updater.callCount != 1 {
@@ -655,8 +638,9 @@ func TestMaterialEditorEditDesnudoDropsNowForbiddenAttributes(t *testing.T) {
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{"insulation"})
+	response = answerQuestion(t, adapter, response, "insulation")
 	response = answerQuestion(t, adapter, response, "DESNUDO")
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 	response = answerConfirmation(t, adapter, response, "yes")
 
 	if response.Pending != nil {
@@ -696,7 +680,9 @@ func TestMaterialEditorEditDesnudoDropsNowForbiddenAttributes(t *testing.T) {
 // TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves covers
 // the field picker's explicit "Unidad natural" entry: picking it must route
 // to exactly the same unitQuestion CREATE's last step already uses (reused
-// unchanged, see answerAttributePicker), and answering it must save via
+// unchanged, see answerAttributePicker), answering it must loop back to the
+// SAME field picker (not straight to the confirmation), and picking
+// "Terminar edición" from there must reach the confirmation and save via
 // finishEditor. The real catalog declares only ONE allowed NaturalUnit per
 // family today (CONDUCTORES -> "M" only — see NewMaterialsCatalog's single
 // UnitPolicies entry for CONDUCTORES), so there is no second value the real
@@ -723,7 +709,7 @@ func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testi
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{editNaturalUnitFieldCode})
+	response = answerQuestion(t, adapter, response, editNaturalUnitFieldCode)
 
 	request, ok := response.Pending.(QuestionRequest)
 	if !ok {
@@ -737,6 +723,11 @@ func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testi
 	}
 
 	response = answerQuestion(t, adapter, response, "M")
+
+	if _, ok := response.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (back at the field picker)", response.Pending)
+	}
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 	response = answerConfirmation(t, adapter, response, "yes")
 
 	if updater.callCount != 1 {
@@ -754,10 +745,11 @@ func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testi
 }
 
 // TestMaterialEditorEditMultiFieldHappyPathSavesBothChanges covers the core
-// new behavior this task adds: picking TWO fields (color, voltage) from the
-// picker's checkbox menu, answering each in turn, seeing a confirmation
-// summary that mentions BOTH new values, and only then persisting — a single
-// Update call carrying both changes together.
+// loop-edit behavior: picking a field (color), answering it, landing back on
+// the SAME picker (now showing color's updated value), picking a SECOND
+// field (voltage), answering it, picking "Terminar edición", seeing a
+// confirmation summary that mentions BOTH new values, and only then
+// persisting — a single Update call carrying both changes together.
 func TestMaterialEditorEditMultiFieldHappyPathSavesBothChanges(t *testing.T) {
 	catalog := domain.NewMaterialsCatalog()
 	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
@@ -777,9 +769,29 @@ func TestMaterialEditorEditMultiFieldHappyPathSavesBothChanges(t *testing.T) {
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{"color", "voltage"})
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO") // color, changed from NEGRO
-	response = answerQuestion(t, adapter, response, "300 V")  // voltage, changed from 600 V
+
+	pickerAgain, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (back at the field picker)", response.Pending)
+	}
+	foundUpdatedColor := false
+	for _, option := range pickerAgain.Options {
+		if option.ID == "color" {
+			foundUpdatedColor = true
+			if option.Label != "Color: BLANCO" {
+				t.Fatalf("picker color Option.Label = %q, want %q (updated value)", option.Label, "Color: BLANCO")
+			}
+		}
+	}
+	if !foundUpdatedColor {
+		t.Fatalf("picker Options = %v, want a color entry", pickerAgain.Options)
+	}
+
+	response = answerQuestion(t, adapter, response, "voltage")
+	response = answerQuestion(t, adapter, response, "300 V") // voltage, changed from 600 V
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 
 	confirmRequest, ok := response.Pending.(ConfirmationRequest)
 	if !ok {
@@ -860,9 +872,11 @@ func TestMaterialEditorEditConfirmationDeclineDiscardsChanges(t *testing.T) {
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{"color", "voltage"})
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO")
+	response = answerQuestion(t, adapter, response, "voltage")
 	response = answerQuestion(t, adapter, response, "300 V")
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 
 	if _, ok := response.Pending.(ConfirmationRequest); !ok {
 		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
@@ -896,9 +910,9 @@ func TestMaterialEditorEditConfirmationDeclineDiscardsChanges(t *testing.T) {
 }
 
 // TestMaterialEditorEditMultiFieldIncludingNaturalUnitThreadsCurrentUnit
-// covers picking an attribute AND the "Unidad natural" entry together: both
-// must be asked about, and the (possibly unchanged) unit answer must still
-// land correctly in the final persisted material via
+// covers picking an attribute AND the "Unidad natural" entry, in separate
+// loop iterations: both must be asked about, and the (possibly unchanged)
+// unit answer must still land correctly in the final persisted material via
 // materialEditorState.currentUnit — proving the unit is threaded through to
 // finishEditor regardless of exactly where NaturalUnit falls in the
 // answered sequence, not just when it happens to be CREATE's fixed last
@@ -921,8 +935,13 @@ func TestMaterialEditorEditMultiFieldIncludingNaturalUnitThreadsCurrentUnit(t *t
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{"color", editNaturalUnitFieldCode})
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO") // color
+
+	if _, ok := response.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (back at the field picker)", response.Pending)
+	}
+	response = answerQuestion(t, adapter, response, editNaturalUnitFieldCode)
 
 	unitRequest, ok := response.Pending.(QuestionRequest)
 	if !ok {
@@ -933,6 +952,11 @@ func TestMaterialEditorEditMultiFieldIncludingNaturalUnitThreadsCurrentUnit(t *t
 	}
 
 	response = answerQuestion(t, adapter, response, "M") // the catalog's only allowed unit
+
+	if _, ok := response.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (back at the field picker)", response.Pending)
+	}
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 
 	if _, ok := response.Pending.(ConfirmationRequest); !ok {
 		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
@@ -964,11 +988,12 @@ func TestMaterialEditorEditMultiFieldIncludingNaturalUnitThreadsCurrentUnit(t *t
 }
 
 // TestMaterialEditorEditEscMidMultiFieldSequenceAbortsImmediately covers Esc
-// (InputCancel) sent mid multi-field sequence, after the first selected
-// field has already been answered but before the second: the whole edit
-// must abort immediately, exactly like it does at any other step, and
-// nothing must be persisted — proving respondToEditor's top-of-function
-// InputCancel handling is unweakened by this restructuring.
+// (InputCancel) sent mid loop-edit sequence, after the first field has
+// already been answered and the flow is back at the field picker but before
+// a second field is picked: the whole edit must abort immediately, exactly
+// like it does at any other step, and nothing must be persisted — proving
+// respondToEditor's top-of-function InputCancel handling is unweakened by
+// this restructuring.
 func TestMaterialEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.T) {
 	catalog := domain.NewMaterialsCatalog()
 	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
@@ -988,11 +1013,11 @@ func TestMaterialEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerMultiQuestion(t, adapter, response, []string{"color", "voltage"})
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO") // color answered
 
 	if _, ok := response.Pending.(QuestionRequest); !ok {
-		t.Fatalf("Pending = %T, want QuestionRequest (voltage question still pending)", response.Pending)
+		t.Fatalf("Pending = %T, want QuestionRequest (back at the field picker)", response.Pending)
 	}
 
 	cancelled, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputCancel})
@@ -1007,5 +1032,135 @@ func TestMaterialEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.
 	}
 	if creator.callCount != 0 || updater.callCount != 0 {
 		t.Fatalf("creator/updater call counts = %d/%d, want 0/0 (Esc mid-sequence must not persist anything)", creator.callCount, updater.callCount)
+	}
+}
+
+// TestMaterialEditorEditFinishImmediatelyCancelsCleanly covers picking
+// "Terminar edición" as the VERY FIRST answer, before touching any field:
+// with nothing changed there is no point showing an empty confirmation, so
+// this must cancel cleanly with a plain message, never a ConfirmationRequest,
+// never call Update/Create, and reset a.editor so a fresh "nuevo material"/
+// "Editar" works normally afterward.
+func TestMaterialEditorEditFinishImmediatelyCancelsCleanly(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	creator := &fakeMaterialCreator{}
+	updater := &fakeMaterialUpdater{}
+	searcher := &fakeMaterialSearcher{results: []domain.Material{existing}}
+	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{}, creator, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
+
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil (no confirmation when nothing changed)", response.Pending)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("Messages = %v, want exactly one message", response.Messages)
+	}
+	if _, ok := response.Messages[0].(TextMessage); !ok {
+		t.Fatalf("Messages[0] = %T, want TextMessage", response.Messages[0])
+	}
+	if creator.callCount != 0 || updater.callCount != 0 {
+		t.Fatalf("creator/updater call counts = %d/%d, want 0/0 (nothing changed, nothing to save)", creator.callCount, updater.callCount)
+	}
+	if adapter.editor != nil {
+		t.Fatalf("adapter.editor = %#v, want nil after finishing with no changes", adapter.editor)
+	}
+
+	searcher.results = []domain.Material{
+		{FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|1"},
+	}
+	searchResponse, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
+	if err != nil {
+		t.Fatalf("Respond(search) error = %v, want nil", err)
+	}
+	if searcher.callCount != 2 {
+		t.Fatalf("Search call count = %d, want 2 (openDetailViaSearch's search + a fresh search afterward)", searcher.callCount)
+	}
+	if _, ok := searchResponse.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want a normal search-results QuestionRequest", searchResponse.Pending)
+	}
+}
+
+// TestMaterialEditorEditSameFieldTwiceKeepsLatestValueOnly covers re-editing
+// the SAME field twice in one session (Color -> BLANCO, loop back, Color
+// again -> ROJO): the confirmation summary must list Color exactly ONCE,
+// showing the LATEST value (ROJO, not BLANCO, not both), and the final
+// persisted material must carry Color=ROJO — proving editedCodes tracks
+// "what to list" (deduplicated) while the summary always reads the CURRENT
+// value from state.values regardless of how many times a field was touched.
+func TestMaterialEditorEditSameFieldTwiceKeepsLatestValueOnly(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, "color")
+	response = answerQuestion(t, adapter, response, "BLANCO")
+
+	if _, ok := response.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (back at the field picker)", response.Pending)
+	}
+	response = answerQuestion(t, adapter, response, "color") // re-pick the same field
+	response = answerQuestion(t, adapter, response, "ROJO")
+	response = answerQuestion(t, adapter, response, editFinishFieldCode)
+
+	confirmRequest, ok := response.Pending.(ConfirmationRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
+	}
+	if strings.Count(confirmRequest.Question, "Color:") != 1 {
+		t.Fatalf("confirmation Question = %q, want exactly one Color: line", confirmRequest.Question)
+	}
+	if !strings.Contains(confirmRequest.Question, "Color: ROJO") {
+		t.Fatalf("confirmation Question = %q, want it to mention Color: ROJO", confirmRequest.Question)
+	}
+	if strings.Contains(confirmRequest.Question, "BLANCO") {
+		t.Fatalf("confirmation Question = %q, want no mention of the discarded BLANCO value", confirmRequest.Question)
+	}
+
+	response = answerConfirmation(t, adapter, response, "yes")
+
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	foundColor := false
+	for _, value := range updater.gotMaterial.Attributes {
+		if value.AttributeCode == "color" {
+			foundColor = true
+			if value.OptionCode != "ROJO" {
+				t.Fatalf("color attribute = %q, want %q", value.OptionCode, "ROJO")
+			}
+		}
+	}
+	if !foundColor {
+		t.Fatalf("gotMaterial.Attributes = %+v, want a color attribute", updater.gotMaterial.Attributes)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
 	}
 }
