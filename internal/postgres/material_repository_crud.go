@@ -29,16 +29,17 @@ func (r *materialRepository) Create(ctx context.Context, material domain.Materia
 
 	var materialID int64
 	err = tx.QueryRow(ctx, `
-		INSERT INTO public.materiales (family_id, natural_unit_id, display_name, identity_key)
-		SELECT f.id, u.id, $3, $4
+		INSERT INTO public.materiales (family_id, product_type_id, natural_unit_id, display_name, identity_key)
+		SELECT f.id, pt.id, u.id, $4, $5
 		FROM public.material_families f
+		JOIN public.product_types pt ON pt.family_id = f.id AND pt.code = $2
 		JOIN public.family_unit_policies p ON p.family_id = f.id AND p.allowed
-		JOIN public.unit_definitions u ON u.id = p.unit_id AND u.code = $2
+		JOIN public.unit_definitions u ON u.id = p.unit_id AND u.code = $3
 		WHERE f.code = $1
-		RETURNING id`, material.FamilyCode, material.NaturalUnit, material.FamilyCode, material.IdentityKey).Scan(&materialID)
+		RETURNING id`, material.FamilyCode, material.ProductTypeCode, material.NaturalUnit, material.FamilyCode, material.IdentityKey).Scan(&materialID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("%w: family %q or unit %q", domain.ErrMaterialReference, material.FamilyCode, material.NaturalUnit)
+			return fmt.Errorf("%w: family %q, product type %q, or unit %q", domain.ErrMaterialReference, material.FamilyCode, material.ProductTypeCode, material.NaturalUnit)
 		}
 		return mapRepositoryError(fmt.Errorf("insert material: %w", err))
 	}
@@ -72,12 +73,13 @@ func (r *materialRepository) Get(ctx context.Context, familyCode, identityKey st
 		return domain.Material{}, errors.New("material repository: nil pool")
 	}
 	var materialID int64
-	var naturalUnit, storedFamily string
+	var naturalUnit, storedFamily, productTypeCode string
 	err := r.pool.QueryRow(ctx, `
-		SELECT m.id, f.code, u.code FROM public.materiales m
+		SELECT m.id, f.code, pt.code, u.code FROM public.materiales m
 		JOIN public.material_families f ON f.id = m.family_id
+		JOIN public.product_types pt ON pt.id = m.product_type_id
 		JOIN public.unit_definitions u ON u.id = m.natural_unit_id
-		WHERE f.code = $1 AND m.identity_key = $2`, familyCode, identityKey).Scan(&materialID, &storedFamily, &naturalUnit)
+		WHERE f.code = $1 AND m.identity_key = $2`, familyCode, identityKey).Scan(&materialID, &storedFamily, &productTypeCode, &naturalUnit)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Material{}, fmt.Errorf("%w: material %s/%s", domain.ErrMaterialNotFound, familyCode, identityKey)
 	}
@@ -96,7 +98,7 @@ func (r *materialRepository) Get(ctx context.Context, familyCode, identityKey st
 		return domain.Material{}, fmt.Errorf("load material attributes: %w", err)
 	}
 	defer rows.Close()
-	material := domain.Material{FamilyCode: storedFamily, NaturalUnit: naturalUnit, IdentityKey: identityKey}
+	material := domain.Material{FamilyCode: storedFamily, ProductTypeCode: productTypeCode, NaturalUnit: naturalUnit, IdentityKey: identityKey}
 	for rows.Next() {
 		var code, valueType, state string
 		var option, unit, text *string
