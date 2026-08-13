@@ -55,12 +55,25 @@ func TestMaterialsHandler(t *testing.T) {
 	}
 }
 
+// fakeMaterialGetter is the shared materialGetter test double for this
+// package (tui) — reused as-is by materials_workspace_adapter_test.go
+// rather than duplicated, per this project's established convention of not
+// duplicating test fakes across files in the same package. It records the
+// most recent call's arguments and a call count so callers can assert on
+// exactly what/how many times Get was invoked.
 type fakeMaterialGetter struct {
 	material domain.Material
 	err      error
+
+	callCount      int
+	gotFamilyCode  string
+	gotIdentityKey string
 }
 
-func (f *fakeMaterialGetter) Get(context.Context, string, string) (domain.Material, error) {
+func (f *fakeMaterialGetter) Get(_ context.Context, familyCode, identityKey string) (domain.Material, error) {
+	f.callCount++
+	f.gotFamilyCode = familyCode
+	f.gotIdentityKey = identityKey
 	return f.material, f.err
 }
 
