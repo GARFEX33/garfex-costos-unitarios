@@ -360,6 +360,143 @@ func TestMaterialRepositoryIntegration(t *testing.T) {
 			t.Fatalf("Search() results = %d, want 1 (defaultSearchLimit fallback)", len(got))
 		}
 	})
+
+	t.Run("update changes attributes and identity key keeping same id, old identity gone", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		original := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, original); err != nil {
+			t.Fatalf("Create() original: %v", err)
+		}
+		stored, err := repo.Get(ctx, original.FamilyCode, original.IdentityKey)
+		if err != nil {
+			t.Fatalf("Get() original: %v", err)
+		}
+		if stored.ID == 0 {
+			t.Fatalf("Get() original ID = 0, want non-zero")
+		}
+		candidate := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "BLANCO"), domain.QuantityValue("voltage", "600", "V")})
+		candidate.ID = stored.ID
+		if err := repo.Update(ctx, candidate); err != nil {
+			t.Fatalf("Update() = %v, want nil", err)
+		}
+		got, err := repo.Get(ctx, candidate.FamilyCode, candidate.IdentityKey)
+		if err != nil {
+			t.Fatalf("Get() after update by new identity: %v", err)
+		}
+		if got.ID != stored.ID {
+			t.Fatalf("Get() after update ID = %d, want %d", got.ID, stored.ID)
+		}
+		assertMaterialEqual(t, got, candidate)
+		if _, err := repo.Get(ctx, original.FamilyCode, original.IdentityKey); !errors.Is(err, domain.ErrMaterialNotFound) {
+			t.Fatalf("Get() by old identity error = %v, want ErrMaterialNotFound", err)
+		}
+	})
+
+	t.Run("update to a colliding identity returns ErrDuplicateMaterial and leaves original unchanged", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		black := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, black); err != nil {
+			t.Fatalf("Create() black: %v", err)
+		}
+		white := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "BLANCO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, white); err != nil {
+			t.Fatalf("Create() white: %v", err)
+		}
+		stored, err := repo.Get(ctx, black.FamilyCode, black.IdentityKey)
+		if err != nil {
+			t.Fatalf("Get() black: %v", err)
+		}
+		collision := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "BLANCO"), domain.QuantityValue("voltage", "600", "V")})
+		collision.ID = stored.ID
+		if err := repo.Update(ctx, collision); !errors.Is(err, domain.ErrDuplicateMaterial) {
+			t.Fatalf("Update() error = %v, want ErrDuplicateMaterial", err)
+		}
+		assertRoundTrip(t, ctx, repo, black)
+	})
+
+	t.Run("update with unknown product type returns ErrMaterialReference", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		original := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, original); err != nil {
+			t.Fatalf("Create() original: %v", err)
+		}
+		stored, err := repo.Get(ctx, original.FamilyCode, original.IdentityKey)
+		if err != nil {
+			t.Fatalf("Get() original: %v", err)
+		}
+		candidate := stored
+		candidate.ProductTypeCode = "UNKNOWN_PRODUCT_TYPE"
+		if err := repo.Update(ctx, candidate); !errors.Is(err, domain.ErrMaterialReference) {
+			t.Fatalf("Update() error = %v, want ErrMaterialReference", err)
+		}
+	})
+
+	t.Run("update with unknown id returns ErrMaterialNotFound", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		candidate := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		candidate.ID = 999999999
+		if err := repo.Update(ctx, candidate); !errors.Is(err, domain.ErrMaterialNotFound) {
+			t.Fatalf("Update() error = %v, want ErrMaterialNotFound", err)
+		}
+	})
+
+	t.Run("SetActive false hides from Search but Get still finds it, SetActive true restores Search", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		material := mustCreateMaterial(t, catalog, "CONDUCTORES", "CABLE", "M", []domain.MaterialAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "10 AWG"), domain.OptionValue("insulation", "THW-LS"), domain.OptionValue("color", "NEGRO"), domain.QuantityValue("voltage", "600", "V")})
+		if err := repo.Create(ctx, material); err != nil {
+			t.Fatalf("Create() material: %v", err)
+		}
+		stored, err := repo.Get(ctx, material.FamilyCode, material.IdentityKey)
+		if err != nil {
+			t.Fatalf("Get() material: %v", err)
+		}
+		criteria := domain.SearchCriteria{FamilyCode: "CONDUCTORES"}
+		before, err := repo.Search(ctx, criteria)
+		if err != nil {
+			t.Fatalf("Search() before: %v", err)
+		}
+		if len(before) != 1 {
+			t.Fatalf("Search() before = %d results, want 1", len(before))
+		}
+
+		if err := repo.SetActive(ctx, stored.ID, false); err != nil {
+			t.Fatalf("SetActive(false) = %v, want nil", err)
+		}
+		afterDeactivate, err := repo.Search(ctx, criteria)
+		if err != nil {
+			t.Fatalf("Search() after deactivate: %v", err)
+		}
+		if len(afterDeactivate) != 0 {
+			t.Fatalf("Search() after deactivate = %d results, want 0", len(afterDeactivate))
+		}
+		if _, err := repo.Get(ctx, material.FamilyCode, material.IdentityKey); err != nil {
+			t.Fatalf("Get() after deactivate = %v, want nil (Get ignores active)", err)
+		}
+
+		if err := repo.SetActive(ctx, stored.ID, true); err != nil {
+			t.Fatalf("SetActive(true) = %v, want nil", err)
+		}
+		afterRestore, err := repo.Search(ctx, criteria)
+		if err != nil {
+			t.Fatalf("Search() after restore: %v", err)
+		}
+		if len(afterRestore) != 1 {
+			t.Fatalf("Search() after restore = %d results, want 1", len(afterRestore))
+		}
+	})
+
+	t.Run("SetActive on unknown id returns ErrMaterialNotFound", func(t *testing.T) {
+		cleanupMaterials(ctx, t, pool)
+		defer cleanupMaterials(ctx, t, pool)
+		if err := repo.SetActive(ctx, 999999999, false); !errors.Is(err, domain.ErrMaterialNotFound) {
+			t.Fatalf("SetActive() error = %v, want ErrMaterialNotFound", err)
+		}
+	})
 }
 
 func mustCreateMaterial(t *testing.T, catalog domain.MaterialsCatalog, family, productType, unit string, values []domain.MaterialAttributeValue) domain.Material {

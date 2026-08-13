@@ -163,6 +163,7 @@ func ControlledTextValue(attribute, value string) MaterialAttributeValue {
 }
 
 type Material struct {
+	ID              int64
 	FamilyCode      string
 	ProductTypeCode string
 	NaturalUnit     string
@@ -202,6 +203,8 @@ type MaterialRepository interface {
 	Create(context.Context, Material) error
 	Get(context.Context, string, string) (Material, error)
 	Search(context.Context, SearchCriteria) ([]Material, error)
+	Update(context.Context, Material) error
+	SetActive(context.Context, int64, bool) error
 }
 
 type AttributeOptionRelation struct {

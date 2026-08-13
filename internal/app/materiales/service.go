@@ -57,3 +57,40 @@ func (s *Service) Search(ctx context.Context, criteria domain.SearchCriteria) ([
 func (s *Service) Describe(material domain.Material) string {
 	return s.catalog.Describe(material)
 }
+
+// Update persists changes to an existing material, identified by its stable
+// ID (independent of IdentityKey, which the update itself may change).
+func (s *Service) Update(ctx context.Context, material domain.Material) error {
+	if material.ID == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.repo.Update(ctx, material); err != nil {
+		if errors.Is(err, domain.ErrMaterialNotFound) {
+			return domain.ErrMaterialNotFound
+		}
+		if errors.Is(err, domain.ErrDuplicateMaterial) {
+			return domain.ErrDuplicateMaterial
+		}
+		if errors.Is(err, domain.ErrMaterialReference) {
+			return domain.ErrMaterialReference
+		}
+		return fmt.Errorf("update material %d: %w", material.ID, err)
+	}
+	return nil
+}
+
+// Delete soft-deletes a material by its stable ID (toggles active=false —
+// never a hard delete, per project decision: preserves future referential
+// integrity once other modules start referencing materials).
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.repo.SetActive(ctx, id, false); err != nil {
+		if errors.Is(err, domain.ErrMaterialNotFound) {
+			return domain.ErrMaterialNotFound
+		}
+		return fmt.Errorf("delete material %d: %w", id, err)
+	}
+	return nil
+}

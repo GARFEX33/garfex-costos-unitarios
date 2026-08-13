@@ -29,6 +29,8 @@ func (fakeMaterialRepository) Get(context.Context, string, string) (domain.Mater
 func (fakeMaterialRepository) Search(context.Context, domain.SearchCriteria) ([]domain.Material, error) {
 	return nil, nil
 }
+func (fakeMaterialRepository) Update(context.Context, domain.Material) error { return nil }
+func (fakeMaterialRepository) SetActive(context.Context, int64, bool) error  { return nil }
 
 func TestRun(t *testing.T) {
 	valid := map[string]string{
