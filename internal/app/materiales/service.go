@@ -15,12 +15,14 @@ var ErrInvalidArgument = errors.New("material lookup argument is required")
 
 // Service implements read-only material use cases.
 type Service struct {
-	repo domain.MaterialRepository
+	repo    domain.MaterialRepository
+	catalog domain.MaterialsCatalog
 }
 
-// NewService returns a Service backed by repo.
-func NewService(repo domain.MaterialRepository) *Service {
-	return &Service{repo: repo}
+// NewService returns a Service backed by repo, using catalog to resolve
+// catalog-controlled concerns such as canonical presentation.
+func NewService(repo domain.MaterialRepository, catalog domain.MaterialsCatalog) *Service {
+	return &Service{repo: repo, catalog: catalog}
 }
 
 // Get returns a material by its family code and deterministic identity key.
@@ -48,4 +50,10 @@ func (s *Service) Search(ctx context.Context, criteria domain.SearchCriteria) ([
 		return nil, fmt.Errorf("search materials: %w", err)
 	}
 	return materials, nil
+}
+
+// Describe resolves the canonical presentation of material using the
+// catalog-controlled configuration owned by its ProductType.
+func (s *Service) Describe(material domain.Material) string {
+	return s.catalog.Describe(material)
 }

@@ -48,6 +48,22 @@ type ProductType struct {
 	Name       string
 }
 
+// PresentationField is one entry of a ProductType's catalog-controlled
+// canonical presentation: an explicitly ordered subset of its attributes,
+// used to compose a human-readable title (see MaterialsCatalog.Describe).
+// It is deliberately never an automatic dump of every attribute.
+type PresentationField struct {
+	ProductTypeCode string
+	AttributeCode   string
+	Position        int
+}
+
+// NotApplicableText is the sentinel domain.MaterialAttributeValue.Text value
+// for an attribute that is structurally not applicable to a material (e.g.
+// color/voltage on a DESNUDO conductor). A Material fetched from the real
+// repository carries this marker instead of omitting the attribute entirely.
+const NotApplicableText = "NOT_APPLICABLE"
+
 type UnitDefinition struct {
 	Code      string
 	Symbol    string
@@ -196,13 +212,14 @@ type AttributeOptionRelation struct {
 }
 
 type MaterialsCatalog struct {
-	Categories       []MaterialCategory
-	Families         []MaterialFamily
-	ProductTypes     []ProductType
-	Units            []UnitDefinition
-	UnitPolicies     []FamilyUnitPolicy
-	Definitions      []AttributeDefinition
-	FamilyAttributes []FamilyAttribute
-	Options          []AttributeOption
-	Relations        []AttributeOptionRelation
+	Categories         []MaterialCategory
+	Families           []MaterialFamily
+	ProductTypes       []ProductType
+	PresentationFields []PresentationField
+	Units              []UnitDefinition
+	UnitPolicies       []FamilyUnitPolicy
+	Definitions        []AttributeDefinition
+	FamilyAttributes   []FamilyAttribute
+	Options            []AttributeOption
+	Relations          []AttributeOptionRelation
 }

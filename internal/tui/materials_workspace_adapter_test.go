@@ -11,7 +11,7 @@ import (
 )
 
 func TestMaterialsWorkspaceAdapterGreeting(t *testing.T) {
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	greeting, ok := adapter.Greeting().(TextMessage)
 	if !ok {
 		t.Fatalf("Greeting() = %T, want TextMessage", adapter.Greeting())
@@ -34,7 +34,7 @@ func TestMaterialsWorkspaceAdapterGreeting(t *testing.T) {
 func TestMaterialsWorkspaceAdapterRespondNonTextInputsNeverFabricateOrSearch(t *testing.T) {
 	fake := &fakeMaterialSearcher{}
 	getter := &fakeMaterialGetter{}
-	adapter := NewMaterialsWorkspaceAdapter(fake, getter)
+	adapter := NewMaterialsWorkspaceAdapter(fake, getter, &fakeMaterialDescriber{})
 	inputs := []InteractionInput{
 		{Kind: InputSelection, Key: "some-other-key", Value: "some-option"},
 		{Kind: InputAction, ActionID: "whatever"},
@@ -77,7 +77,7 @@ func TestMaterialsWorkspaceAdapterRespondNonTextInputsNeverFabricateOrSearch(t *
 func TestMaterialsWorkspaceAdapterAcceptsMaterialSearcherAndGetter(t *testing.T) {
 	var searcher materialSearcher = &fakeMaterialSearcher{}
 	var getter materialGetter = &fakeMaterialGetter{}
-	adapter := NewMaterialsWorkspaceAdapter(searcher, getter)
+	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{})
 	if adapter == nil {
 		t.Fatal("NewMaterialsWorkspaceAdapter() = nil")
 	}
@@ -85,7 +85,7 @@ func TestMaterialsWorkspaceAdapterAcceptsMaterialSearcherAndGetter(t *testing.T)
 
 func TestMaterialsWorkspaceAdapterRespondSendsTextUnchanged(t *testing.T) {
 	fake := &fakeMaterialSearcher{}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	value := "  Cemento PORTLAND   Tipo I "
 	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: value}); err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -97,7 +97,7 @@ func TestMaterialsWorkspaceAdapterRespondSendsTextUnchanged(t *testing.T) {
 
 func TestMaterialsWorkspaceAdapterRespondSendsLimitEleven(t *testing.T) {
 	fake := &fakeMaterialSearcher{}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"}); err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
 	}
@@ -110,7 +110,7 @@ func TestMaterialsWorkspaceAdapterRespondSendsLimitEleven(t *testing.T) {
 // this PR: 0 results still produces a plain TextMessage, no Pending.
 func TestMaterialsWorkspaceAdapterRespondZeroResults(t *testing.T) {
 	fake := &fakeMaterialSearcher{results: nil}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "inexistente"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -135,7 +135,7 @@ func TestMaterialsWorkspaceAdapterRespondZeroResults(t *testing.T) {
 // no Pending.
 func TestMaterialsWorkspaceAdapterRespondErrorNeverLeaksRawError(t *testing.T) {
 	fake := &fakeMaterialSearcher{err: errors.New("connect to database: dial tcp refused")}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil (failure must already be converted to an InteractionMessage)", err)
@@ -169,7 +169,7 @@ func TestMaterialsWorkspaceAdapterRespondOneResultReturnsSelectableQuestion(t *t
 		Attributes: []domain.MaterialAttributeValue{domain.OptionValue("color", "GRIS")},
 	}
 	fake := &fakeMaterialSearcher{results: []domain.Material{material}}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -213,7 +213,7 @@ func TestMaterialsWorkspaceAdapterRespondMultipleResultsPreserveOrder(t *testing
 		{FamilyCode: "GRAVA", NaturalUnit: "m3", IdentityKey: "GRAVA|m3|3"},
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "x"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -245,7 +245,7 @@ func TestMaterialsWorkspaceAdapterRespondTenResultsNoMoreResultsHint(t *testing.
 		materials[i] = domain.Material{FamilyCode: fmt.Sprintf("FAM%d", i), NaturalUnit: "u", IdentityKey: fmt.Sprintf("FAM%d|u|%d", i, i)}
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "x"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -274,7 +274,7 @@ func TestMaterialsWorkspaceAdapterRespondElevenResultsShowsTenAndMoreHint(t *tes
 		materials[i] = domain.Material{FamilyCode: fmt.Sprintf("FAM%d", i), NaturalUnit: "u", IdentityKey: fmt.Sprintf("FAM%d|u|%d", i, i)}
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "x"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -301,7 +301,7 @@ func TestMaterialsWorkspaceAdapterRespondSelectResultOpensDetail(t *testing.T) {
 		Attributes: []domain.MaterialAttributeValue{domain.OptionValue("color", "GRIS")},
 	}
 	getter := &fakeMaterialGetter{material: material}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{
 		Kind: InputSelection, Key: searchResultsKey, Value: "CEMENT|CEMENT|kg|SECRET-42",
@@ -344,7 +344,7 @@ func TestMaterialsWorkspaceAdapterRespondSelectResultOpensDetail(t *testing.T) {
 // discipline for the Search failure path.
 func TestMaterialsWorkspaceAdapterRespondGetErrorNeverLeaksRawError(t *testing.T) {
 	getter := &fakeMaterialGetter{err: errors.New("connect to database: dial tcp refused")}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{
 		Kind: InputSelection, Key: searchResultsKey, Value: "CEMENT|CEMENT|kg|1",
@@ -377,7 +377,7 @@ func TestMaterialsWorkspaceAdapterRespondBackReRunsSameSearch(t *testing.T) {
 		{FamilyCode: "ARENA", NaturalUnit: "m3", IdentityKey: "ARENA|m3|2"},
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{material: materials[0]})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{material: materials[0]}, &fakeMaterialDescriber{})
 
 	original, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento arena"})
 	if err != nil {
@@ -433,7 +433,7 @@ func TestMaterialsWorkspaceAdapterRespondDetailOmitsNotApplicableAttributes(t *t
 		},
 	}
 	getter := &fakeMaterialGetter{material: material}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{
 		Kind: InputSelection, Key: searchResultsKey, Value: "CONDUCTORES|CONDUCTORES|m|1",
@@ -472,4 +472,36 @@ func (f *fakeMaterialSearcher) Search(_ context.Context, criteria domain.SearchC
 	f.gotCriteria = criteria
 	f.callCount++
 	return f.results, f.err
+}
+
+type fakeMaterialDescriber struct{ text string }
+
+func (f *fakeMaterialDescriber) Describe(domain.Material) string { return f.text }
+
+// TestMaterialsWorkspaceAdapterRespondDetailUsesDescriberForTitle proves the
+// adapter composes its detail title as FamilyCode + " — " +
+// describer.Describe(...) instead of any locally-built headline — the
+// canonical presentation is entirely delegated to materialDescriber.
+func TestMaterialsWorkspaceAdapterRespondDetailUsesDescriberForTitle(t *testing.T) {
+	material := domain.Material{
+		FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", NaturalUnit: "M", IdentityKey: "CONDUCTORES|CABLE|1",
+		Attributes: []domain.MaterialAttributeValue{domain.OptionValue("insulation", "THHN")},
+	}
+	getter := &fakeMaterialGetter{material: material}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{text: "Cable THHN 12 AWG BLANCO"})
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: searchResultsKey, Value: "CONDUCTORES|CONDUCTORES|CABLE|1",
+	})
+	if err != nil {
+		t.Fatalf("Respond() error = %v, want nil", err)
+	}
+	result, ok := response.Messages[0].(StructuredResult)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
+	}
+	want := "CONDUCTORES — Cable THHN 12 AWG BLANCO"
+	if result.Title != want {
+		t.Fatalf("Title = %q, want %q", result.Title, want)
+	}
 }

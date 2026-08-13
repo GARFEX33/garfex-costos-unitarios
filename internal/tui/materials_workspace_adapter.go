@@ -15,6 +15,14 @@ type materialSearcher interface {
 	Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Material, error)
 }
 
+// materialDescriber is the minimal surface the Materiales Maestros workspace
+// needs to resolve a material's canonical presentation — deliberately kept
+// separate from materialSearcher/materialGetter so the adapter never needs
+// to know about domain.MaterialsCatalog directly.
+type materialDescriber interface {
+	Describe(material domain.Material) string
+}
+
 // MaterialsWorkspaceAdapter is the production InteractionAgent for the
 // Materiales Maestros workspace. It is a thin TUI-to-application-service
 // adapter — not the Materials domain, not materiales.Service itself, and
@@ -24,6 +32,7 @@ type materialSearcher interface {
 type MaterialsWorkspaceAdapter struct {
 	materials       materialSearcher
 	materialsGetter materialGetter
+	describer       materialDescriber
 	// lastQuery remembers the text of the most recent successful search so
 	// the "volver a los resultados" action can reproduce the identical
 	// result list deterministically, without a separate cache of results.
@@ -31,11 +40,11 @@ type MaterialsWorkspaceAdapter struct {
 }
 
 // NewMaterialsWorkspaceAdapter returns the production agent for the
-// Materiales Maestros workspace. searcher and getter are satisfied
-// structurally by *materiales.Service — composed for real in
+// Materiales Maestros workspace. searcher, getter and describer are
+// satisfied structurally by *materiales.Service — composed for real in
 // cmd/garfex/main.go.
-func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter) *MaterialsWorkspaceAdapter {
-	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter}
+func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter, describer materialDescriber) *MaterialsWorkspaceAdapter {
+	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer}
 }
 
 const materialsGreeting = "Materiales Maestros está conectado al catálogo real (PostgreSQL). Escribí un término para buscar."
@@ -124,7 +133,7 @@ func (a *MaterialsWorkspaceAdapter) searchResponse(ctx context.Context, text str
 
 	options := make([]Option, len(visible))
 	for i, material := range visible {
-		title, _ := materialPresentation(material)
+		title, _ := a.materialPresentation(material)
 		options[i] = Option{
 			ID:    fmt.Sprintf("%d", i),
 			Label: title,
@@ -162,7 +171,7 @@ func (a *MaterialsWorkspaceAdapter) detailResponse(ctx context.Context, value st
 		}}, nil
 	}
 
-	title, fields := materialPresentation(material)
+	title, fields := a.materialPresentation(material)
 	return InteractionResponse{
 		Messages: []InteractionMessage{StructuredResult{Title: title, Fields: fields}},
 		Pending: ActionRequest{
@@ -183,24 +192,28 @@ func (a *MaterialsWorkspaceAdapter) detailResponse(ctx context.Context, value st
 // surfaced, mirroring renderMaterialDetail's existing commercial-field
 // discipline in handlers.go. NOT_APPLICABLE attributes are omitted: a blank
 // field is noise, not information.
-func materialPresentation(material domain.Material) (title string, fields []Field) {
+//
+// The title is the catalog-controlled canonical presentation resolved via
+// describer (see materialDescriber): it is never an automatic dump of every
+// attribute, and it never falls back to one when a ProductType has no
+// presentation configured (a.describer.Describe returning "" simply leaves
+// the title as the bare FamilyCode). The technical detail fields loop below
+// is unchanged by this — same attributes, same order, same discipline.
+func (a *MaterialsWorkspaceAdapter) materialPresentation(material domain.Material) (title string, fields []Field) {
 	attributes := append([]domain.MaterialAttributeValue(nil), material.Attributes...)
 	sort.SliceStable(attributes, func(i, j int) bool { return attributes[i].AttributeCode < attributes[j].AttributeCode })
 
-	var headline []string
 	fields = []Field{{Label: "Unidad natural", Value: material.NaturalUnit}}
 	for _, attribute := range attributes {
 		if attribute.Text == notApplicableAttributeText {
 			continue
 		}
-		value := formatAttributeValue(attribute)
-		headline = append(headline, value)
-		fields = append(fields, Field{Label: attribute.AttributeCode, Value: value})
+		fields = append(fields, Field{Label: attribute.AttributeCode, Value: formatAttributeValue(attribute)})
 	}
 
 	title = material.FamilyCode
-	if len(headline) > 0 {
-		title += " — " + strings.Join(headline, " · ")
+	if presentation := a.describer.Describe(material); presentation != "" {
+		title += " — " + presentation
 	}
 	return title, fields
 }

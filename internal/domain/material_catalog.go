@@ -14,6 +14,13 @@ func NewMaterialsCatalog() MaterialsCatalog {
 			{FamilyCode: "CONDUCTORES", Code: "CABLE", Name: "Cable"},
 			{FamilyCode: "CANALIZACIONES", Code: "TUBERIA", Name: "Tubería"},
 		},
+		PresentationFields: []PresentationField{
+			{ProductTypeCode: "CABLE", AttributeCode: "insulation", Position: 1},
+			{ProductTypeCode: "CABLE", AttributeCode: "gauge", Position: 2},
+			{ProductTypeCode: "CABLE", AttributeCode: "color", Position: 3},
+			{ProductTypeCode: "TUBERIA", AttributeCode: "tipo", Position: 1},
+			{ProductTypeCode: "TUBERIA", AttributeCode: "diameter_inch", Position: 2},
+		},
 		Units: []UnitDefinition{
 			{Code: "M", Symbol: "M", Dimension: "LENGTH"},
 			{Code: "PZA", Symbol: "PZA", Dimension: "PIECE"},

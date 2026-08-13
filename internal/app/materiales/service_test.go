@@ -53,7 +53,7 @@ func TestServiceGet(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{material: tt.material, err: tt.repoErr}
-			got, err := NewService(repo).Get(context.Background(), tt.family, tt.identity)
+			got, err := NewService(repo, domain.NewMaterialsCatalog()).Get(context.Background(), tt.family, tt.identity)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
 			}
@@ -84,7 +84,7 @@ func TestServiceSearch(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{materials: tt.materials, searchErr: tt.repoErr}
-			got, err := NewService(repo).Search(context.Background(), tt.criteria)
+			got, err := NewService(repo, domain.NewMaterialsCatalog()).Search(context.Background(), tt.criteria)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Search() error = %v, want %v", err, tt.wantErr)
 			}
