@@ -151,8 +151,12 @@ func (m Model) renderMenu(width int) string {
 func (m Model) renderWorkspace(width int) string {
 	var lines []string
 	if !m.heroActive {
+		header := "GARFEX / ASSISTANT"
+		if m.activeCatalog == "materials" {
+			header = "GARFEX / MATERIALES"
+		}
 		lines = append(lines,
-			lipgloss.NewStyle().Foreground(accent).Bold(true).Render("GARFEX / ASSISTANT"),
+			lipgloss.NewStyle().Foreground(accent).Bold(true).Render(header),
 			"",
 		)
 	}

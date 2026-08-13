@@ -111,6 +111,155 @@ type Model struct {
 	manualReturnInput      string
 	manualReturnOffset     int
 	manualReturnAtBottom   bool
+	// activeCatalog identifies which specialized catalog workspace (if any)
+	// is currently active in place of the Assistant's own chat: "" means the
+	// Assistant itself, "materials" means GARFEX / MATERIALES. It drives the
+	// rendered header and Esc-to-leave behavior.
+	activeCatalog string
+	// assistantSaved snapshots the Assistant's own conversation while a
+	// specialized workspace is active; nil whenever the Assistant is active.
+	assistantSaved *workspaceState
+	// materialsAgent is the Materiales Maestros workspace's own agent, set
+	// once at construction and never touched again.
+	materialsAgent InteractionAgent
+	// materialsSaved persists the Materiales Maestros workspace's own
+	// conversation across visits: nil until the first entry, then always
+	// non-nil so re-entering resumes where the user left off.
+	materialsSaved *workspaceState
+}
+
+// workspaceState snapshots everything that makes up one independent
+// conversation's state (the Assistant's own chat, or a specialized catalog
+// workspace's own chat), so switching between them never mixes history,
+// pending interactions, or drafts. Screen-navigation-global fields (screen,
+// workspaceItem, cursor, palette fields, manual-search-return fields) are
+// deliberately excluded: they belong to TUI navigation, not to a
+// conversation.
+type workspaceState struct {
+	engine           *InteractionEngine
+	history          []conversationMessage
+	input            string
+	interactionMode  interactionMode
+	pending          InteractionMessage
+	choiceIndex      int
+	choicePrompt     string
+	choiceOptions    []string
+	searchQuery      string
+	choiceSelected   []bool
+	workspacePending bool
+	inputFocused     bool
+	heroActive       bool
+	// viewportOffset/viewportAtBottom preserve scroll position across a
+	// workspace switch, restored after refreshViewport (not inside
+	// applyWorkspace) so SetContent cannot clobber it first — the same
+	// ordering leaveManual already relies on.
+	viewportOffset   int
+	viewportAtBottom bool
+}
+
+// snapshotWorkspace captures the current top-level conversation fields (and
+// scroll position) into a workspaceState.
+func (m *Model) snapshotWorkspace() workspaceState {
+	return workspaceState{
+		engine:           m.engine,
+		history:          m.history,
+		input:            m.input,
+		interactionMode:  m.interactionMode,
+		pending:          m.pending,
+		choiceIndex:      m.choiceIndex,
+		choicePrompt:     m.choicePrompt,
+		choiceOptions:    m.choiceOptions,
+		searchQuery:      m.searchQuery,
+		choiceSelected:   m.choiceSelected,
+		workspacePending: m.workspacePending,
+		inputFocused:     m.inputFocused,
+		heroActive:       m.heroActive,
+		viewportOffset:   m.viewport.YOffset(),
+		viewportAtBottom: m.viewport.AtBottom(),
+	}
+}
+
+// applyWorkspace restores a workspaceState onto the top-level conversation
+// fields. It deliberately does not touch scroll position — callers restore
+// that via restoreViewportPosition after refreshViewport, matching the
+// existing leaveManual ordering.
+func (m *Model) applyWorkspace(s workspaceState) {
+	m.engine = s.engine
+	m.history = s.history
+	m.input = s.input
+	m.interactionMode = s.interactionMode
+	m.pending = s.pending
+	m.choiceIndex = s.choiceIndex
+	m.choicePrompt = s.choicePrompt
+	m.choiceOptions = s.choiceOptions
+	m.searchQuery = s.searchQuery
+	m.choiceSelected = s.choiceSelected
+	m.workspacePending = s.workspacePending
+	m.inputFocused = s.inputFocused
+	m.heroActive = s.heroActive
+}
+
+// restoreViewportPosition restores the scroll position captured by
+// snapshotWorkspace. Callers must call it after refreshViewport, since
+// SetContent can otherwise clamp/reset the offset first.
+func (m *Model) restoreViewportPosition(s workspaceState) {
+	if s.viewportAtBottom {
+		m.viewport.GotoBottom()
+		return
+	}
+	m.viewport.SetYOffset(s.viewportOffset)
+}
+
+// enterMaterialsWorkspace saves the Assistant's current conversation and
+// switches into the independent GARFEX / MATERIALES workspace: a returning
+// visit resumes exactly where it left off, a first visit starts fresh with
+// its own engine bound to materialsAgent.
+func (m *Model) enterMaterialsWorkspace() {
+	saved := m.snapshotWorkspace()
+	m.assistantSaved = &saved
+	if m.materialsSaved != nil {
+		m.applyWorkspace(*m.materialsSaved)
+		m.activeCatalog = "materials"
+		m.refreshViewport()
+		m.restoreViewportPosition(*m.materialsSaved)
+		return
+	}
+	m.engine = NewInteractionEngine(m.materialsAgent)
+	m.history = nil
+	m.input = ""
+	m.interactionMode = interactionModeChat
+	m.pending = nil
+	m.choiceIndex = 0
+	m.choicePrompt = ""
+	m.choiceOptions = nil
+	m.searchQuery = ""
+	m.choiceSelected = nil
+	m.workspacePending = false
+	m.inputFocused = true
+	m.heroActive = false
+	if g, ok := m.materialsAgent.(greeter); ok {
+		m.appendGARFEX(g.Greeting())
+	}
+	m.activeCatalog = "materials"
+	m.refreshViewport()
+}
+
+// leaveActiveCatalog saves the active catalog workspace's own conversation
+// (so re-entering it later resumes where the user left off) and restores
+// the Assistant's conversation exactly as it was before entering. It is a
+// no-op when no catalog workspace is active.
+func (m *Model) leaveActiveCatalog() {
+	if m.activeCatalog == "" {
+		return
+	}
+	saved := m.snapshotWorkspace()
+	m.materialsSaved = &saved
+	restore := *m.assistantSaved
+	m.applyWorkspace(restore)
+	m.assistantSaved = nil
+	m.activeCatalog = ""
+	m.refreshViewport()
+	m.restoreViewportPosition(restore)
 }
 
 func New(handlers Handlers) Model {
@@ -133,6 +282,17 @@ func NewWithAgent(handlers Handlers, agent InteractionAgent) Model {
 		m.appendGARFEX(g.Greeting())
 		m.refreshViewport()
 	}
+	return m
+}
+
+// NewWithAgents wires both the Assistant's own agent and the Materiales
+// Maestros workspace's agent. It is used by cmd/garfex/main.go (and tests
+// exercising the Materials-palette-entry flow); every other existing test
+// call site keeps using New/NewWithAgent unmodified, leaving materialsAgent
+// nil (NewInteractionEngine already has a defined nil-agent fallback).
+func NewWithAgents(handlers Handlers, assistant InteractionAgent, materials InteractionAgent) Model {
+	m := NewWithAgent(handlers, assistant)
+	m.materialsAgent = materials
 	return m
 }
 
@@ -202,7 +362,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				switch key {
 				case "esc":
-					m.inputFocused = false
+					// A single Esc from inside a specialized catalog
+					// workspace's plain chat state always returns to the
+					// Assistant, predictably (see leaveActiveCatalog). Esc
+					// still just unfocuses the composer when the Assistant
+					// itself is active; that exact existing behavior is
+					// unchanged here.
+					if m.activeCatalog != "" {
+						m.leaveActiveCatalog()
+					} else {
+						m.inputFocused = false
+					}
 				case "enter":
 					input := strings.TrimSpace(m.input)
 					if input == "" {
@@ -358,8 +528,21 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 				m.refreshViewport()
 				return
 			}
-			if action.id == "material-search" {
-				m.openManualSearch()
+			if action.id == "materials" {
+				// Close the palette itself, mode included, before
+				// snapshotting the Assistant's state: enterMaterialsWorkspace
+				// snapshots whatever is on Model right now, so leaving
+				// interactionMode at interactionModePalette here would wrongly
+				// persist "palette open" into the Assistant's restored state.
+				// A confirmed selection also consumes the typed "/query",
+				// unlike Esc-cancel (handled above) which intentionally
+				// preserves it as a resumable draft.
+				m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
+				m.paletteTitle = ""
+				m.paletteFlat = false
+				m.input = ""
+				m.interactionMode = interactionModeChat
+				m.enterMaterialsWorkspace()
 			}
 			return
 		}

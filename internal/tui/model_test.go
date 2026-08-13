@@ -1145,7 +1145,7 @@ func TestAssistantShellFlow(t *testing.T) {
 		query string
 		want  string
 	}{
-		{"order independent partial filter", "buscar material", "Buscar material"},
+		{"order independent partial filter", "maestros materiales", "Materiales Maestros"},
 		{"case insensitive filter", "APU", "APU"},
 		{"whitespace token AND", "material proveedores", ""},
 	}
@@ -1242,15 +1242,13 @@ func TestManualMaterialSearchPreservesAssistantContext(t *testing.T) {
 	}
 	m, _ = update(t, m, enter())
 	prior := len(m.history)
-	m, _ = update(t, m, enter())
-	for _, char := range "/material buscar" {
-		if char == '/' {
-			m, _ = update(t, m, key(char))
-			continue
-		}
-		m, _ = update(t, m, key(char))
-	}
-	m, _ = update(t, m, enter())
+	// The "/" palette no longer has a path into manual search (its
+	// former "material-search" leaf was repurposed to open the
+	// independent Materiales Maestros workspace instead), so this
+	// regression test reaches screenManual the same direct way the
+	// second half of this test already does below: openManualSearch
+	// itself is untouched by this PR.
+	m.openManualSearch()
 	manualView := ansi.Strip(m.View().Content)
 	if m.screen != screenManual || m.pending == nil || !strings.Contains(manualView, "GARFEX › Materiales › Buscar") || !strings.Contains(manualView, "Buscar material") || strings.Contains(manualView, "hola") {
 		t.Fatalf("manual route = screen %v pending %T view %q", m.screen, m.pending, ansi.Strip(m.View().Content))
@@ -1367,29 +1365,20 @@ func TestPaletteShowsOnlyTopLevelModulesInitially(t *testing.T) {
 	for i, o := range options {
 		topLabels[i] = o.Label
 	}
-	for _, want := range []string{"Materiales", "Conceptos", "APU", "Proveedores"} {
+	for _, want := range []string{"Materiales Maestros", "Conceptos", "APU", "Proveedores"} {
 		if !containsString(topLabels, want) {
 			t.Fatalf("top-level palette missing %q in %v", want, topLabels)
 		}
 	}
 }
 
-func TestPaletteDrillsIntoModuleActions(t *testing.T) {
-	m := New(Handlers{})
-	m, _ = update(t, m, key('/'))
-	m, _ = update(t, m, enter())
-	if m.paletteTitle != "Materiales" {
-		t.Fatalf("after entering module, title = %q", m.paletteTitle)
-	}
-	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
-	if len(options) != 1 || options[0].Label != "Buscar material" {
-		t.Fatalf("module children = %#v, want [Buscar material]", options)
-	}
-}
-
+// TestPaletteDirectFilteringToConcreteActions replaces the pre-existing
+// nested "Materiales" > "Buscar material" drill-down case: since #materials
+// is now a direct leaf (see enterMaterialsWorkspace), a partial query
+// filters straight to it without a module drill-down step.
 func TestPaletteDirectFilteringToConcreteActions(t *testing.T) {
 	m := New(Handlers{})
-	for _, char := range "/buscar" {
+	for _, char := range "/maestros" {
 		if char == '/' {
 			m, _ = update(t, m, key(char))
 			continue
@@ -1397,8 +1386,8 @@ func TestPaletteDirectFilteringToConcreteActions(t *testing.T) {
 		m, _ = update(t, m, key(char))
 	}
 	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
-	if len(options) != 1 || options[0].Label != "Buscar material" {
-		t.Fatalf("direct filtering = %#v, want [Buscar material]", options)
+	if len(options) != 1 || options[0].Label != "Materiales Maestros" {
+		t.Fatalf("direct filtering = %#v, want [Materiales Maestros]", options)
 	}
 }
 
@@ -1485,19 +1474,7 @@ func TestPaletteBackspaceToEmptyRestoresTopLevel(t *testing.T) {
 	for i, o := range options {
 		topLabels[i] = o.Label
 	}
-	if !containsString(topLabels, "Materiales") {
+	if !containsString(topLabels, "Materiales Maestros") {
 		t.Fatalf("top-level not restored after clearing query: %v", topLabels)
-	}
-}
-
-func TestPaletteModuleDrillDownResetsFlatMode(t *testing.T) {
-	m := New(Handlers{})
-	m, _ = update(t, m, key('/'))
-	m, _ = update(t, m, enter())
-	if m.paletteFlat {
-		t.Fatal("module drill-down must not be in flat mode")
-	}
-	if m.paletteTitle != "Materiales" {
-		t.Fatalf("title = %q, want Materiales", m.paletteTitle)
 	}
 }
