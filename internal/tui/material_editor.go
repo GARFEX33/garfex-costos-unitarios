@@ -27,14 +27,17 @@ const (
 	editorStepProductType
 	editorStepAttribute
 	editorStepUnit
-	// editorStepAttributePicker and editorStepAttributeEdit are edit-only
-	// steps (see startEditEditor): the picker shows a menu of the material's
-	// currently-set fields, and attributeEdit asks about exactly the one the
-	// user picked. CREATE never reaches either — it still walks
+	// editorStepAttributePicker, editorStepAttributeEdit, and
+	// editorStepConfirm are edit-only steps (see startEditEditor): the picker
+	// shows a checkbox menu of the material's currently-set fields (multiple
+	// may be picked), attributeEdit asks about each selected field in turn,
+	// and confirm shows a summary of every pending change before anything is
+	// persisted. CREATE never reaches any of these — it still walks
 	// editorStepFamily -> editorStepProductType -> editorStepAttribute ->
 	// editorStepUnit exactly as before.
 	editorStepAttributePicker
 	editorStepAttributeEdit
+	editorStepConfirm
 )
 
 // editNaturalUnitFieldCode is the attributePickerQuestion Option.Value used
@@ -68,15 +71,23 @@ type materialEditorState struct {
 	attributes []domain.FamilyAttribute
 	// nextIndex is the index into attributes for the next question to ask.
 	// Used only by the CREATE/legacy-sequential walkthrough (advanceEditor);
-	// the single-field edit flow never advances an index since there is only
-	// ever one field in flight (see editingCode).
+	// the multi-field edit flow uses selectedIndex instead (see below).
 	nextIndex int
 	// editingCode is the FamilyAttribute.Definition.Code currently being
-	// asked about during editorStepAttributeEdit — the single-field edit
-	// flow's counterpart to nextIndex, set by answerAttributePicker and read
-	// by answerSingleAttributeEdit.
+	// asked about during editorStepAttributeEdit — the multi-field edit
+	// flow's counterpart to nextIndex, set by advanceFieldEdit and read by
+	// answerSingleAttributeEdit.
 	editingCode string
-	values      []domain.MaterialAttributeValue
+	// selectedCodes are the fields the user picked from
+	// attributePickerQuestion's checkbox menu, in picker-option order
+	// (NaturalUnit's sentinel code included if picked). selectedIndex is the
+	// position within selectedCodes for the next field to ask about — the
+	// multi-field edit's counterpart to nextIndex/CREATE's sequential loop.
+	// Both are set once by answerAttributePicker and advanced by
+	// advanceFieldEdit as each selected field is answered.
+	selectedCodes []string
+	selectedIndex int
+	values        []domain.MaterialAttributeValue
 	// originalID/originalValues/originalUnit are populated only in
 	// editorModeEdit: originalID is the stable Material.ID Update() targets
 	// (independent of IdentityKey, which editing may change);
@@ -89,6 +100,13 @@ type materialEditorState struct {
 	originalID     int64
 	originalValues []domain.MaterialAttributeValue
 	originalUnit   string
+	// currentUnit is editorModeEdit's mutable counterpart to originalUnit: it
+	// starts as a copy of the material's NaturalUnit and gets overwritten if
+	// the user actually edits it during this session. finishEditor must be
+	// called with currentUnit (possibly changed), not necessarily the unit
+	// from the most-recently-answered question, since NaturalUnit might not
+	// be the last field the user selected.
+	currentUnit string
 }
 
 // startCreateEditor begins the "nuevo material" flow with the first
@@ -115,11 +133,12 @@ func (a *MaterialsWorkspaceAdapter) startCreateEditor() (InteractionResponse, er
 // in the detail view (a.lastDetail). Per the project owner's redesigned
 // flow, Family and ProductType are fixed during edit and there is no
 // sequential walkthrough of every attribute: the wizard opens directly on a
-// menu of the material's currently-set fields (attributePickerQuestion) so
-// the user can pick exactly one to change. state.values is seeded as a copy
-// of the material's FULL existing Attributes (unlike CREATE, which starts
-// values nil/empty) — this is what lets a single-field replace still
-// produce a complete, valid Material without re-asking about every field.
+// checkbox menu of the material's currently-set fields (attributePickerQuestion)
+// so the user can pick one or several to change in the same session.
+// state.values is seeded as a copy of the material's FULL existing
+// Attributes (unlike CREATE, which starts values nil/empty) — this is what
+// lets a partial (one-or-more-field) replace still produce a complete, valid
+// Material without re-asking about every field.
 func (a *MaterialsWorkspaceAdapter) startEditEditor() (InteractionResponse, error) {
 	material := a.lastDetail
 	catalog := domain.NewMaterialsCatalog()
@@ -133,6 +152,7 @@ func (a *MaterialsWorkspaceAdapter) startEditEditor() (InteractionResponse, erro
 		originalID:     material.ID,
 		originalValues: material.Attributes,
 		originalUnit:   material.NaturalUnit,
+		currentUnit:    material.NaturalUnit,
 	}
 	return a.attributePickerQuestion(), nil
 }
@@ -169,11 +189,18 @@ func (a *MaterialsWorkspaceAdapter) respondToEditor(ctx context.Context, input I
 	case editorStepAttribute:
 		return a.answerAttribute(catalog, input.Value), true
 	case editorStepAttributePicker:
-		return a.answerAttributePicker(catalog, input.Value), true
+		return a.answerAttributePicker(catalog, input.Values), true
 	case editorStepAttributeEdit:
-		return a.answerSingleAttributeEdit(ctx, catalog, input.Value), true
+		return a.answerSingleAttributeEdit(catalog, input.Value), true
 	case editorStepUnit:
+		if state.mode == editorModeEdit {
+			state.currentUnit = input.Value
+			state.selectedIndex++
+			return a.advanceFieldEdit(catalog), true
+		}
 		return a.finishEditor(ctx, catalog, input.Value), true
+	case editorStepConfirm:
+		return a.answerEditConfirmation(ctx, catalog, input.Value), true
 	}
 	return InteractionResponse{}, true
 }
@@ -206,6 +233,11 @@ func (a *MaterialsWorkspaceAdapter) productTypeQuestion(catalog domain.Materials
 // silently omitted. Attributes not currently set (e.g. skipped by a prior
 // DESNUDO-style rule) or explicitly NOT_APPLICABLE are not offered — there
 // is nothing meaningful to "change" about a field that isn't there.
+//
+// It is a checkbox multi-select (SelectionMultiple, MinSelections: 1, no
+// MaxSelections cap): the user may pick one or several fields to change in
+// the same session — see answerAttributePicker/advanceFieldEdit for how the
+// selection is then sequenced one question at a time.
 func (a *MaterialsWorkspaceAdapter) attributePickerQuestion() InteractionResponse {
 	state := a.editor
 	byCode := map[string]domain.MaterialAttributeValue{}
@@ -228,20 +260,36 @@ func (a *MaterialsWorkspaceAdapter) attributePickerQuestion() InteractionRespons
 		Key:           materialEditorKey,
 		Prompt:        prompt,
 		Question:      prompt,
-		SelectionMode: SelectionSingle,
+		SelectionMode: SelectionMultiple,
+		MinSelections: 1,
 		Options:       options,
 	}}
 }
 
-// answerAttributePicker handles the answer to attributePickerQuestion: the
-// NaturalUnit sentinel routes straight to unitQuestion (the exact same
-// question CREATE's last step asks, reused unchanged); any other code must
-// match one of state.attributes, and routes to that ONE attribute's
-// question via the untouched attributeQuestion. Answering it is handled by
-// answerSingleAttributeEdit, not the CREATE/legacy-sequential answerAttribute
-// — there is no "return to the picker" loop after that.
-func (a *MaterialsWorkspaceAdapter) answerAttributePicker(catalog domain.MaterialsCatalog, code string) InteractionResponse {
+// answerAttributePicker handles the (multi-select) answer to
+// attributePickerQuestion: it stores every field the user picked and kicks
+// off advanceFieldEdit to ask about them one at a time, rather than asking
+// about a single field directly the way the earlier single-field edit did.
+func (a *MaterialsWorkspaceAdapter) answerAttributePicker(catalog domain.MaterialsCatalog, codes []string) InteractionResponse {
 	state := a.editor
+	state.selectedCodes = codes
+	state.selectedIndex = 0
+	return a.advanceFieldEdit(catalog)
+}
+
+// advanceFieldEdit walks state.selectedCodes from selectedIndex, asking
+// about the next selected field, or moving on to the confirmation summary
+// once every selected field has been answered — the multi-field edit flow's
+// counterpart to CREATE's advanceEditor. The NaturalUnit sentinel routes to
+// unitQuestion (the exact same question CREATE's last step asks, reused
+// unchanged); any other code must match one of state.attributes and routes
+// to that attribute's question via the untouched attributeQuestion.
+func (a *MaterialsWorkspaceAdapter) advanceFieldEdit(catalog domain.MaterialsCatalog) InteractionResponse {
+	state := a.editor
+	if state.selectedIndex >= len(state.selectedCodes) {
+		return a.editConfirmationQuestion()
+	}
+	code := state.selectedCodes[state.selectedIndex]
 	if code == editNaturalUnitFieldCode {
 		state.step = editorStepUnit
 		return a.unitQuestion(catalog)
@@ -261,10 +309,11 @@ func (a *MaterialsWorkspaceAdapter) answerAttributePicker(catalog domain.Materia
 		}
 		return response
 	}
-	a.editor = nil
-	return InteractionResponse{Messages: []InteractionMessage{
-		ErrorMessage{Text: "No reconocí ese campo."},
-	}}
+	// Defensive: a selected code that doesn't match any known attribute or
+	// the unit sentinel — skip it rather than getting stuck (should not
+	// happen in practice, the picker only ever offers real codes).
+	state.selectedIndex++
+	return a.advanceFieldEdit(catalog)
 }
 
 // advanceEditor walks state.attributes from nextIndex, silently skipping any
@@ -362,13 +411,14 @@ func (a *MaterialsWorkspaceAdapter) answerAttribute(catalog domain.MaterialsCata
 }
 
 // answerSingleAttributeEdit handles the answer to the ONE attribute question
-// the picker routed to (state.editingCode) — the single-field edit flow's
-// counterpart to answerAttribute. It reuses buildAttributeValue for the
-// exact same CONTROLLED_OPTION/QUANTITY parsing answerAttribute uses (so the
-// two can never diverge), replaces (or appends, defensively) the matching
-// value in state.values, and immediately calls finishEditor — there is no
-// "return to the picker for another field" loop.
-func (a *MaterialsWorkspaceAdapter) answerSingleAttributeEdit(ctx context.Context, catalog domain.MaterialsCatalog, value string) InteractionResponse {
+// advanceFieldEdit routed to (state.editingCode) — the multi-field edit
+// flow's counterpart to answerAttribute. It reuses buildAttributeValue for
+// the exact same CONTROLLED_OPTION/QUANTITY parsing answerAttribute uses (so
+// the two can never diverge), replaces (or appends, defensively) the
+// matching value in state.values, then advances to the next selected field
+// (or the confirmation summary, once every selected field is answered) —
+// nothing is persisted here.
+func (a *MaterialsWorkspaceAdapter) answerSingleAttributeEdit(catalog domain.MaterialsCatalog, value string) InteractionResponse {
 	state := a.editor
 	var attribute domain.FamilyAttribute
 	for _, candidate := range state.attributes {
@@ -392,7 +442,8 @@ func (a *MaterialsWorkspaceAdapter) answerSingleAttributeEdit(ctx context.Contex
 		return response
 	}
 	state.values = replaceOrAppendValue(state.values, newValue)
-	return a.finishEditor(ctx, catalog, state.originalUnit)
+	state.selectedIndex++
+	return a.advanceFieldEdit(catalog)
 }
 
 // buildAttributeValue parses raw into a MaterialAttributeValue for
@@ -524,12 +575,66 @@ func (a *MaterialsWorkspaceAdapter) originalOptionCode(attributeCode string) str
 	return ""
 }
 
+// editConfirmationQuestion builds the multi-field edit flow's final step: a
+// summary of every selected field's NEW value (reusing formatAttributeValue,
+// the same renderer the picker menu and detail view already use) and a
+// ConfirmationRequest — nothing has been persisted yet at this point.
+func (a *MaterialsWorkspaceAdapter) editConfirmationQuestion() InteractionResponse {
+	state := a.editor
+	state.step = editorStepConfirm
+	byCode := map[string]domain.MaterialAttributeValue{}
+	for _, value := range state.values {
+		byCode[value.AttributeCode] = value
+	}
+	lines := []string{"Vas a guardar estos cambios:"}
+	for _, code := range state.selectedCodes {
+		if code == editNaturalUnitFieldCode {
+			lines = append(lines, "Unidad natural: "+state.currentUnit)
+			continue
+		}
+		for _, attribute := range state.attributes {
+			if attribute.Definition.Code != code {
+				continue
+			}
+			if value, ok := byCode[code]; ok {
+				lines = append(lines, attribute.Definition.Name+": "+formatAttributeValue(value))
+			}
+			break
+		}
+	}
+	question := strings.Join(lines, "\n")
+	return InteractionResponse{Pending: ConfirmationRequest{
+		ID:           materialEditorKey,
+		Key:          materialEditorKey,
+		Question:     question,
+		ConfirmLabel: "Sí, guardar",
+		CancelLabel:  "No, cancelar",
+	}}
+}
+
+// answerEditConfirmation handles the answer to editConfirmationQuestion:
+// "yes" calls finishEditor with the CURRENT unit (possibly changed during
+// this session, see materialEditorState.currentUnit) — the exact same
+// finishEditor/Update/duplicate-collision path Edit already had. Any other
+// answer ("no") cancels the whole edit — resets a.editor, nothing saved,
+// the same "cancelado" spirit as InputCancel.
+func (a *MaterialsWorkspaceAdapter) answerEditConfirmation(ctx context.Context, catalog domain.MaterialsCatalog, value string) InteractionResponse {
+	state := a.editor
+	if value != "yes" {
+		a.editor = nil
+		return InteractionResponse{Messages: []InteractionMessage{
+			TextMessage{Text: "Se canceló la edición."},
+		}}
+	}
+	return a.finishEditor(ctx, catalog, state.currentUnit)
+}
+
 // filterApplicableValues drops any value whose attribute no longer resolves
 // to applicable (per FamilyAttribute.Effective given the FULL final values)
 // before a candidate is built. This is a real no-op for CREATE/the legacy
 // sequential walkthrough: advanceEditor already skips ModeForbidden/
 // notApplicable attributes, so state.values never accumulates one of those
-// in the first place there. It is NOT a no-op for the single-field edit
+// in the first place there. It is NOT a no-op for the multi-field edit
 // flow: state.values starts as a copy of the material's full pre-existing
 // Attributes, so replacing just ONE (e.g. insulation THW -> DESNUDO) can
 // leave an now-forbidden OTHER value (color/voltage) still sitting in the

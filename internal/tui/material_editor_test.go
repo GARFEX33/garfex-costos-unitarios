@@ -57,6 +57,48 @@ func answerQuestion(t *testing.T, adapter *MaterialsWorkspaceAdapter, response I
 	return next
 }
 
+// answerMultiQuestion is answerQuestion's counterpart for the field picker's
+// SelectionMultiple QuestionRequest: it asserts response.Pending is a
+// multi-select QuestionRequest keyed materialEditorKey and drives the next
+// Respond call with the given Values slice.
+func answerMultiQuestion(t *testing.T, adapter *MaterialsWorkspaceAdapter, response InteractionResponse, values []string) InteractionResponse {
+	t.Helper()
+	request, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest", response.Pending)
+	}
+	if request.Key != materialEditorKey {
+		t.Fatalf("Pending.Key = %q, want %q", request.Key, materialEditorKey)
+	}
+	if request.SelectionMode != SelectionMultiple {
+		t.Fatalf("Pending.SelectionMode = %q, want %q", request.SelectionMode, SelectionMultiple)
+	}
+	next, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: request.Key, Values: values})
+	if err != nil {
+		t.Fatalf("Respond(%v) error = %v, want nil", values, err)
+	}
+	return next
+}
+
+// answerConfirmation is answerQuestion's counterpart for a ConfirmationRequest:
+// it asserts response.Pending is a ConfirmationRequest keyed materialEditorKey
+// and drives the next Respond call with the given value ("yes"/"no").
+func answerConfirmation(t *testing.T, adapter *MaterialsWorkspaceAdapter, response InteractionResponse, value string) InteractionResponse {
+	t.Helper()
+	request, ok := response.Pending.(ConfirmationRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
+	}
+	if request.Key != materialEditorKey {
+		t.Fatalf("Pending.Key = %q, want %q", request.Key, materialEditorKey)
+	}
+	next, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: request.Key, Value: value})
+	if err != nil {
+		t.Fatalf("Respond(%q) error = %v, want nil", value, err)
+	}
+	return next
+}
+
 // TestMaterialEditorFullHappyPathCreatesCableMaterial covers the full
 // CONDUCTORES/CABLE create flow end to end: trigger, family, productType,
 // every attribute (in catalog order), unit, and a successful Create with
@@ -392,7 +434,7 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 		t.Fatalf("Prompt = %q, want the field picker prompt", pickerRequest.Prompt)
 	}
 
-	response = answerQuestion(t, adapter, response, "conductor_material")
+	response = answerMultiQuestion(t, adapter, response, []string{"conductor_material"})
 
 	request, ok := response.Pending.(QuestionRequest)
 	if !ok {
@@ -403,6 +445,7 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 	}
 
 	response = answerQuestion(t, adapter, response, "COBRE") // unchanged
+	response = answerConfirmation(t, adapter, response, "yes")
 
 	if creator.callCount != 0 {
 		t.Fatalf("Create call count = %d, want 0 (edit must never call Create)", creator.callCount)
@@ -480,8 +523,9 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 		}
 	}
 
-	response = answerQuestion(t, adapter, response, "color")
+	response = answerMultiQuestion(t, adapter, response, []string{"color"})
 	response = answerQuestion(t, adapter, response, "BLANCO") // changed from NEGRO
+	response = answerConfirmation(t, adapter, response, "yes")
 
 	if updater.callCount != 1 {
 		t.Fatalf("Update call count = %d, want 1", updater.callCount)
@@ -555,8 +599,9 @@ func TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial(t *testing.T) 
 	// affects the later duplicate-lookup Get call in finishEditor.
 	getter.material = other
 
-	response = answerQuestion(t, adapter, response, "color")
+	response = answerMultiQuestion(t, adapter, response, []string{"color"})
 	response = answerQuestion(t, adapter, response, "BLANCO")
+	response = answerConfirmation(t, adapter, response, "yes")
 
 	if updater.callCount != 1 {
 		t.Fatalf("Update call count = %d, want 1", updater.callCount)
@@ -610,8 +655,9 @@ func TestMaterialEditorEditDesnudoDropsNowForbiddenAttributes(t *testing.T) {
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerQuestion(t, adapter, response, "insulation")
+	response = answerMultiQuestion(t, adapter, response, []string{"insulation"})
 	response = answerQuestion(t, adapter, response, "DESNUDO")
+	response = answerConfirmation(t, adapter, response, "yes")
 
 	if response.Pending != nil {
 		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
@@ -677,7 +723,7 @@ func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testi
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerQuestion(t, adapter, response, editNaturalUnitFieldCode)
+	response = answerMultiQuestion(t, adapter, response, []string{editNaturalUnitFieldCode})
 
 	request, ok := response.Pending.(QuestionRequest)
 	if !ok {
@@ -691,6 +737,7 @@ func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testi
 	}
 
 	response = answerQuestion(t, adapter, response, "M")
+	response = answerConfirmation(t, adapter, response, "yes")
 
 	if updater.callCount != 1 {
 		t.Fatalf("Update call count = %d, want 1", updater.callCount)
@@ -703,5 +750,262 @@ func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testi
 	}
 	if response.Pending != nil {
 		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
+	}
+}
+
+// TestMaterialEditorEditMultiFieldHappyPathSavesBothChanges covers the core
+// new behavior this task adds: picking TWO fields (color, voltage) from the
+// picker's checkbox menu, answering each in turn, seeing a confirmation
+// summary that mentions BOTH new values, and only then persisting — a single
+// Update call carrying both changes together.
+func TestMaterialEditorEditMultiFieldHappyPathSavesBothChanges(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	creator := &fakeMaterialCreator{}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerMultiQuestion(t, adapter, response, []string{"color", "voltage"})
+	response = answerQuestion(t, adapter, response, "BLANCO") // color, changed from NEGRO
+	response = answerQuestion(t, adapter, response, "300 V")  // voltage, changed from 600 V
+
+	confirmRequest, ok := response.Pending.(ConfirmationRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
+	}
+	if !strings.Contains(confirmRequest.Question, "BLANCO") {
+		t.Fatalf("confirmation Question = %q, want it to mention BLANCO", confirmRequest.Question)
+	}
+	if !strings.Contains(confirmRequest.Question, "300 V") {
+		t.Fatalf("confirmation Question = %q, want it to mention 300 V", confirmRequest.Question)
+	}
+	if creator.callCount != 0 || updater.callCount != 0 {
+		t.Fatalf("creator/updater call counts = %d/%d, want 0/0 (nothing persisted before confirming)", creator.callCount, updater.callCount)
+	}
+
+	response = answerConfirmation(t, adapter, response, "yes")
+
+	if creator.callCount != 0 {
+		t.Fatalf("Create call count = %d, want 0 (edit must never call Create)", creator.callCount)
+	}
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	if updater.gotMaterial.ID != 42 {
+		t.Fatalf("gotMaterial.ID = %d, want 42 (the original Material.ID)", updater.gotMaterial.ID)
+	}
+	for _, value := range updater.gotMaterial.Attributes {
+		switch value.AttributeCode {
+		case "color":
+			if value.OptionCode != "BLANCO" {
+				t.Fatalf("color attribute = %q, want %q", value.OptionCode, "BLANCO")
+			}
+		case "voltage":
+			if value.OptionCode != "300 V" {
+				t.Fatalf("voltage attribute = %q, want %q", value.OptionCode, "300 V")
+			}
+		case "conductor_material", "gauge", "insulation":
+			var want string
+			for _, original := range existing.Attributes {
+				if original.AttributeCode == value.AttributeCode {
+					want = original.OptionCode
+				}
+			}
+			if value.OptionCode != want {
+				t.Fatalf("%s attribute = %q, want unchanged %q", value.AttributeCode, value.OptionCode, want)
+			}
+		default:
+			t.Fatalf("unexpected attribute %q in gotMaterial.Attributes", value.AttributeCode)
+		}
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
+	}
+}
+
+// TestMaterialEditorEditConfirmationDeclineDiscardsChanges covers declining
+// the final confirmation ("no"): nothing must be persisted, a.editor must
+// reset to nil, and a subsequent ordinary search must still work normally —
+// mirroring TestMaterialEditorCancelResetsAndOrdinarySearchStillWorks's
+// pattern for InputCancel.
+func TestMaterialEditorEditConfirmationDeclineDiscardsChanges(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	creator := &fakeMaterialCreator{}
+	updater := &fakeMaterialUpdater{}
+	searcher := &fakeMaterialSearcher{results: []domain.Material{existing}}
+	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{}, creator, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerMultiQuestion(t, adapter, response, []string{"color", "voltage"})
+	response = answerQuestion(t, adapter, response, "BLANCO")
+	response = answerQuestion(t, adapter, response, "300 V")
+
+	if _, ok := response.Pending.(ConfirmationRequest); !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
+	}
+
+	response = answerConfirmation(t, adapter, response, "no")
+
+	if creator.callCount != 0 || updater.callCount != 0 {
+		t.Fatalf("creator/updater call counts = %d/%d, want 0/0 (declining must not persist anything)", creator.callCount, updater.callCount)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after declining", response.Pending)
+	}
+	if adapter.editor != nil {
+		t.Fatalf("adapter.editor = %#v, want nil after declining", adapter.editor)
+	}
+
+	searcher.results = []domain.Material{
+		{FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|1"},
+	}
+	searchResponse, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
+	if err != nil {
+		t.Fatalf("Respond(search) error = %v, want nil", err)
+	}
+	if searcher.callCount != 2 {
+		t.Fatalf("Search call count = %d, want 2 (openDetailViaSearch's search + a fresh search after decline)", searcher.callCount)
+	}
+	if _, ok := searchResponse.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want a normal search-results QuestionRequest", searchResponse.Pending)
+	}
+}
+
+// TestMaterialEditorEditMultiFieldIncludingNaturalUnitThreadsCurrentUnit
+// covers picking an attribute AND the "Unidad natural" entry together: both
+// must be asked about, and the (possibly unchanged) unit answer must still
+// land correctly in the final persisted material via
+// materialEditorState.currentUnit — proving the unit is threaded through to
+// finishEditor regardless of exactly where NaturalUnit falls in the
+// answered sequence, not just when it happens to be CREATE's fixed last
+// step.
+func TestMaterialEditorEditMultiFieldIncludingNaturalUnitThreadsCurrentUnit(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerMultiQuestion(t, adapter, response, []string{"color", editNaturalUnitFieldCode})
+	response = answerQuestion(t, adapter, response, "BLANCO") // color
+
+	unitRequest, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (natural unit question)", response.Pending)
+	}
+	if !strings.Contains(strings.ToLower(unitRequest.Prompt), "unidad") {
+		t.Fatalf("Prompt = %q, want the NaturalUnit question", unitRequest.Prompt)
+	}
+
+	response = answerQuestion(t, adapter, response, "M") // the catalog's only allowed unit
+
+	if _, ok := response.Pending.(ConfirmationRequest); !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
+	}
+
+	response = answerConfirmation(t, adapter, response, "yes")
+
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	if updater.gotMaterial.NaturalUnit != "M" {
+		t.Fatalf("gotMaterial.NaturalUnit = %q, want %q", updater.gotMaterial.NaturalUnit, "M")
+	}
+	foundColor := false
+	for _, value := range updater.gotMaterial.Attributes {
+		if value.AttributeCode == "color" {
+			foundColor = true
+			if value.OptionCode != "BLANCO" {
+				t.Fatalf("color attribute = %q, want %q", value.OptionCode, "BLANCO")
+			}
+		}
+	}
+	if !foundColor {
+		t.Fatalf("gotMaterial.Attributes = %+v, want a color attribute", updater.gotMaterial.Attributes)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
+	}
+}
+
+// TestMaterialEditorEditEscMidMultiFieldSequenceAbortsImmediately covers Esc
+// (InputCancel) sent mid multi-field sequence, after the first selected
+// field has already been answered but before the second: the whole edit
+// must abort immediately, exactly like it does at any other step, and
+// nothing must be persisted — proving respondToEditor's top-of-function
+// InputCancel handling is unweakened by this restructuring.
+func TestMaterialEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	creator := &fakeMaterialCreator{}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerMultiQuestion(t, adapter, response, []string{"color", "voltage"})
+	response = answerQuestion(t, adapter, response, "BLANCO") // color answered
+
+	if _, ok := response.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (voltage question still pending)", response.Pending)
+	}
+
+	cancelled, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputCancel})
+	if err != nil {
+		t.Fatalf("Respond(cancel) error = %v, want nil", err)
+	}
+	if cancelled.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after cancellation", cancelled.Pending)
+	}
+	if adapter.editor != nil {
+		t.Fatalf("adapter.editor = %#v, want nil after cancellation", adapter.editor)
+	}
+	if creator.callCount != 0 || updater.callCount != 0 {
+		t.Fatalf("creator/updater call counts = %d/%d, want 0/0 (Esc mid-sequence must not persist anything)", creator.callCount, updater.callCount)
 	}
 }
