@@ -1533,3 +1533,56 @@ func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
 		t.Fatalf("view after selecting Crear material = %q, want the editor's first question (family) to appear", plain)
 	}
 }
+
+// TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne is a
+// regression test for a real bug: after a long conversation (a full
+// MaterialEditor create flow generates many resolved interactions), a
+// second "/" -> "Crear material" left the viewport frozen at its old
+// scroll offset — every subsequent question rendered off-screen below the
+// visible viewport, making the workspace look "stuck" even though the
+// editor's state machine was actually advancing correctly underneath.
+//
+// Root cause: openPalette (and other refreshViewport call sites outside
+// respond) rebuilt viewport content/height without re-pinning to the
+// bottom, unlike respond's own wasAtBottom/GotoBottom pairing — so once
+// the interaction dock's footer height changed (as it does between plain
+// chat, palette, and question states) at exactly the wrong moment, the
+// viewport's "was at bottom" state got stale and never resynced. Fixed by
+// moving the wasAtBottom/GotoBottom pairing into refreshViewport itself,
+// so every caller gets it automatically instead of each call site having
+// to remember to pair it.
+func TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne(t *testing.T) {
+	materials := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: nil}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
+	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
+	m = openMaterialsWorkspace(t, m)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// First create: a full CABLE flow builds up enough conversation history
+	// to exceed the viewport's visible height (the scenario that never
+	// triggers with a short, single-exchange conversation).
+	for _, msg := range []tea.Msg{key('/'), enter(), enter(), enter(), enter(), enter(), enter(), enter()} {
+		m, _ = update(t, m, msg)
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "CONDUCTORES") {
+		t.Fatalf("first create flow did not complete: view = %q", ansi.Strip(m.View().Content))
+	}
+
+	// Second create: this is exactly where the bug manifested.
+	m, _ = update(t, m, key('/'))
+	m, _ = update(t, m, enter()) // Crear material
+	if !m.viewport.AtBottom() {
+		t.Fatalf("viewport not at bottom after starting a second create flow (YOffset=%d Height=%d)", m.viewport.YOffset(), m.viewport.Height())
+	}
+	plain := ansi.Strip(m.View().Content)
+	if !strings.Contains(plain, "¿Qué familia querés crear?") {
+		t.Fatalf("family question not visible after starting a second create flow: view = %q", plain)
+	}
+
+	// Answering the family question must also keep the viewport pinned to
+	// the newly-revealed product type question.
+	m, _ = update(t, m, enter())
+	plain = ansi.Strip(m.View().Content)
+	if !strings.Contains(plain, "¿Qué tipo de producto querés crear?") {
+		t.Fatalf("product type question not visible after answering family: view = %q", plain)
+	}
+}

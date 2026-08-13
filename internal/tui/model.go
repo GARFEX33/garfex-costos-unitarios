@@ -441,7 +441,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) respond(input InteractionInput) {
-	wasAtBottom := m.viewport.AtBottom()
 	response := m.engine.Respond(context.Background(), input)
 	for _, message := range response.Messages {
 		if isActivePendingMessage(message, response.Pending) {
@@ -462,9 +461,6 @@ func (m *Model) respond(input InteractionInput) {
 	m.choiceSelected = nil
 	m.syncChoiceFields()
 	m.refreshViewport()
-	if wasAtBottom {
-		m.viewport.GotoBottom()
-	}
 }
 
 // activePaletteActions returns the action tree the "/" palette should show:
@@ -1078,6 +1074,7 @@ func workspaceViewportHeight(height int, mode interactionMode) int {
 }
 
 func (m *Model) refreshViewport() {
+	wasAtBottom := m.viewport.AtBottom()
 	lines := make([]string, 0, len(m.history)*3)
 	for _, message := range m.history {
 		if message.resolved != nil {
@@ -1111,6 +1108,9 @@ func (m *Model) refreshViewport() {
 	}
 	contentHeight := max(1, strings.Count(m.viewport.GetContent(), "\n")+1)
 	m.viewport.SetHeight(min(maxHeight, contentHeight))
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m Model) interactionDockLines(width int) int {
