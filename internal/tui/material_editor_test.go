@@ -1101,6 +1101,109 @@ func TestMaterialEditorEditFinishImmediatelyCancelsCleanly(t *testing.T) {
 // persisted material must carry Color=ROJO — proving editedCodes tracks
 // "what to list" (deduplicated) while the summary always reads the CURRENT
 // value from state.values regardless of how many times a field was touched.
+// tuberiaAttributeValues is the shared CANALIZACIONES/TUBERIA attribute set
+// used by the diameter-narrowing edit tests below, in catalog declaration
+// order. diameter_inch=1/2" and diameter_mm=13 mm are the related pair per
+// tuberiasRelations() (material_catalog.go).
+func tuberiaAttributeValues() []domain.MaterialAttributeValue {
+	return []domain.MaterialAttributeValue{
+		domain.OptionValue("tipo", "CONDUIT PARED DELGADA"),
+		domain.OptionValue("diameter_inch", `1/2"`),
+		domain.OptionValue("diameter_mm", "13 mm"),
+	}
+}
+
+// TestMaterialEditorEditDiameterInchShowsAllOptionsWhenDiameterMmUntouched
+// is the regression test for the exact bug the project owner hit: editing
+// diameter_inch on a CANALIZACIONES/TUBERIA material must offer all 9
+// approved diameter_inch options, not just its own current value. Before the
+// fix, attributeQuestion narrowed diameter_inch's options via ValidOptions
+// using the material's STALE, untouched diameter_mm value still sitting in
+// state.values (seeded from the material's full pre-existing Attributes at
+// startEditEditor) — since diameter_inch<->diameter_mm is a 1:1 relation,
+// that narrowed diameter_inch down to essentially its own current value
+// (13 mm only allows 1/2"). Because diameter_mm was never actually
+// re-chosen THIS session (state.editedCodes is still empty when
+// diameter_inch is the first field picked), narrowingContext must exclude
+// it and diameter_inch's question must show the full unconstrained list.
+func TestMaterialEditorEditDiameterInchShowsAllOptionsWhenDiameterMmUntouched(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", tuberiaAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 7
+
+	getter := &fakeMaterialGetter{material: existing}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, "diameter_inch")
+
+	request, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (diameter_inch question)", response.Pending)
+	}
+	wantOptions := []string{`1/2"`, `3/4"`, `1"`, `1 1/4"`, `1 1/2"`, `2"`, `2 1/2"`, `3"`, `4"`}
+	if len(request.Options) != len(wantOptions) {
+		t.Fatalf("diameter_inch Options = %v, want all %d approved values %v", request.Options, len(wantOptions), wantOptions)
+	}
+	gotSet := map[string]bool{}
+	for _, option := range request.Options {
+		gotSet[option.Value] = true
+	}
+	for _, want := range wantOptions {
+		if !gotSet[want] {
+			t.Fatalf("diameter_inch Options = %v, missing expected value %q", request.Options, want)
+		}
+	}
+}
+
+// TestMaterialEditorEditDiameterInchNarrowsByFreshlyEditedDiameterMm proves
+// the fix does not disable narrowing altogether: when diameter_mm is
+// genuinely re-chosen EARLIER in the same edit session (so its code lands
+// in state.editedCodes), looping back and then picking diameter_inch must
+// still narrow to exactly the one related option — 19 mm pairs with 3/4"
+// per tuberiasRelations() (material_catalog.go).
+func TestMaterialEditorEditDiameterInchNarrowsByFreshlyEditedDiameterMm(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CANALIZACIONES", "TUBERIA", "PZA", tuberiaAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 7
+
+	getter := &fakeMaterialGetter{material: existing}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, "diameter_mm")
+	response = answerQuestion(t, adapter, response, "19 mm") // freshly re-chosen this session
+
+	if _, ok := response.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (back at the field picker)", response.Pending)
+	}
+	response = answerQuestion(t, adapter, response, "diameter_inch")
+
+	request, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (diameter_inch question)", response.Pending)
+	}
+	if len(request.Options) != 1 || request.Options[0].Value != `3/4"` {
+		t.Fatalf("diameter_inch Options = %v, want exactly [3/4\"] (narrowed by freshly-edited diameter_mm=19 mm)", request.Options)
+	}
+}
+
 func TestMaterialEditorEditSameFieldTwiceKeepsLatestValueOnly(t *testing.T) {
 	catalog := domain.NewMaterialsCatalog()
 	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())

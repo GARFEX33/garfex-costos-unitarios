@@ -362,7 +362,7 @@ func (a *MaterialsWorkspaceAdapter) attributeQuestion(catalog domain.MaterialsCa
 	prompt := attribute.Definition.Name
 	switch attribute.Definition.ValueType {
 	case domain.ValueTypeControlledOption:
-		options := catalog.ValidOptions(attribute.Definition.Code, a.editor.values)
+		options := catalog.ValidOptions(attribute.Definition.Code, a.narrowingContext())
 		options = defaultOptionFirst(options, a.originalOptionCode(attribute.Definition.Code))
 		selectOptions := make([]Option, len(options))
 		for i, option := range options {
@@ -583,6 +583,40 @@ func defaultUnitFirst(units []domain.UnitDefinition, defaultCode string) []domai
 		}
 	}
 	return units
+}
+
+// narrowingContext returns the attribute values that should narrow the
+// CURRENTLY-asked attribute's options via ValidOptions. For CREATE, that's
+// simply the full accumulated state.values (attributes are asked once each,
+// in order, so nothing about the attribute currently being asked is already
+// in there — only genuinely-already-chosen siblings are, which is exactly
+// what should narrow it). For the EDIT loop, state.values starts as a full
+// copy of the material's PRE-EXISTING attributes (so a partial edit can
+// still produce a complete Material) — passing that as-is would let an
+// untouched, stale sibling value (e.g. an old diameter_mm) wrongly
+// constrain a field the user is actively trying to change (e.g.
+// diameter_inch) down to essentially its own current value. So during edit,
+// only attributes genuinely re-chosen THIS session (state.editedCodes)
+// narrow the one currently being asked about — the first field edited in a
+// session always sees the full option list, and editing a related field
+// earlier in the same loop correctly narrows a later one, matching what a
+// user actually expects.
+func (a *MaterialsWorkspaceAdapter) narrowingContext() []domain.MaterialAttributeValue {
+	state := a.editor
+	if state.mode != editorModeEdit {
+		return state.values
+	}
+	edited := map[string]bool{}
+	for _, code := range state.editedCodes {
+		edited[code] = true
+	}
+	var context []domain.MaterialAttributeValue
+	for _, value := range state.values {
+		if edited[value.AttributeCode] {
+			context = append(context, value)
+		}
+	}
+	return context
 }
 
 // originalOptionCode looks up material's current option code for
