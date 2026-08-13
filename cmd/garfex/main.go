@@ -58,7 +58,7 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 			return 1
 		}
 		service := materiales.NewService(repo, domain.NewMaterialsCatalog())
-		materialsAdapter := tui.NewMaterialsWorkspaceAdapter(service, service, service, service, service)
+		materialsAdapter := tui.NewMaterialsWorkspaceAdapter(service, service, service, service, service, service)
 		assistantAgent := tui.NewAssistantShellAgent()
 		if _, err := launch(tui.NewWithAgents(tui.Handlers{
 			Version: tui.Version(version),

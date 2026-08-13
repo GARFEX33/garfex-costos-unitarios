@@ -36,6 +36,14 @@ type materialUpdater interface {
 	Update(ctx context.Context, material domain.Material) error
 }
 
+// materialDeleter is the minimal surface the "Eliminar" flow needs to soft-
+// delete a material by its stable ID (never a hard delete — see
+// materiales.Service.Delete/MaterialRepository.SetActive, already built and
+// integration-tested in an earlier PR).
+type materialDeleter interface {
+	Delete(ctx context.Context, id int64) error
+}
+
 // MaterialsWorkspaceAdapter is the production InteractionAgent for the
 // Materiales Maestros workspace. It is a thin TUI-to-application-service
 // adapter — not the Materials domain, not materiales.Service itself, and
@@ -48,6 +56,7 @@ type MaterialsWorkspaceAdapter struct {
 	describer       materialDescriber
 	creator         materialCreator
 	updater         materialUpdater
+	deleter         materialDeleter
 	// lastQuery remembers the text of the most recent successful search so
 	// the "volver a los resultados" action can reproduce the identical
 	// result list deterministically, without a separate cache of results.
@@ -63,11 +72,11 @@ type MaterialsWorkspaceAdapter struct {
 }
 
 // NewMaterialsWorkspaceAdapter returns the production agent for the
-// Materiales Maestros workspace. searcher, getter, describer, creator and
-// updater are satisfied structurally by *materiales.Service — composed for
-// real in cmd/garfex/main.go.
-func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter, describer materialDescriber, creator materialCreator, updater materialUpdater) *MaterialsWorkspaceAdapter {
-	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer, creator: creator, updater: updater}
+// Materiales Maestros workspace. searcher, getter, describer, creator,
+// updater and deleter are satisfied structurally by *materiales.Service —
+// composed for real in cmd/garfex/main.go.
+func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter, describer materialDescriber, creator materialCreator, updater materialUpdater, deleter materialDeleter) *MaterialsWorkspaceAdapter {
+	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer, creator: creator, updater: updater, deleter: deleter}
 }
 
 const materialsGreeting = "Materiales Maestros está conectado al catálogo real (PostgreSQL). Buscá un material o usá / para acciones."
@@ -113,6 +122,15 @@ const editActionID = "edit-material"
 // than Update.
 const duplicateActionID = "duplicate-material"
 
+// deleteActionID is the Action.ID/InteractionInput.ActionID for "Eliminar"
+// from the detail view. It shows a confirmation naming the material before
+// doing anything — see startDeleteConfirmation/answerDeleteConfirmation.
+const deleteActionID = "delete-material"
+
+// materialsDeleteConfirmKey identifies the ConfirmationRequest shown before
+// soft-deleting a material.
+const materialsDeleteConfirmKey = "materials-delete-confirm"
+
 // notApplicableAttributeText mirrors internal/postgres's notApplicableState
 // sentinel ("NOT_APPLICABLE"), the literal domain.MaterialAttributeValue.Text
 // value the repository decodes onto a NOT_APPLICABLE attribute regardless of
@@ -152,6 +170,10 @@ func (a *MaterialsWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 		return a.startEditEditor()
 	case input.Kind == InputAction && input.ActionID == duplicateActionID:
 		return a.startDuplicateEditor()
+	case input.Kind == InputAction && input.ActionID == deleteActionID:
+		return a.startDeleteConfirmation()
+	case input.Kind == InputSelection && input.Key == materialsDeleteConfirmKey:
+		return a.answerDeleteConfirmation(ctx, input.Value)
 	case input.Kind == InputAction && input.ActionID == backActionID:
 		return a.searchResponse(ctx, a.lastQuery)
 	}
@@ -234,17 +256,67 @@ func (a *MaterialsWorkspaceAdapter) detailResponse(ctx context.Context, value st
 	title, fields := a.materialPresentation(material)
 	return InteractionResponse{
 		Messages: []InteractionMessage{StructuredResult{Title: title, Fields: fields}},
-		Pending: ActionRequest{
-			ID:       materialsDetailActionsKey,
-			Key:      materialsDetailActionsKey,
-			Question: "¿Qué querés hacer?",
-			Actions: []Action{
-				{ID: editActionID, Label: "Editar", Value: editActionID, Target: ActionTargetAgent},
-				{ID: duplicateActionID, Label: "Duplicar", Value: duplicateActionID, Target: ActionTargetAgent},
-				{ID: backActionID, Label: "Volver a los resultados", Value: backActionID, Target: ActionTargetAgent},
-			},
-		},
+		Pending:  detailActionsRequest(),
 	}, nil
+}
+
+// detailActionsRequest builds the "¿Qué querés hacer?" menu offered from a
+// material's detail view — shared by detailResponse (first opening it) and
+// the "No, cancelar" path of the delete confirmation (returning to the same
+// detail after declining).
+func detailActionsRequest() ActionRequest {
+	return ActionRequest{
+		ID:       materialsDetailActionsKey,
+		Key:      materialsDetailActionsKey,
+		Question: "¿Qué querés hacer?",
+		Actions: []Action{
+			{ID: editActionID, Label: "Editar", Value: editActionID, Target: ActionTargetAgent},
+			{ID: duplicateActionID, Label: "Duplicar", Value: duplicateActionID, Target: ActionTargetAgent},
+			{ID: deleteActionID, Label: "Eliminar", Value: deleteActionID, Target: ActionTargetAgent},
+			{ID: backActionID, Label: "Volver a los resultados", Value: backActionID, Target: ActionTargetAgent},
+		},
+	}
+}
+
+// startDeleteConfirmation shows a confirmation naming the material currently
+// in the detail view (a.lastDetail) before doing anything destructive —
+// nothing is deleted yet at this point.
+func (a *MaterialsWorkspaceAdapter) startDeleteConfirmation() (InteractionResponse, error) {
+	title, _ := a.materialPresentation(a.lastDetail)
+	question := fmt.Sprintf("Eliminar material\n\n%s\n\n¿Seguro que querés eliminar este material?", title)
+	return InteractionResponse{Pending: ConfirmationRequest{
+		ID:           materialsDeleteConfirmKey,
+		Key:          materialsDeleteConfirmKey,
+		Question:     question,
+		ConfirmLabel: "Sí, eliminar",
+		CancelLabel:  "No, cancelar",
+	}}, nil
+}
+
+// answerDeleteConfirmation handles the confirmation's answer: "no" returns
+// the user to the SAME detail view they were looking at (not a bare
+// "cancelado" — they were just reading about a specific material and said
+// not to delete it, so landing back there is the natural result); "yes"
+// soft-deletes it (materialDeleter.Delete — never a hard delete) and
+// confirms what happened, or reports a generic failure without leaking the
+// raw error, matching this file's existing discipline elsewhere.
+func (a *MaterialsWorkspaceAdapter) answerDeleteConfirmation(ctx context.Context, value string) (InteractionResponse, error) {
+	if value != "yes" {
+		title, fields := a.materialPresentation(a.lastDetail)
+		return InteractionResponse{
+			Messages: []InteractionMessage{StructuredResult{Title: title, Fields: fields}},
+			Pending:  detailActionsRequest(),
+		}, nil
+	}
+	title, _ := a.materialPresentation(a.lastDetail)
+	if err := a.deleter.Delete(ctx, a.lastDetail.ID); err != nil {
+		return InteractionResponse{Messages: []InteractionMessage{
+			ErrorMessage{Text: "No pude eliminar el material. Probá de nuevo en un momento."},
+		}}, nil
+	}
+	return InteractionResponse{Messages: []InteractionMessage{
+		TextMessage{Text: "Material eliminado: " + title},
+	}}, nil
 }
 
 // materialPresentation builds the shared "one material" presentation used both

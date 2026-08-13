@@ -1523,7 +1523,7 @@ func TestPaletteInsideAssistantDoesNotShowCreateMaterial(t *testing.T) {
 // family, appears) — not just the dispatch-level unit test already covered
 // in material_editor_test.go.
 func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
-	materials := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	materials := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, key('/'))
@@ -1552,7 +1552,7 @@ func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
 // so every caller gets it automatically instead of each call site having
 // to remember to pair it.
 func TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne(t *testing.T) {
-	materials := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: nil}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	materials := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: nil}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})

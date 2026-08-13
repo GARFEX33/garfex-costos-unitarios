@@ -38,6 +38,21 @@ func (f *fakeMaterialUpdater) Update(_ context.Context, material domain.Material
 	return f.err
 }
 
+// fakeMaterialDeleter is the fake materialDeleter used by the delete-flow
+// tests (and the compile-time-satisfaction call sites in
+// materials_workspace_adapter_test.go).
+type fakeMaterialDeleter struct {
+	callCount int
+	gotID     int64
+	err       error
+}
+
+func (f *fakeMaterialDeleter) Delete(_ context.Context, id int64) error {
+	f.callCount++
+	f.gotID = id
+	return f.err
+}
+
 // answerQuestion is a small test helper: it asserts response.Pending is a
 // QuestionRequest keyed materialEditorKey and drives the next Respond call
 // with that key and the given value.
@@ -82,7 +97,7 @@ func answerConfirmation(t *testing.T, adapter *MaterialsWorkspaceAdapter, respon
 // the exact expected Material.
 func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 	creator := &fakeMaterialCreator{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, creator, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, creator, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -169,7 +184,7 @@ func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 // NaturalUnit question, never color or voltage — proving advanceEditor's
 // FamilyAttribute.Effective-driven skip, not a CABLE-specific check.
 func TestMaterialEditorDesnudoSkipsColorAndVoltage(t *testing.T) {
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -200,7 +215,7 @@ func TestMaterialEditorDesnudoSkipsColorAndVoltage(t *testing.T) {
 // question's Options must contain exactly the related option (13 mm) — this
 // proves ValidOptions integration, not a CABLE/TUBERIA-specific check.
 func TestMaterialEditorNarrowsDiameterMmByDiameterInch(t *testing.T) {
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -232,7 +247,7 @@ func TestMaterialEditorDuplicateIdentityShowsExistingMaterial(t *testing.T) {
 	}
 	creator := &fakeMaterialCreator{err: domain.ErrDuplicateMaterial}
 	getter := &fakeMaterialGetter{material: existing}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, creator, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, creator, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -278,7 +293,7 @@ func TestMaterialEditorCancelResetsAndOrdinarySearchStillWorks(t *testing.T) {
 	fake := &fakeMaterialSearcher{results: []domain.Material{
 		{FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|1"},
 	}}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -323,7 +338,7 @@ func TestMaterialEditorRegressionOrdinarySearchUnaffected(t *testing.T) {
 	fake := &fakeMaterialSearcher{results: []domain.Material{
 		{FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|1"},
 	}}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
 	if err != nil {
 		t.Fatalf("Respond(search) error = %v, want nil", err)
@@ -395,7 +410,7 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 	getter := &fakeMaterialGetter{material: existing}
 	creator := &fakeMaterialCreator{}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 
@@ -469,7 +484,7 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 
 	getter := &fakeMaterialGetter{material: existing}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -565,7 +580,7 @@ func TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial(t *testing.T) 
 
 	getter := &fakeMaterialGetter{material: editing}
 	updater := &fakeMaterialUpdater{err: domain.ErrDuplicateMaterial}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{editing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{editing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, editing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -630,7 +645,7 @@ func TestMaterialEditorEditDesnudoDropsNowForbiddenAttributes(t *testing.T) {
 
 	getter := &fakeMaterialGetter{material: existing}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -701,7 +716,7 @@ func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testi
 
 	getter := &fakeMaterialGetter{material: existing}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -761,7 +776,7 @@ func TestMaterialEditorEditMultiFieldHappyPathSavesBothChanges(t *testing.T) {
 	getter := &fakeMaterialGetter{material: existing}
 	creator := &fakeMaterialCreator{}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -864,7 +879,7 @@ func TestMaterialEditorEditConfirmationDeclineDiscardsChanges(t *testing.T) {
 	creator := &fakeMaterialCreator{}
 	updater := &fakeMaterialUpdater{}
 	searcher := &fakeMaterialSearcher{results: []domain.Material{existing}}
-	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{}, creator, updater)
+	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{}, creator, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -927,7 +942,7 @@ func TestMaterialEditorEditMultiFieldIncludingNaturalUnitThreadsCurrentUnit(t *t
 
 	getter := &fakeMaterialGetter{material: existing}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -1005,7 +1020,7 @@ func TestMaterialEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.
 	getter := &fakeMaterialGetter{material: existing}
 	creator := &fakeMaterialCreator{}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -1053,7 +1068,7 @@ func TestMaterialEditorEditFinishImmediatelyCancelsCleanly(t *testing.T) {
 	creator := &fakeMaterialCreator{}
 	updater := &fakeMaterialUpdater{}
 	searcher := &fakeMaterialSearcher{results: []domain.Material{existing}}
-	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{}, creator, updater)
+	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{}, creator, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -1135,7 +1150,7 @@ func TestMaterialEditorEditDiameterInchShowsAllOptionsWhenDiameterMmUntouched(t 
 	existing.ID = 7
 
 	getter := &fakeMaterialGetter{material: existing}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -1184,7 +1199,7 @@ func TestMaterialEditorFinishEditorSurfacesTheSpecificValidationReason(t *testin
 	existing.ID = 7
 
 	getter := &fakeMaterialGetter{material: existing}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -1229,7 +1244,7 @@ func TestMaterialEditorEditDiameterInchNarrowsByFreshlyEditedDiameterMm(t *testi
 	existing.ID = 7
 
 	getter := &fakeMaterialGetter{material: existing}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -1264,7 +1279,7 @@ func TestMaterialEditorEditSameFieldTwiceKeepsLatestValueOnly(t *testing.T) {
 
 	getter := &fakeMaterialGetter{material: existing}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
@@ -1335,7 +1350,7 @@ func TestMaterialEditorDuplicateChangesOneAttributeCreatesNewMaterial(t *testing
 	getter := &fakeMaterialGetter{material: existing}
 	creator := &fakeMaterialCreator{}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: duplicateActionID, Value: duplicateActionID, Target: ActionTargetAgent})
@@ -1411,7 +1426,7 @@ func TestMaterialEditorDuplicateZeroChangesStillProceedsAndDetectsCollision(t *t
 	getter := &fakeMaterialGetter{material: existing}
 	creator := &fakeMaterialCreator{err: domain.ErrDuplicateMaterial}
 	updater := &fakeMaterialUpdater{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater, &fakeMaterialDeleter{})
 
 	openDetailViaSearch(t, adapter, existing)
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: duplicateActionID, Value: duplicateActionID, Target: ActionTargetAgent})
