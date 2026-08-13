@@ -55,8 +55,13 @@ func TestRun(t *testing.T) {
 			// Resize generously so the greeting is not scrolled/cut off by
 			// the workspace viewport's default (small) height.
 			resized, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 60})
-			if plain := ansi.Strip(resized.View().Content); !strings.Contains(plain, "catálogo real") {
-				t.Fatalf("launcher model view = %q, want it to contain the MaterialsWorkspaceAdapter greeting proving NewWithAgent wiring", plain)
+			// The Assistant chat is the default active workspace at launch
+			// (GARFEX / ASSISTANT stays a general shell and no longer
+			// redirects to Materials on startup or on free text), so the
+			// initial view shows AssistantShellAgent honest placeholder,
+			// not the Materials greeting.
+			if plain := ansi.Strip(resized.View().Content); !strings.Contains(plain, "Escribí / para elegir una capacidad") {
+				t.Fatalf("launcher model view = %q, want it to contain the AssistantShellAgent placeholder proving NewWithAgents wiring", plain)
 			}
 			return fakeProgram{}
 		}},

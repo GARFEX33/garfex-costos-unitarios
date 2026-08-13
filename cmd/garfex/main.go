@@ -58,12 +58,13 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 			return 1
 		}
 		service := materiales.NewService(repo)
-		adapter := tui.NewMaterialsWorkspaceAdapter(service)
-		if _, err := launch(tui.NewWithAgent(tui.Handlers{
+		materialsAdapter := tui.NewMaterialsWorkspaceAdapter(service)
+		assistantAgent := tui.NewAssistantShellAgent()
+		if _, err := launch(tui.NewWithAgents(tui.Handlers{
 			Version: tui.Version(version),
 			Config:  tui.Config(look),
 			Status:  tui.Status(),
-		}, adapter)).Run(); err != nil {
+		}, assistantAgent, materialsAdapter)).Run(); err != nil {
 			fmt.Fprintf(errw, "TUI launcher failed: %v\n", err)
 			return 1
 		}

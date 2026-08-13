@@ -7,12 +7,7 @@ type assistantAction struct {
 }
 
 var assistantActions = []assistantAction{
-	{
-		id: "materials", label: "Materiales",
-		children: []assistantAction{
-			{id: "material-search", label: "Buscar material"},
-		},
-	},
+	{id: "materials", label: "Materiales Maestros"},
 	{id: "concepts", label: "Conceptos"},
 	{id: "apu", label: "APU"},
 	{id: "suppliers", label: "Proveedores"},
