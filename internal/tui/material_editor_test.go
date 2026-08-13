@@ -355,14 +355,15 @@ func cableAttributeValues() []domain.MaterialAttributeValue {
 	}
 }
 
-// TestMaterialEditorEditFullHappyPathReproducesSameMaterial covers the full
-// EDIT flow end to end: opening a CONDUCTORES/CABLE material's detail,
-// selecting "Editar", confirming the wizard skips straight to the first
-// attribute (per D3, no Family/ProductType questions), confirming its
-// Options default to the material's current value, and confirming that
-// answering every question unchanged calls updater.Update (never
+// TestMaterialEditorEditFullHappyPathReproducesSameMaterial covers the new
+// picker-based EDIT flow end to end: opening a CONDUCTORES/CABLE material's
+// detail, selecting "Editar", confirming the wizard opens on the field
+// picker (never Family/ProductType), picking ONE field, confirming its
+// question defaults to the material's current value, and confirming that
+// answering with that SAME value calls updater.Update (never
 // creator.Create) with the original Material.ID preserved and the exact
-// same IdentityKey.
+// same IdentityKey — proving a no-op single-field edit truly changes
+// nothing.
 func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 	catalog := domain.NewMaterialsCatalog()
 	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
@@ -383,24 +384,25 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	request, ok := response.Pending.(QuestionRequest)
+	pickerRequest, ok := response.Pending.(QuestionRequest)
 	if !ok {
-		t.Fatalf("Pending = %T, want QuestionRequest (first attribute question)", response.Pending)
+		t.Fatalf("Pending = %T, want QuestionRequest (field picker)", response.Pending)
 	}
-	lowerPrompt := strings.ToLower(request.Prompt)
-	if strings.Contains(lowerPrompt, "familia") || strings.Contains(lowerPrompt, "tipo de producto") {
-		t.Fatalf("Prompt = %q, want the wizard to skip Family/ProductType questions during edit", request.Prompt)
-	}
-	if len(request.Options) == 0 || request.Options[0].Value != "COBRE" {
-		t.Fatalf("first attribute Options = %v, want the material's current value (COBRE) first", request.Options)
+	if !strings.Contains(strings.ToLower(pickerRequest.Prompt), "campo") {
+		t.Fatalf("Prompt = %q, want the field picker prompt", pickerRequest.Prompt)
 	}
 
-	response = answerQuestion(t, adapter, response, "COBRE")  // conductor_material
-	response = answerQuestion(t, adapter, response, "10 AWG") // gauge
-	response = answerQuestion(t, adapter, response, "THW")    // insulation
-	response = answerQuestion(t, adapter, response, "NEGRO")  // color
-	response = answerQuestion(t, adapter, response, "600 V")  // voltage
-	response = answerQuestion(t, adapter, response, "M")      // natural unit
+	response = answerQuestion(t, adapter, response, "conductor_material")
+
+	request, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (conductor_material question)", response.Pending)
+	}
+	if len(request.Options) == 0 || request.Options[0].Value != "COBRE" {
+		t.Fatalf("conductor_material Options = %v, want the material's current value (COBRE) first", request.Options)
+	}
+
+	response = answerQuestion(t, adapter, response, "COBRE") // unchanged
 
 	if creator.callCount != 0 {
 		t.Fatalf("Create call count = %d, want 0 (edit must never call Create)", creator.callCount)
@@ -412,7 +414,10 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 		t.Fatalf("gotMaterial.ID = %d, want 42 (the original Material.ID)", updater.gotMaterial.ID)
 	}
 	if updater.gotMaterial.IdentityKey != existing.IdentityKey {
-		t.Fatalf("gotMaterial.IdentityKey = %q, want %q (unchanged answers reproduce the same identity)", updater.gotMaterial.IdentityKey, existing.IdentityKey)
+		t.Fatalf("gotMaterial.IdentityKey = %q, want %q (an unchanged answer reproduces the same identity)", updater.gotMaterial.IdentityKey, existing.IdentityKey)
+	}
+	if len(updater.gotMaterial.Attributes) != len(existing.Attributes) {
+		t.Fatalf("gotMaterial.Attributes = %+v, want %+v (byte-identical to the original)", updater.gotMaterial.Attributes, existing.Attributes)
 	}
 	if response.Pending != nil {
 		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
@@ -425,10 +430,13 @@ func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
 	}
 }
 
-// TestMaterialEditorEditChangesOneAttribute covers editing a material with
-// one different answer (color: NEGRO -> BLANCO): the final Update call must
-// carry the new value, the original Material.ID must still be preserved,
-// and the resulting IdentityKey must differ from the original.
+// TestMaterialEditorEditChangesOneAttribute covers the field picker's menu
+// shape (it must list the material's actual fields with their CURRENT
+// values, including a "Unidad natural" entry) and picking one field
+// (color) with a DIFFERENT answer (NEGRO -> BLANCO): the final Update call
+// must carry the new value with every OTHER attribute identical to the
+// original, the original Material.ID must still be preserved, and the
+// resulting IdentityKey must differ from the original.
 func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 	catalog := domain.NewMaterialsCatalog()
 	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
@@ -447,12 +455,33 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 		t.Fatalf("Respond(edit) error = %v, want nil", err)
 	}
 
-	response = answerQuestion(t, adapter, response, "COBRE")
-	response = answerQuestion(t, adapter, response, "10 AWG")
-	response = answerQuestion(t, adapter, response, "THW")
+	pickerRequest, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (field picker)", response.Pending)
+	}
+	wantLabels := map[string]string{
+		"conductor_material":     "Conductor material: COBRE",
+		"gauge":                  "Gauge: 10 AWG",
+		"insulation":             "Insulation: THW",
+		"color":                  "Color: NEGRO",
+		"voltage":                "Voltage: 600 V",
+		editNaturalUnitFieldCode: "Unidad natural: M",
+	}
+	if len(pickerRequest.Options) != len(wantLabels) {
+		t.Fatalf("picker Options = %v, want %d entries: %v", pickerRequest.Options, len(wantLabels), wantLabels)
+	}
+	for _, option := range pickerRequest.Options {
+		wantLabel, known := wantLabels[option.ID]
+		if !known {
+			t.Fatalf("unexpected picker Option.ID %q (Label %q)", option.ID, option.Label)
+		}
+		if option.Label != wantLabel {
+			t.Fatalf("picker Option[%q].Label = %q, want %q", option.ID, option.Label, wantLabel)
+		}
+	}
+
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO") // changed from NEGRO
-	response = answerQuestion(t, adapter, response, "600 V")
-	response = answerQuestion(t, adapter, response, "M")
 
 	if updater.callCount != 1 {
 		t.Fatalf("Update call count = %d, want 1", updater.callCount)
@@ -463,17 +492,25 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 	if updater.gotMaterial.IdentityKey == existing.IdentityKey {
 		t.Fatalf("gotMaterial.IdentityKey = %q, want it to differ from the original %q after changing color", updater.gotMaterial.IdentityKey, existing.IdentityKey)
 	}
-	found := false
+	if len(updater.gotMaterial.Attributes) != len(existing.Attributes) {
+		t.Fatalf("gotMaterial.Attributes = %+v, want the same %d attributes as the original (only color's value should differ)", updater.gotMaterial.Attributes, len(existing.Attributes))
+	}
 	for _, value := range updater.gotMaterial.Attributes {
 		if value.AttributeCode == "color" {
-			found = true
 			if value.OptionCode != "BLANCO" {
 				t.Fatalf("color attribute = %q, want %q", value.OptionCode, "BLANCO")
 			}
+			continue
 		}
-	}
-	if !found {
-		t.Fatalf("gotMaterial.Attributes = %+v, want a color attribute", updater.gotMaterial.Attributes)
+		var want string
+		for _, original := range existing.Attributes {
+			if original.AttributeCode == value.AttributeCode {
+				want = original.OptionCode
+			}
+		}
+		if value.OptionCode != want {
+			t.Fatalf("%s attribute = %q, want unchanged %q", value.AttributeCode, value.OptionCode, want)
+		}
 	}
 	if response.Pending != nil {
 		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
@@ -481,10 +518,11 @@ func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
 }
 
 // TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial covers
-// finishEditor's ErrDuplicateMaterial path for EDIT: when Update reports a
-// collision with a DIFFERENT already-existing material, the response must
-// show that other material's detail — never a bare failure, never a silent
-// overwrite of either material.
+// finishEditor's ErrDuplicateMaterial path for EDIT through the new 2-step
+// (picker -> single answer) flow: when Update reports a collision with a
+// DIFFERENT already-existing material, the response must show that other
+// material's detail — never a bare failure, never a silent overwrite of
+// either material.
 func TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial(t *testing.T) {
 	catalog := domain.NewMaterialsCatalog()
 	editing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
@@ -513,16 +551,12 @@ func TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial(t *testing.T) 
 	// the edited identity collides with, mirroring how the real repository
 	// would resolve a Get on the new (colliding) identity — the original
 	// material's attributes are already captured in the editor's state by
-	// this point (see startEditEditor's originalValues), so this mutation
-	// only affects the later duplicate-lookup Get call in finishEditor.
+	// this point (see startEditEditor's values), so this mutation only
+	// affects the later duplicate-lookup Get call in finishEditor.
 	getter.material = other
 
-	response = answerQuestion(t, adapter, response, "COBRE")
-	response = answerQuestion(t, adapter, response, "10 AWG")
-	response = answerQuestion(t, adapter, response, "THW")
+	response = answerQuestion(t, adapter, response, "color")
 	response = answerQuestion(t, adapter, response, "BLANCO")
-	response = answerQuestion(t, adapter, response, "600 V")
-	response = answerQuestion(t, adapter, response, "M")
 
 	if updater.callCount != 1 {
 		t.Fatalf("Update call count = %d, want 1", updater.callCount)
@@ -544,5 +578,130 @@ func TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial(t *testing.T) 
 	}
 	if response.Pending != nil {
 		t.Fatalf("Pending = %#v, want nil (editor reset after duplicate)", response.Pending)
+	}
+}
+
+// TestMaterialEditorEditDesnudoDropsNowForbiddenAttributes covers the real
+// correctness gap the single-field edit flow introduces that CREATE's
+// sequential walkthrough never had (see finishEditor's filterApplicableValues):
+// state.values is seeded from the material's FULL existing Attributes, so
+// editing insulation from THW to DESNUDO leaves the pre-existing color and
+// voltage values still sitting in state.values even though DESNUDO makes
+// both of them ModeForbidden/notApplicable per the catalog's own rule.
+// Passing them straight into domain.NewMaterial would reject the whole edit
+// ("attribute %q is forbidden"). This proves the edit instead completes
+// successfully with color/voltage silently dropped, and the resulting
+// IdentityKey has no color=/voltage= segments.
+func TestMaterialEditorEditDesnudoDropsNowForbiddenAttributes(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, "insulation")
+	response = answerQuestion(t, adapter, response, "DESNUDO")
+
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("Messages = %v, want exactly one message (no validation error)", response.Messages)
+	}
+	if _, ok := response.Messages[0].(StructuredResult); !ok {
+		t.Fatalf("Messages[0] = %T, want StructuredResult (no validation error)", response.Messages[0])
+	}
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	for _, value := range updater.gotMaterial.Attributes {
+		if value.AttributeCode == "color" || value.AttributeCode == "voltage" {
+			t.Fatalf("gotMaterial.Attributes = %+v, want neither color nor voltage (DESNUDO makes both forbidden)", updater.gotMaterial.Attributes)
+		}
+	}
+	if strings.Contains(updater.gotMaterial.IdentityKey, "color=") || strings.Contains(updater.gotMaterial.IdentityKey, "voltage=") {
+		t.Fatalf("gotMaterial.IdentityKey = %q, want no color=/voltage= segments", updater.gotMaterial.IdentityKey)
+	}
+	foundInsulation := false
+	for _, value := range updater.gotMaterial.Attributes {
+		if value.AttributeCode == "insulation" {
+			foundInsulation = true
+			if value.OptionCode != "DESNUDO" {
+				t.Fatalf("insulation attribute = %q, want %q", value.OptionCode, "DESNUDO")
+			}
+		}
+	}
+	if !foundInsulation {
+		t.Fatalf("gotMaterial.Attributes = %+v, want an insulation attribute", updater.gotMaterial.Attributes)
+	}
+}
+
+// TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves covers
+// the field picker's explicit "Unidad natural" entry: picking it must route
+// to exactly the same unitQuestion CREATE's last step already uses (reused
+// unchanged, see answerAttributePicker), and answering it must save via
+// finishEditor. The real catalog declares only ONE allowed NaturalUnit per
+// family today (CONDUCTORES -> "M" only — see NewMaterialsCatalog's single
+// UnitPolicies entry for CONDUCTORES), so there is no second value the real
+// catalog would accept here; this test can only exercise "pick the current
+// unit again" (a no-op save), not a genuinely different unit. It still
+// proves the routing (editorStepUnit reached via the picker, not only via
+// CREATE's sequential walkthrough) and that finishEditor is reached and
+// succeeds.
+func TestMaterialEditorEditNaturalUnitEntryRoutesToUnitQuestionAndSaves(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, editNaturalUnitFieldCode)
+
+	request, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (natural unit question)", response.Pending)
+	}
+	if !strings.Contains(strings.ToLower(request.Prompt), "unidad") {
+		t.Fatalf("Prompt = %q, want the NaturalUnit question", request.Prompt)
+	}
+	if len(request.Options) == 0 || request.Options[0].Value != "M" {
+		t.Fatalf("unit Options = %v, want the material's current unit (M) first", request.Options)
+	}
+
+	response = answerQuestion(t, adapter, response, "M")
+
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	if updater.gotMaterial.NaturalUnit != "M" {
+		t.Fatalf("gotMaterial.NaturalUnit = %q, want %q", updater.gotMaterial.NaturalUnit, "M")
+	}
+	if updater.gotMaterial.IdentityKey != existing.IdentityKey {
+		t.Fatalf("gotMaterial.IdentityKey = %q, want %q (natural unit is not part of identity)", updater.gotMaterial.IdentityKey, existing.IdentityKey)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
 	}
 }

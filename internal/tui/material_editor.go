@@ -27,7 +27,20 @@ const (
 	editorStepProductType
 	editorStepAttribute
 	editorStepUnit
+	// editorStepAttributePicker and editorStepAttributeEdit are edit-only
+	// steps (see startEditEditor): the picker shows a menu of the material's
+	// currently-set fields, and attributeEdit asks about exactly the one the
+	// user picked. CREATE never reaches either — it still walks
+	// editorStepFamily -> editorStepProductType -> editorStepAttribute ->
+	// editorStepUnit exactly as before.
+	editorStepAttributePicker
+	editorStepAttributeEdit
 )
+
+// editNaturalUnitFieldCode is the attributePickerQuestion Option.Value used
+// for the "Unidad natural" menu entry — a TUI-layer-only routing sentinel,
+// never a real catalog attribute code and never passed to the domain layer.
+const editNaturalUnitFieldCode = "__natural_unit__"
 
 // materialEditorMode distinguishes the "nuevo material" create flow from the
 // "Editar" flow — both drive the exact same state machine below, the mode
@@ -54,8 +67,16 @@ type materialEditorState struct {
 	// catalog declaration order.
 	attributes []domain.FamilyAttribute
 	// nextIndex is the index into attributes for the next question to ask.
+	// Used only by the CREATE/legacy-sequential walkthrough (advanceEditor);
+	// the single-field edit flow never advances an index since there is only
+	// ever one field in flight (see editingCode).
 	nextIndex int
-	values    []domain.MaterialAttributeValue
+	// editingCode is the FamilyAttribute.Definition.Code currently being
+	// asked about during editorStepAttributeEdit — the single-field edit
+	// flow's counterpart to nextIndex, set by answerAttributePicker and read
+	// by answerSingleAttributeEdit.
+	editingCode string
+	values      []domain.MaterialAttributeValue
 	// originalID/originalValues/originalUnit are populated only in
 	// editorModeEdit: originalID is the stable Material.ID Update() targets
 	// (independent of IdentityKey, which editing may change);
@@ -91,24 +112,29 @@ func (a *MaterialsWorkspaceAdapter) startCreateEditor() (InteractionResponse, er
 }
 
 // startEditEditor begins the "Editar" flow for the material currently shown
-// in the detail view (a.lastDetail). Per the approved D3 decision, Family
-// and ProductType are fixed during edit — the wizard starts directly at the
-// first applicable attribute, never asking about them.
+// in the detail view (a.lastDetail). Per the project owner's redesigned
+// flow, Family and ProductType are fixed during edit and there is no
+// sequential walkthrough of every attribute: the wizard opens directly on a
+// menu of the material's currently-set fields (attributePickerQuestion) so
+// the user can pick exactly one to change. state.values is seeded as a copy
+// of the material's FULL existing Attributes (unlike CREATE, which starts
+// values nil/empty) — this is what lets a single-field replace still
+// produce a complete, valid Material without re-asking about every field.
 func (a *MaterialsWorkspaceAdapter) startEditEditor() (InteractionResponse, error) {
 	material := a.lastDetail
 	catalog := domain.NewMaterialsCatalog()
 	a.editor = &materialEditorState{
 		mode:           editorModeEdit,
-		step:           editorStepAttribute,
+		step:           editorStepAttributePicker,
 		family:         material.FamilyCode,
 		productType:    material.ProductTypeCode,
 		attributes:     catalog.AttributesFor(material.FamilyCode, material.ProductTypeCode),
-		nextIndex:      0,
+		values:         append([]domain.MaterialAttributeValue(nil), material.Attributes...),
 		originalID:     material.ID,
 		originalValues: material.Attributes,
 		originalUnit:   material.NaturalUnit,
 	}
-	return a.advanceEditor(catalog), nil
+	return a.attributePickerQuestion(), nil
 }
 
 // respondToEditor handles one InteractionInput while a.editor is
@@ -142,6 +168,10 @@ func (a *MaterialsWorkspaceAdapter) respondToEditor(ctx context.Context, input I
 		return a.advanceEditor(catalog), true
 	case editorStepAttribute:
 		return a.answerAttribute(catalog, input.Value), true
+	case editorStepAttributePicker:
+		return a.answerAttributePicker(catalog, input.Value), true
+	case editorStepAttributeEdit:
+		return a.answerSingleAttributeEdit(ctx, catalog, input.Value), true
 	case editorStepUnit:
 		return a.finishEditor(ctx, catalog, input.Value), true
 	}
@@ -164,6 +194,76 @@ func (a *MaterialsWorkspaceAdapter) productTypeQuestion(catalog domain.Materials
 		Question:      prompt,
 		SelectionMode: SelectionSingle,
 		Options:       options,
+	}}
+}
+
+// attributePickerQuestion builds the edit-only "¿Qué campo querés editar?"
+// menu: one Option per currently-set attribute (labeled with its current
+// value via formatAttributeValue, the same renderer the detail view already
+// uses), plus one explicit "Unidad natural" entry — NaturalUnit is a real,
+// editable Material property (see domain.NewMaterial) even though it is not
+// a FamilyAttribute, so it needs its own labeled entry rather than being
+// silently omitted. Attributes not currently set (e.g. skipped by a prior
+// DESNUDO-style rule) or explicitly NOT_APPLICABLE are not offered — there
+// is nothing meaningful to "change" about a field that isn't there.
+func (a *MaterialsWorkspaceAdapter) attributePickerQuestion() InteractionResponse {
+	state := a.editor
+	byCode := map[string]domain.MaterialAttributeValue{}
+	for _, value := range state.values {
+		byCode[value.AttributeCode] = value
+	}
+	var options []Option
+	for _, attribute := range state.attributes {
+		value, present := byCode[attribute.Definition.Code]
+		if !present || value.Text == notApplicableAttributeText {
+			continue
+		}
+		label := attribute.Definition.Name + ": " + formatAttributeValue(value)
+		options = append(options, Option{ID: attribute.Definition.Code, Label: label, Value: attribute.Definition.Code})
+	}
+	options = append(options, Option{ID: editNaturalUnitFieldCode, Label: "Unidad natural: " + state.originalUnit, Value: editNaturalUnitFieldCode})
+	prompt := "¿Qué campo querés editar?"
+	return InteractionResponse{Pending: QuestionRequest{
+		ID:            materialEditorKey,
+		Key:           materialEditorKey,
+		Prompt:        prompt,
+		Question:      prompt,
+		SelectionMode: SelectionSingle,
+		Options:       options,
+	}}
+}
+
+// answerAttributePicker handles the answer to attributePickerQuestion: the
+// NaturalUnit sentinel routes straight to unitQuestion (the exact same
+// question CREATE's last step asks, reused unchanged); any other code must
+// match one of state.attributes, and routes to that ONE attribute's
+// question via the untouched attributeQuestion. Answering it is handled by
+// answerSingleAttributeEdit, not the CREATE/legacy-sequential answerAttribute
+// — there is no "return to the picker" loop after that.
+func (a *MaterialsWorkspaceAdapter) answerAttributePicker(catalog domain.MaterialsCatalog, code string) InteractionResponse {
+	state := a.editor
+	if code == editNaturalUnitFieldCode {
+		state.step = editorStepUnit
+		return a.unitQuestion(catalog)
+	}
+	for _, attribute := range state.attributes {
+		if attribute.Definition.Code != code {
+			continue
+		}
+		state.editingCode = code
+		state.step = editorStepAttributeEdit
+		response, err := a.attributeQuestion(catalog, attribute)
+		if err != nil {
+			a.editor = nil
+			return InteractionResponse{Messages: []InteractionMessage{
+				ErrorMessage{Text: "No pude continuar con la edición."},
+			}}
+		}
+		return response
+	}
+	a.editor = nil
+	return InteractionResponse{Messages: []InteractionMessage{
+		ErrorMessage{Text: "No reconocí ese campo."},
 	}}
 }
 
@@ -237,39 +337,100 @@ func (a *MaterialsWorkspaceAdapter) attributeQuestion(catalog domain.MaterialsCa
 	}
 }
 
-// answerAttribute handles the answer for state.attributes[state.nextIndex].
+// answerAttribute handles the answer for state.attributes[state.nextIndex]
+// during CREATE's/EDIT's legacy sequential walkthrough (advanceEditor).
 func (a *MaterialsWorkspaceAdapter) answerAttribute(catalog domain.MaterialsCatalog, value string) InteractionResponse {
 	state := a.editor
 	attribute := state.attributes[state.nextIndex]
+	newValue, ok := buildAttributeValue(attribute, value)
+	if !ok {
+		response, err := a.attributeQuestion(catalog, attribute)
+		if err != nil {
+			a.editor = nil
+			return InteractionResponse{Messages: []InteractionMessage{
+				ErrorMessage{Text: "No pude continuar con la creación del material."},
+			}}
+		}
+		response.Messages = []InteractionMessage{
+			ErrorMessage{Text: fmt.Sprintf("No entendí %q. Escribí un valor y una unidad, por ejemplo \"600 V\".", value)},
+		}
+		return response
+	}
+	state.values = append(state.values, newValue)
+	state.nextIndex++
+	return a.advanceEditor(catalog)
+}
+
+// answerSingleAttributeEdit handles the answer to the ONE attribute question
+// the picker routed to (state.editingCode) — the single-field edit flow's
+// counterpart to answerAttribute. It reuses buildAttributeValue for the
+// exact same CONTROLLED_OPTION/QUANTITY parsing answerAttribute uses (so the
+// two can never diverge), replaces (or appends, defensively) the matching
+// value in state.values, and immediately calls finishEditor — there is no
+// "return to the picker for another field" loop.
+func (a *MaterialsWorkspaceAdapter) answerSingleAttributeEdit(ctx context.Context, catalog domain.MaterialsCatalog, value string) InteractionResponse {
+	state := a.editor
+	var attribute domain.FamilyAttribute
+	for _, candidate := range state.attributes {
+		if candidate.Definition.Code == state.editingCode {
+			attribute = candidate
+			break
+		}
+	}
+	newValue, ok := buildAttributeValue(attribute, value)
+	if !ok {
+		response, err := a.attributeQuestion(catalog, attribute)
+		if err != nil {
+			a.editor = nil
+			return InteractionResponse{Messages: []InteractionMessage{
+				ErrorMessage{Text: "No pude continuar con la edición."},
+			}}
+		}
+		response.Messages = []InteractionMessage{
+			ErrorMessage{Text: fmt.Sprintf("No entendí %q. Escribí un valor y una unidad, por ejemplo \"600 V\".", value)},
+		}
+		return response
+	}
+	state.values = replaceOrAppendValue(state.values, newValue)
+	return a.finishEditor(ctx, catalog, state.originalUnit)
+}
+
+// buildAttributeValue parses raw into a MaterialAttributeValue for
+// attribute's ValueType — the single CONTROLLED_OPTION/QUANTITY parsing
+// logic shared by answerAttribute and answerSingleAttributeEdit, so the two
+// flows can never quietly diverge. ok is false when raw fails to parse as a
+// QUANTITY (no unit) or when attribute's ValueType is anything other than
+// the two attributeQuestion ever asks about — attributeQuestion already
+// refuses to build a question for any other ValueType, so that branch is
+// unreachable via a real catalog, not a distinct user-facing case.
+func buildAttributeValue(attribute domain.FamilyAttribute, raw string) (domain.MaterialAttributeValue, bool) {
 	switch attribute.Definition.ValueType {
 	case domain.ValueTypeControlledOption:
-		state.values = append(state.values, domain.OptionValue(attribute.Definition.Code, value))
-		state.nextIndex++
-		return a.advanceEditor(catalog)
+		return domain.OptionValue(attribute.Definition.Code, raw), true
 	case domain.ValueTypeQuantity:
-		numeric, unit, ok := splitQuantityInput(value)
+		numeric, unit, ok := splitQuantityInput(raw)
 		if !ok {
-			response, err := a.attributeQuestion(catalog, attribute)
-			if err != nil {
-				a.editor = nil
-				return InteractionResponse{Messages: []InteractionMessage{
-					ErrorMessage{Text: "No pude continuar con la creación del material."},
-				}}
-			}
-			response.Messages = []InteractionMessage{
-				ErrorMessage{Text: fmt.Sprintf("No entendí %q. Escribí un valor y una unidad, por ejemplo \"600 V\".", value)},
-			}
-			return response
+			return domain.MaterialAttributeValue{}, false
 		}
-		state.values = append(state.values, domain.QuantityValue(attribute.Definition.Code, numeric, unit))
-		state.nextIndex++
-		return a.advanceEditor(catalog)
+		return domain.QuantityValue(attribute.Definition.Code, numeric, unit), true
 	default:
-		a.editor = nil
-		return InteractionResponse{Messages: []InteractionMessage{
-			ErrorMessage{Text: "No pude continuar con la creación del material."},
-		}}
+		return domain.MaterialAttributeValue{}, false
 	}
+}
+
+// replaceOrAppendValue returns values with newValue substituted in place of
+// any existing entry sharing its AttributeCode, or appended if none matched
+// (the append branch is a defensive fallback — startEditEditor seeds
+// state.values from the material's full Attributes, so the attribute being
+// edited is always already present in practice).
+func replaceOrAppendValue(values []domain.MaterialAttributeValue, newValue domain.MaterialAttributeValue) []domain.MaterialAttributeValue {
+	for i, value := range values {
+		if value.AttributeCode == newValue.AttributeCode {
+			values[i] = newValue
+			return values
+		}
+	}
+	return append(values, newValue)
 }
 
 // splitQuantityInput parses free text like "600 V" or "1 kV" into its
@@ -363,6 +524,35 @@ func (a *MaterialsWorkspaceAdapter) originalOptionCode(attributeCode string) str
 	return ""
 }
 
+// filterApplicableValues drops any value whose attribute no longer resolves
+// to applicable (per FamilyAttribute.Effective given the FULL final values)
+// before a candidate is built. This is a real no-op for CREATE/the legacy
+// sequential walkthrough: advanceEditor already skips ModeForbidden/
+// notApplicable attributes, so state.values never accumulates one of those
+// in the first place there. It is NOT a no-op for the single-field edit
+// flow: state.values starts as a copy of the material's full pre-existing
+// Attributes, so replacing just ONE (e.g. insulation THW -> DESNUDO) can
+// leave an now-forbidden OTHER value (color/voltage) still sitting in the
+// slice — passing that straight into domain.NewMaterial would reject the
+// whole edit ("attribute %q is forbidden"). Applied unconditionally so
+// there is exactly one final-validation code path for both flows.
+func filterApplicableValues(attributes []domain.FamilyAttribute, values []domain.MaterialAttributeValue) []domain.MaterialAttributeValue {
+	applicable := map[string]bool{}
+	for _, attribute := range attributes {
+		mode, _, notApplicable := attribute.Effective(values)
+		if mode != domain.ModeForbidden && !notApplicable {
+			applicable[attribute.Definition.Code] = true
+		}
+	}
+	var filtered []domain.MaterialAttributeValue
+	for _, value := range values {
+		if applicable[value.AttributeCode] {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
 // finishEditor builds the candidate Material from the fully-answered editor
 // state and persists it (Create for editorModeCreate, Update targeting the
 // original Material.ID for editorModeEdit). It always resets a.editor to
@@ -371,7 +561,8 @@ func (a *MaterialsWorkspaceAdapter) originalOptionCode(attributeCode string) str
 // material"/"Editar" can retry.
 func (a *MaterialsWorkspaceAdapter) finishEditor(ctx context.Context, catalog domain.MaterialsCatalog, unit string) InteractionResponse {
 	state := a.editor
-	material, err := domain.NewMaterial(catalog, state.family, state.productType, unit, state.values)
+	values := filterApplicableValues(state.attributes, state.values)
+	material, err := domain.NewMaterial(catalog, state.family, state.productType, unit, values)
 	if err != nil {
 		a.editor = nil
 		errorText := "No pude crear el material con esos datos."
