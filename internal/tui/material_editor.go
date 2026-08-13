@@ -29,10 +29,24 @@ const (
 	editorStepUnit
 )
 
-// materialEditorState is the in-progress "nuevo material" create flow's
+// materialEditorMode distinguishes the "nuevo material" create flow from the
+// "Editar" flow — both drive the exact same state machine below, the mode
+// only decides (a) which step the flow starts at (create asks Family/
+// ProductType first; edit, per approved decision D3, jumps straight to
+// editorStepAttribute since ProductType is fixed during edit) and (b) which
+// operation finishEditor calls to persist the result.
+type materialEditorMode int
+
+const (
+	editorModeCreate materialEditorMode = iota
+	editorModeEdit
+)
+
+// materialEditorState is the in-progress "nuevo material"/"Editar" flow's
 // cross-turn state (see MaterialsWorkspaceAdapter.editor). It is entirely
 // catalog-driven: nothing here branches on a specific Family/ProductType.
 type materialEditorState struct {
+	mode        materialEditorMode
 	step        materialEditorStep
 	family      string
 	productType string
@@ -42,12 +56,24 @@ type materialEditorState struct {
 	// nextIndex is the index into attributes for the next question to ask.
 	nextIndex int
 	values    []domain.MaterialAttributeValue
+	// originalID/originalValues/originalUnit are populated only in
+	// editorModeEdit: originalID is the stable Material.ID Update() targets
+	// (independent of IdentityKey, which editing may change);
+	// originalValues/originalUnit are read-only references used solely to
+	// default each question's cursor to the material's current value — they
+	// are never written back directly, `values` is still built the exact
+	// same way editorModeCreate already builds it (appended as each
+	// question is answered), so there is no separate "replace if already
+	// present" logic to get wrong.
+	originalID     int64
+	originalValues []domain.MaterialAttributeValue
+	originalUnit   string
 }
 
 // startCreateEditor begins the "nuevo material" flow with the first
 // question: which Family to create.
 func (a *MaterialsWorkspaceAdapter) startCreateEditor() (InteractionResponse, error) {
-	a.editor = &materialEditorState{step: editorStepFamily}
+	a.editor = &materialEditorState{mode: editorModeCreate, step: editorStepFamily}
 	catalog := domain.NewMaterialsCatalog()
 	options := make([]Option, len(catalog.Families))
 	for i, family := range catalog.Families {
@@ -62,6 +88,27 @@ func (a *MaterialsWorkspaceAdapter) startCreateEditor() (InteractionResponse, er
 		SelectionMode: SelectionSingle,
 		Options:       options,
 	}}, nil
+}
+
+// startEditEditor begins the "Editar" flow for the material currently shown
+// in the detail view (a.lastDetail). Per the approved D3 decision, Family
+// and ProductType are fixed during edit — the wizard starts directly at the
+// first applicable attribute, never asking about them.
+func (a *MaterialsWorkspaceAdapter) startEditEditor() (InteractionResponse, error) {
+	material := a.lastDetail
+	catalog := domain.NewMaterialsCatalog()
+	a.editor = &materialEditorState{
+		mode:           editorModeEdit,
+		step:           editorStepAttribute,
+		family:         material.FamilyCode,
+		productType:    material.ProductTypeCode,
+		attributes:     catalog.AttributesFor(material.FamilyCode, material.ProductTypeCode),
+		nextIndex:      0,
+		originalID:     material.ID,
+		originalValues: material.Attributes,
+		originalUnit:   material.NaturalUnit,
+	}
+	return a.advanceEditor(catalog), nil
 }
 
 // respondToEditor handles one InteractionInput while a.editor is
@@ -158,6 +205,7 @@ func (a *MaterialsWorkspaceAdapter) attributeQuestion(catalog domain.MaterialsCa
 	switch attribute.Definition.ValueType {
 	case domain.ValueTypeControlledOption:
 		options := catalog.ValidOptions(attribute.Definition.Code, a.editor.values)
+		options = defaultOptionFirst(options, a.originalOptionCode(attribute.Definition.Code))
 		selectOptions := make([]Option, len(options))
 		for i, option := range options {
 			selectOptions[i] = Option{ID: option.Code, Label: option.Label, Value: option.Code}
@@ -242,6 +290,7 @@ func splitQuantityInput(value string) (numeric, unit string, ok bool) {
 // material under.
 func (a *MaterialsWorkspaceAdapter) unitQuestion(catalog domain.MaterialsCatalog) InteractionResponse {
 	units := catalog.NaturalUnitsFor(a.editor.family)
+	units = defaultUnitFirst(units, a.editor.originalUnit)
 	options := make([]Option, len(units))
 	for i, unit := range units {
 		options[i] = Option{ID: unit.Code, Label: unit.Symbol, Value: unit.Code}
@@ -257,23 +306,91 @@ func (a *MaterialsWorkspaceAdapter) unitQuestion(catalog domain.MaterialsCatalog
 	}}
 }
 
+// defaultOptionFirst reorders options so the one matching defaultCode (if
+// any) is first — used only to pre-select an editing material's current
+// value as the wizard's starting cursor position (see materialEditorState's
+// doc comment). A no-op when defaultCode is empty or not found (e.g.
+// editorModeCreate, where callers pass "").
+func defaultOptionFirst(options []domain.AttributeOption, defaultCode string) []domain.AttributeOption {
+	if defaultCode == "" {
+		return options
+	}
+	for i, option := range options {
+		if option.Code == defaultCode {
+			if i == 0 {
+				return options
+			}
+			reordered := make([]domain.AttributeOption, 0, len(options))
+			reordered = append(reordered, option)
+			reordered = append(reordered, options[:i]...)
+			reordered = append(reordered, options[i+1:]...)
+			return reordered
+		}
+	}
+	return options
+}
+
+// defaultUnitFirst is defaultOptionFirst's counterpart for the NaturalUnit
+// question's []domain.UnitDefinition options.
+func defaultUnitFirst(units []domain.UnitDefinition, defaultCode string) []domain.UnitDefinition {
+	if defaultCode == "" {
+		return units
+	}
+	for i, unit := range units {
+		if unit.Code == defaultCode {
+			if i == 0 {
+				return units
+			}
+			reordered := make([]domain.UnitDefinition, 0, len(units))
+			reordered = append(reordered, unit)
+			reordered = append(reordered, units[:i]...)
+			reordered = append(reordered, units[i+1:]...)
+			return reordered
+		}
+	}
+	return units
+}
+
+// originalOptionCode looks up material's current option code for
+// attributeCode from a.editor.originalValues — "" (no default) if this is
+// a create flow (originalValues is nil) or the attribute wasn't set.
+func (a *MaterialsWorkspaceAdapter) originalOptionCode(attributeCode string) string {
+	for _, value := range a.editor.originalValues {
+		if value.AttributeCode == attributeCode {
+			return value.OptionCode
+		}
+	}
+	return ""
+}
+
 // finishEditor builds the candidate Material from the fully-answered editor
-// state and persists it. It always resets a.editor to nil — success,
-// validation failure, and every Create error all end the flow; simplicity
-// over cleverness, an edge case a fresh "nuevo material" can retry.
+// state and persists it (Create for editorModeCreate, Update targeting the
+// original Material.ID for editorModeEdit). It always resets a.editor to
+// nil — success, validation failure, and every Create/Update error all end
+// the flow; simplicity over cleverness, an edge case a fresh "nuevo
+// material"/"Editar" can retry.
 func (a *MaterialsWorkspaceAdapter) finishEditor(ctx context.Context, catalog domain.MaterialsCatalog, unit string) InteractionResponse {
 	state := a.editor
 	material, err := domain.NewMaterial(catalog, state.family, state.productType, unit, state.values)
 	if err != nil {
 		a.editor = nil
-		return InteractionResponse{Messages: []InteractionMessage{
-			ErrorMessage{Text: "No pude crear el material con esos datos."},
-		}}
+		errorText := "No pude crear el material con esos datos."
+		if state.mode == editorModeEdit {
+			errorText = "No pude guardar los cambios con esos datos."
+		}
+		return InteractionResponse{Messages: []InteractionMessage{ErrorMessage{Text: errorText}}}
 	}
 
-	if err := a.creator.Create(ctx, material); err != nil {
+	var opErr error
+	if state.mode == editorModeEdit {
+		material.ID = state.originalID
+		opErr = a.updater.Update(ctx, material)
+	} else {
+		opErr = a.creator.Create(ctx, material)
+	}
+	if opErr != nil {
 		a.editor = nil
-		if errors.Is(err, domain.ErrDuplicateMaterial) {
+		if errors.Is(opErr, domain.ErrDuplicateMaterial) {
 			existing, getErr := a.materialsGetter.Get(ctx, material.FamilyCode, material.IdentityKey)
 			if getErr != nil {
 				return InteractionResponse{Messages: []InteractionMessage{
@@ -286,9 +403,11 @@ func (a *MaterialsWorkspaceAdapter) finishEditor(ctx context.Context, catalog do
 				StructuredResult{Title: title, Fields: fields},
 			}}
 		}
-		return InteractionResponse{Messages: []InteractionMessage{
-			ErrorMessage{Text: "No pude crear el material. Probá de nuevo en un momento."},
-		}}
+		errorText := "No pude crear el material. Probá de nuevo en un momento."
+		if state.mode == editorModeEdit {
+			errorText = "No pude guardar los cambios. Probá de nuevo en un momento."
+		}
+		return InteractionResponse{Messages: []InteractionMessage{ErrorMessage{Text: errorText}}}
 	}
 
 	a.editor = nil

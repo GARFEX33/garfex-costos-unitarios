@@ -29,6 +29,13 @@ type materialCreator interface {
 	Create(ctx context.Context, material domain.Material) error
 }
 
+// materialUpdater is the minimal surface the generic MaterialEditor needs to
+// persist changes to an existing Material (identified by its stable ID,
+// independent of IdentityKey, which editing can change — see Material.ID).
+type materialUpdater interface {
+	Update(ctx context.Context, material domain.Material) error
+}
+
 // MaterialsWorkspaceAdapter is the production InteractionAgent for the
 // Materiales Maestros workspace. It is a thin TUI-to-application-service
 // adapter — not the Materials domain, not materiales.Service itself, and
@@ -40,21 +47,27 @@ type MaterialsWorkspaceAdapter struct {
 	materialsGetter materialGetter
 	describer       materialDescriber
 	creator         materialCreator
+	updater         materialUpdater
 	// lastQuery remembers the text of the most recent successful search so
 	// the "volver a los resultados" action can reproduce the identical
 	// result list deterministically, without a separate cache of results.
 	lastQuery string
-	// editor holds the in-progress "nuevo material" create flow, if any; nil
-	// means no create/edit flow is in progress. See material_editor.go.
+	// lastDetail remembers the material currently shown in the detail view
+	// so a later "Editar" selection knows which one to edit — mirrors how
+	// lastQuery already remembers the last search text for "volver".
+	lastDetail domain.Material
+	// editor holds the in-progress "nuevo material" create/edit flow, if
+	// any; nil means no create/edit flow is in progress. See
+	// material_editor.go.
 	editor *materialEditorState
 }
 
 // NewMaterialsWorkspaceAdapter returns the production agent for the
-// Materiales Maestros workspace. searcher, getter, describer and creator are
-// satisfied structurally by *materiales.Service — composed for real in
-// cmd/garfex/main.go.
-func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter, describer materialDescriber, creator materialCreator) *MaterialsWorkspaceAdapter {
-	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer, creator: creator}
+// Materiales Maestros workspace. searcher, getter, describer, creator and
+// updater are satisfied structurally by *materiales.Service — composed for
+// real in cmd/garfex/main.go.
+func NewMaterialsWorkspaceAdapter(searcher materialSearcher, getter materialGetter, describer materialDescriber, creator materialCreator, updater materialUpdater) *MaterialsWorkspaceAdapter {
+	return &MaterialsWorkspaceAdapter{materials: searcher, materialsGetter: getter, describer: describer, creator: creator, updater: updater}
 }
 
 const materialsGreeting = "Materiales Maestros está conectado al catálogo real (PostgreSQL). Buscá un material o usá / para acciones."
@@ -84,6 +97,13 @@ const materialsDetailActionsKey = "materials-detail-actions"
 // backActionID is the Action.ID/InteractionInput.ActionID for "volver a los
 // resultados" from the detail view back to the search-results list.
 const backActionID = "back"
+
+// editActionID is the Action.ID/InteractionInput.ActionID for "Editar" from
+// the detail view. It starts the "editar material" flow (see
+// startEditEditor in material_editor.go), reusing the same MaterialEditor
+// engine as "Crear material" but entered partway through, at the first
+// applicable attribute, since Family/ProductType are fixed during edit.
+const editActionID = "edit-material"
 
 // notApplicableAttributeText mirrors internal/postgres's notApplicableState
 // sentinel ("NOT_APPLICABLE"), the literal domain.MaterialAttributeValue.Text
@@ -120,6 +140,8 @@ func (a *MaterialsWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 		return a.searchResponse(ctx, input.Value)
 	case input.Kind == InputSelection && input.Key == searchResultsKey:
 		return a.detailResponse(ctx, input.Value)
+	case input.Kind == InputAction && input.ActionID == editActionID:
+		return a.startEditEditor()
 	case input.Kind == InputAction && input.ActionID == backActionID:
 		return a.searchResponse(ctx, a.lastQuery)
 	}
@@ -197,6 +219,7 @@ func (a *MaterialsWorkspaceAdapter) detailResponse(ctx context.Context, value st
 			ErrorMessage{Text: "No pude abrir el detalle de ese material. Probá de nuevo en un momento."},
 		}}, nil
 	}
+	a.lastDetail = material
 
 	title, fields := a.materialPresentation(material)
 	return InteractionResponse{
@@ -206,6 +229,7 @@ func (a *MaterialsWorkspaceAdapter) detailResponse(ctx context.Context, value st
 			Key:      materialsDetailActionsKey,
 			Question: "¿Qué querés hacer?",
 			Actions: []Action{
+				{ID: editActionID, Label: "Editar", Value: editActionID, Target: ActionTargetAgent},
 				{ID: backActionID, Label: "Volver a los resultados", Value: backActionID, Target: ActionTargetAgent},
 			},
 		},

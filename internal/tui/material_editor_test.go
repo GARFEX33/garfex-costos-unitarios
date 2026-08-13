@@ -23,6 +23,21 @@ func (f *fakeMaterialCreator) Create(_ context.Context, material domain.Material
 	return f.err
 }
 
+// fakeMaterialUpdater is the fake materialUpdater used by the edit-flow
+// tests (and the compile-time-satisfaction call sites in
+// materials_workspace_adapter_test.go).
+type fakeMaterialUpdater struct {
+	callCount   int
+	gotMaterial domain.Material
+	err         error
+}
+
+func (f *fakeMaterialUpdater) Update(_ context.Context, material domain.Material) error {
+	f.callCount++
+	f.gotMaterial = material
+	return f.err
+}
+
 // answerQuestion is a small test helper: it asserts response.Pending is a
 // QuestionRequest keyed materialEditorKey and drives the next Respond call
 // with that key and the given value.
@@ -48,7 +63,7 @@ func answerQuestion(t *testing.T, adapter *MaterialsWorkspaceAdapter, response I
 // the exact expected Material.
 func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 	creator := &fakeMaterialCreator{}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, creator)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, creator, &fakeMaterialUpdater{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -135,7 +150,7 @@ func TestMaterialEditorFullHappyPathCreatesCableMaterial(t *testing.T) {
 // NaturalUnit question, never color or voltage — proving advanceEditor's
 // FamilyAttribute.Effective-driven skip, not a CABLE-specific check.
 func TestMaterialEditorDesnudoSkipsColorAndVoltage(t *testing.T) {
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -166,7 +181,7 @@ func TestMaterialEditorDesnudoSkipsColorAndVoltage(t *testing.T) {
 // question's Options must contain exactly the related option (13 mm) — this
 // proves ValidOptions integration, not a CABLE/TUBERIA-specific check.
 func TestMaterialEditorNarrowsDiameterMmByDiameterInch(t *testing.T) {
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -198,7 +213,7 @@ func TestMaterialEditorDuplicateIdentityShowsExistingMaterial(t *testing.T) {
 	}
 	creator := &fakeMaterialCreator{err: domain.ErrDuplicateMaterial}
 	getter := &fakeMaterialGetter{material: existing}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, creator)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, creator, &fakeMaterialUpdater{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -244,7 +259,7 @@ func TestMaterialEditorCancelResetsAndOrdinarySearchStillWorks(t *testing.T) {
 	fake := &fakeMaterialSearcher{results: []domain.Material{
 		{FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|1"},
 	}}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: createMaterialActionID, Value: createMaterialActionID, Target: ActionTargetAgent})
 	if err != nil {
@@ -289,7 +304,7 @@ func TestMaterialEditorRegressionOrdinarySearchUnaffected(t *testing.T) {
 	fake := &fakeMaterialSearcher{results: []domain.Material{
 		{FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|1"},
 	}}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
 	if err != nil {
 		t.Fatalf("Respond(search) error = %v, want nil", err)
@@ -299,5 +314,235 @@ func TestMaterialEditorRegressionOrdinarySearchUnaffected(t *testing.T) {
 	}
 	if _, ok := response.Pending.(QuestionRequest); !ok {
 		t.Fatalf("Pending = %T, want QuestionRequest", response.Pending)
+	}
+}
+
+// openDetailViaSearch drives a text search followed by selecting its one
+// result, exactly the way production code reaches a.lastDetail — used by
+// the edit-flow tests below instead of reaching into the adapter's private
+// field directly.
+func openDetailViaSearch(t *testing.T, adapter *MaterialsWorkspaceAdapter, material domain.Material) {
+	t.Helper()
+	searchResponse, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "buscar"})
+	if err != nil {
+		t.Fatalf("Respond(search) error = %v, want nil", err)
+	}
+	searchRequest, ok := searchResponse.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (search results)", searchResponse.Pending)
+	}
+	if len(searchRequest.Options) != 1 {
+		t.Fatalf("search Options = %v, want exactly 1", searchRequest.Options)
+	}
+	detailResponse, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: searchResultsKey, Value: searchRequest.Options[0].Value})
+	if err != nil {
+		t.Fatalf("Respond(select) error = %v, want nil", err)
+	}
+	if _, ok := detailResponse.Pending.(ActionRequest); !ok {
+		t.Fatalf("Pending = %T, want ActionRequest (detail actions)", detailResponse.Pending)
+	}
+}
+
+// cableAttributeValues is the shared CONDUCTORES/CABLE attribute set used by
+// the edit-flow tests, in catalog declaration order.
+func cableAttributeValues() []domain.MaterialAttributeValue {
+	return []domain.MaterialAttributeValue{
+		domain.OptionValue("conductor_material", "COBRE"),
+		domain.OptionValue("gauge", "10 AWG"),
+		domain.OptionValue("insulation", "THW"),
+		domain.OptionValue("color", "NEGRO"),
+		domain.OptionValue("voltage", "600 V"),
+	}
+}
+
+// TestMaterialEditorEditFullHappyPathReproducesSameMaterial covers the full
+// EDIT flow end to end: opening a CONDUCTORES/CABLE material's detail,
+// selecting "Editar", confirming the wizard skips straight to the first
+// attribute (per D3, no Family/ProductType questions), confirming its
+// Options default to the material's current value, and confirming that
+// answering every question unchanged calls updater.Update (never
+// creator.Create) with the original Material.ID preserved and the exact
+// same IdentityKey.
+func TestMaterialEditorEditFullHappyPathReproducesSameMaterial(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	creator := &fakeMaterialCreator{}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, creator, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	request, ok := response.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest (first attribute question)", response.Pending)
+	}
+	lowerPrompt := strings.ToLower(request.Prompt)
+	if strings.Contains(lowerPrompt, "familia") || strings.Contains(lowerPrompt, "tipo de producto") {
+		t.Fatalf("Prompt = %q, want the wizard to skip Family/ProductType questions during edit", request.Prompt)
+	}
+	if len(request.Options) == 0 || request.Options[0].Value != "COBRE" {
+		t.Fatalf("first attribute Options = %v, want the material's current value (COBRE) first", request.Options)
+	}
+
+	response = answerQuestion(t, adapter, response, "COBRE")  // conductor_material
+	response = answerQuestion(t, adapter, response, "10 AWG") // gauge
+	response = answerQuestion(t, adapter, response, "THW")    // insulation
+	response = answerQuestion(t, adapter, response, "NEGRO")  // color
+	response = answerQuestion(t, adapter, response, "600 V")  // voltage
+	response = answerQuestion(t, adapter, response, "M")      // natural unit
+
+	if creator.callCount != 0 {
+		t.Fatalf("Create call count = %d, want 0 (edit must never call Create)", creator.callCount)
+	}
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	if updater.gotMaterial.ID != 42 {
+		t.Fatalf("gotMaterial.ID = %d, want 42 (the original Material.ID)", updater.gotMaterial.ID)
+	}
+	if updater.gotMaterial.IdentityKey != existing.IdentityKey {
+		t.Fatalf("gotMaterial.IdentityKey = %q, want %q (unchanged answers reproduce the same identity)", updater.gotMaterial.IdentityKey, existing.IdentityKey)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("Messages = %v, want exactly one message", response.Messages)
+	}
+	if _, ok := response.Messages[0].(StructuredResult); !ok {
+		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
+	}
+}
+
+// TestMaterialEditorEditChangesOneAttribute covers editing a material with
+// one different answer (color: NEGRO -> BLANCO): the final Update call must
+// carry the new value, the original Material.ID must still be preserved,
+// and the resulting IdentityKey must differ from the original.
+func TestMaterialEditorEditChangesOneAttribute(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	existing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(existing) error = %v, want nil", err)
+	}
+	existing.ID = 42
+
+	getter := &fakeMaterialGetter{material: existing}
+	updater := &fakeMaterialUpdater{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{existing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+
+	openDetailViaSearch(t, adapter, existing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	response = answerQuestion(t, adapter, response, "COBRE")
+	response = answerQuestion(t, adapter, response, "10 AWG")
+	response = answerQuestion(t, adapter, response, "THW")
+	response = answerQuestion(t, adapter, response, "BLANCO") // changed from NEGRO
+	response = answerQuestion(t, adapter, response, "600 V")
+	response = answerQuestion(t, adapter, response, "M")
+
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	if updater.gotMaterial.ID != 42 {
+		t.Fatalf("gotMaterial.ID = %d, want 42 (the original Material.ID)", updater.gotMaterial.ID)
+	}
+	if updater.gotMaterial.IdentityKey == existing.IdentityKey {
+		t.Fatalf("gotMaterial.IdentityKey = %q, want it to differ from the original %q after changing color", updater.gotMaterial.IdentityKey, existing.IdentityKey)
+	}
+	found := false
+	for _, value := range updater.gotMaterial.Attributes {
+		if value.AttributeCode == "color" {
+			found = true
+			if value.OptionCode != "BLANCO" {
+				t.Fatalf("color attribute = %q, want %q", value.OptionCode, "BLANCO")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("gotMaterial.Attributes = %+v, want a color attribute", updater.gotMaterial.Attributes)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful edit", response.Pending)
+	}
+}
+
+// TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial covers
+// finishEditor's ErrDuplicateMaterial path for EDIT: when Update reports a
+// collision with a DIFFERENT already-existing material, the response must
+// show that other material's detail — never a bare failure, never a silent
+// overwrite of either material.
+func TestMaterialEditorEditDuplicateIdentityShowsExistingMaterial(t *testing.T) {
+	catalog := domain.NewMaterialsCatalog()
+	editing, err := domain.NewMaterial(catalog, "CONDUCTORES", "CABLE", "M", cableAttributeValues())
+	if err != nil {
+		t.Fatalf("NewMaterial(editing) error = %v, want nil", err)
+	}
+	editing.ID = 42
+
+	other := domain.Material{
+		FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", NaturalUnit: "M",
+		IdentityKey: "CONDUCTORES|CABLE|color=BLANCO|conductor_material=COBRE|gauge=10 AWG|insulation=THW|voltage=600 V",
+		Attributes:  []domain.MaterialAttributeValue{domain.OptionValue("insulation", "THW")},
+	}
+
+	getter := &fakeMaterialGetter{material: editing}
+	updater := &fakeMaterialUpdater{err: domain.ErrDuplicateMaterial}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: []domain.Material{editing}}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, updater)
+
+	openDetailViaSearch(t, adapter, editing)
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: editActionID, Value: editActionID, Target: ActionTargetAgent})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v, want nil", err)
+	}
+
+	// getter.material now switches to the OTHER pre-existing material that
+	// the edited identity collides with, mirroring how the real repository
+	// would resolve a Get on the new (colliding) identity — the original
+	// material's attributes are already captured in the editor's state by
+	// this point (see startEditEditor's originalValues), so this mutation
+	// only affects the later duplicate-lookup Get call in finishEditor.
+	getter.material = other
+
+	response = answerQuestion(t, adapter, response, "COBRE")
+	response = answerQuestion(t, adapter, response, "10 AWG")
+	response = answerQuestion(t, adapter, response, "THW")
+	response = answerQuestion(t, adapter, response, "BLANCO")
+	response = answerQuestion(t, adapter, response, "600 V")
+	response = answerQuestion(t, adapter, response, "M")
+
+	if updater.callCount != 1 {
+		t.Fatalf("Update call count = %d, want 1", updater.callCount)
+	}
+	if getter.callCount != 2 {
+		t.Fatalf("Get call count = %d, want 2 (detail open + duplicate lookup)", getter.callCount)
+	}
+	found := false
+	for _, message := range response.Messages {
+		if result, ok := message.(StructuredResult); ok {
+			found = true
+			if !strings.HasPrefix(result.Title, "CONDUCTORES") {
+				t.Fatalf("existing material Title = %q, want it to start with %q", result.Title, "CONDUCTORES")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Messages = %v, want a StructuredResult showing the other existing material", response.Messages)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil (editor reset after duplicate)", response.Pending)
 	}
 }
