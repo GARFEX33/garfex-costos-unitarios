@@ -42,6 +42,28 @@ type MaterialFamily struct {
 	Category string
 }
 
+type ProductType struct {
+	FamilyCode string
+	Code       string
+	Name       string
+}
+
+// PresentationField is one entry of a ProductType's catalog-controlled
+// canonical presentation: an explicitly ordered subset of its attributes,
+// used to compose a human-readable title (see MaterialsCatalog.Describe).
+// It is deliberately never an automatic dump of every attribute.
+type PresentationField struct {
+	ProductTypeCode string
+	AttributeCode   string
+	Position        int
+}
+
+// NotApplicableText is the sentinel domain.MaterialAttributeValue.Text value
+// for an attribute that is structurally not applicable to a material (e.g.
+// color/voltage on a DESNUDO conductor). A Material fetched from the real
+// repository carries this marker instead of omitting the attribute entirely.
+const NotApplicableText = "NOT_APPLICABLE"
+
 type UnitDefinition struct {
 	Code      string
 	Symbol    string
@@ -79,6 +101,7 @@ type AttributeRule struct {
 
 type FamilyAttribute struct {
 	FamilyCode           string
+	ProductTypeCode      string // "" = shared by every ProductType of this Family; non-empty scopes it to exactly one ProductType
 	Definition           AttributeDefinition
 	Mode                 AttributeMode
 	IdentityParticipates bool
@@ -140,10 +163,12 @@ func ControlledTextValue(attribute, value string) MaterialAttributeValue {
 }
 
 type Material struct {
-	FamilyCode  string
-	NaturalUnit string
-	Attributes  []MaterialAttributeValue
-	IdentityKey string
+	ID              int64
+	FamilyCode      string
+	ProductTypeCode string
+	NaturalUnit     string
+	Attributes      []MaterialAttributeValue
+	IdentityKey     string
 }
 
 // SearchCriteria narrows a Search over the material catalog. All fields
@@ -178,6 +203,8 @@ type MaterialRepository interface {
 	Create(context.Context, Material) error
 	Get(context.Context, string, string) (Material, error)
 	Search(context.Context, SearchCriteria) ([]Material, error)
+	Update(context.Context, Material) error
+	SetActive(context.Context, int64, bool) error
 }
 
 type AttributeOptionRelation struct {
@@ -188,12 +215,14 @@ type AttributeOptionRelation struct {
 }
 
 type MaterialsCatalog struct {
-	Categories       []MaterialCategory
-	Families         []MaterialFamily
-	Units            []UnitDefinition
-	UnitPolicies     []FamilyUnitPolicy
-	Definitions      []AttributeDefinition
-	FamilyAttributes []FamilyAttribute
-	Options          []AttributeOption
-	Relations        []AttributeOptionRelation
+	Categories         []MaterialCategory
+	Families           []MaterialFamily
+	ProductTypes       []ProductType
+	PresentationFields []PresentationField
+	Units              []UnitDefinition
+	UnitPolicies       []FamilyUnitPolicy
+	Definitions        []AttributeDefinition
+	FamilyAttributes   []FamilyAttribute
+	Options            []AttributeOption
+	Relations          []AttributeOptionRelation
 }

@@ -8,7 +8,18 @@ func NewMaterialsCatalog() MaterialsCatalog {
 		Categories: []MaterialCategory{{Code: "ELECTRICAL", Name: "Electrical materials"}},
 		Families: []MaterialFamily{
 			{Code: "CONDUCTORES", Name: "Conductors", Category: "ELECTRICAL"},
-			{Code: "TUBERIAS", Name: "Tuberías", Category: "ELECTRICAL"},
+			{Code: "CANALIZACIONES", Name: "Canalizaciones", Category: "ELECTRICAL"},
+		},
+		ProductTypes: []ProductType{
+			{FamilyCode: "CONDUCTORES", Code: "CABLE", Name: "Cable"},
+			{FamilyCode: "CANALIZACIONES", Code: "TUBERIA", Name: "Tubería"},
+		},
+		PresentationFields: []PresentationField{
+			{ProductTypeCode: "CABLE", AttributeCode: "insulation", Position: 1},
+			{ProductTypeCode: "CABLE", AttributeCode: "gauge", Position: 2},
+			{ProductTypeCode: "CABLE", AttributeCode: "color", Position: 3},
+			{ProductTypeCode: "TUBERIA", AttributeCode: "tipo", Position: 1},
+			{ProductTypeCode: "TUBERIA", AttributeCode: "diameter_inch", Position: 2},
 		},
 		Units: []UnitDefinition{
 			{Code: "M", Symbol: "M", Dimension: "LENGTH"},
@@ -16,18 +27,18 @@ func NewMaterialsCatalog() MaterialsCatalog {
 		},
 		UnitPolicies: []FamilyUnitPolicy{
 			{FamilyCode: "CONDUCTORES", UnitCode: "M", Allowed: true, Suggested: true},
-			{FamilyCode: "TUBERIAS", UnitCode: "PZA", Allowed: true, Suggested: true},
+			{FamilyCode: "CANALIZACIONES", UnitCode: "PZA", Allowed: true, Suggested: true},
 		},
 		Definitions: definitions,
 		FamilyAttributes: []FamilyAttribute{
-			{FamilyCode: "CONDUCTORES", Definition: definition("conductor_material"), Mode: ModeRequired, IdentityParticipates: true},
-			{FamilyCode: "CONDUCTORES", Definition: definition("gauge"), Mode: ModeRequired, IdentityParticipates: true},
-			{FamilyCode: "CONDUCTORES", Definition: definition("insulation"), Mode: ModeRequired, IdentityParticipates: true},
-			{FamilyCode: "CONDUCTORES", Definition: definition("color"), Mode: ModeConditional, IdentityParticipates: true, Rules: []AttributeRule{{When: AttributeCondition{AttributeCode: "insulation", Equals: "DESNUDO"}, Mode: ModeForbidden, NotApplicable: true}}},
-			{FamilyCode: "CONDUCTORES", Definition: definition("voltage"), Mode: ModeConditional, IdentityParticipates: true, Rules: []AttributeRule{{When: AttributeCondition{AttributeCode: "insulation", Equals: "DESNUDO"}, Mode: ModeForbidden, NotApplicable: true}}},
-			{FamilyCode: "TUBERIAS", Definition: definition("tipo"), Mode: ModeRequired, IdentityParticipates: true},
-			{FamilyCode: "TUBERIAS", Definition: definition("diameter_inch"), Mode: ModeRequired, IdentityParticipates: true},
-			{FamilyCode: "TUBERIAS", Definition: definition("diameter_mm"), Mode: ModeRequired, IdentityParticipates: false},
+			{FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", Definition: definition("conductor_material"), Mode: ModeRequired, IdentityParticipates: true},
+			{FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", Definition: definition("gauge"), Mode: ModeRequired, IdentityParticipates: true},
+			{FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", Definition: definition("insulation"), Mode: ModeRequired, IdentityParticipates: true},
+			{FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", Definition: definition("color"), Mode: ModeConditional, IdentityParticipates: true, Rules: []AttributeRule{{When: AttributeCondition{AttributeCode: "insulation", Equals: "DESNUDO"}, Mode: ModeForbidden, NotApplicable: true}}},
+			{FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", Definition: definition("voltage"), Mode: ModeConditional, IdentityParticipates: true, Rules: []AttributeRule{{When: AttributeCondition{AttributeCode: "insulation", Equals: "DESNUDO"}, Mode: ModeForbidden, NotApplicable: true}}},
+			{FamilyCode: "CANALIZACIONES", ProductTypeCode: "TUBERIA", Definition: definition("tipo"), Mode: ModeRequired, IdentityParticipates: true},
+			{FamilyCode: "CANALIZACIONES", ProductTypeCode: "TUBERIA", Definition: definition("diameter_inch"), Mode: ModeRequired, IdentityParticipates: true},
+			{FamilyCode: "CANALIZACIONES", ProductTypeCode: "TUBERIA", Definition: definition("diameter_mm"), Mode: ModeRequired, IdentityParticipates: false},
 		},
 		Options:   append(conductorOptions(), tuberiasOptions()...),
 		Relations: tuberiasRelations(),
@@ -49,7 +60,7 @@ func catalogDefinitions() []AttributeDefinition {
 		{Code: "gauge", Name: "Gauge", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "insulation", Name: "Insulation", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "color", Name: "Color", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
-		{Code: "voltage", Name: "Voltage", ValueType: ValueTypeQuantity, Dimension: "VOLTAGE", DefaultIdentityParticipates: true},
+		{Code: "voltage", Name: "Voltage", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "tipo", Name: "Tipo", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "diameter_inch", Name: "Diameter inch", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "diameter_mm", Name: "Diameter mm", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: false},
@@ -67,6 +78,7 @@ func conductorOptions() []AttributeOption {
 	add("gauge", "14 AWG", "12 AWG", "10 AWG", "8 AWG", "6 AWG", "4 AWG", "2 AWG", "1 AWG", "1/0 AWG", "2/0 AWG", "3/0 AWG", "4/0 AWG")
 	add("insulation", "DESNUDO", "THW", "THW-LS", "THHN", "THHN/THWN-2", "XHHW-2", "RHH/RHW-2")
 	add("color", "NEGRO", "BLANCO", "ROJO", "AZUL", "VERDE")
+	add("voltage", "300 V", "600 V", "1000 V", "5000 V", "15000 V", "25000 V", "35000 V")
 	return options
 }
 

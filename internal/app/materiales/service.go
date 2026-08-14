@@ -15,12 +15,14 @@ var ErrInvalidArgument = errors.New("material lookup argument is required")
 
 // Service implements read-only material use cases.
 type Service struct {
-	repo domain.MaterialRepository
+	repo    domain.MaterialRepository
+	catalog domain.MaterialsCatalog
 }
 
-// NewService returns a Service backed by repo.
-func NewService(repo domain.MaterialRepository) *Service {
-	return &Service{repo: repo}
+// NewService returns a Service backed by repo, using catalog to resolve
+// catalog-controlled concerns such as canonical presentation.
+func NewService(repo domain.MaterialRepository, catalog domain.MaterialsCatalog) *Service {
+	return &Service{repo: repo, catalog: catalog}
 }
 
 // Get returns a material by its family code and deterministic identity key.
@@ -48,4 +50,62 @@ func (s *Service) Search(ctx context.Context, criteria domain.SearchCriteria) ([
 		return nil, fmt.Errorf("search materials: %w", err)
 	}
 	return materials, nil
+}
+
+// Describe resolves the canonical presentation of material using the
+// catalog-controlled configuration owned by its ProductType.
+func (s *Service) Describe(material domain.Material) string {
+	return s.catalog.Describe(material)
+}
+
+// Create persists a new material built by the caller via domain.NewMaterial
+// (this method does not itself validate — NewMaterial already did).
+func (s *Service) Create(ctx context.Context, material domain.Material) error {
+	if err := s.repo.Create(ctx, material); err != nil {
+		if errors.Is(err, domain.ErrDuplicateMaterial) {
+			return domain.ErrDuplicateMaterial
+		}
+		if errors.Is(err, domain.ErrMaterialReference) {
+			return domain.ErrMaterialReference
+		}
+		return fmt.Errorf("create material: %w", err)
+	}
+	return nil
+}
+
+// Update persists changes to an existing material, identified by its stable
+// ID (independent of IdentityKey, which the update itself may change).
+func (s *Service) Update(ctx context.Context, material domain.Material) error {
+	if material.ID == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.repo.Update(ctx, material); err != nil {
+		if errors.Is(err, domain.ErrMaterialNotFound) {
+			return domain.ErrMaterialNotFound
+		}
+		if errors.Is(err, domain.ErrDuplicateMaterial) {
+			return domain.ErrDuplicateMaterial
+		}
+		if errors.Is(err, domain.ErrMaterialReference) {
+			return domain.ErrMaterialReference
+		}
+		return fmt.Errorf("update material %d: %w", material.ID, err)
+	}
+	return nil
+}
+
+// Delete soft-deletes a material by its stable ID (toggles active=false —
+// never a hard delete, per project decision: preserves future referential
+// integrity once other modules start referencing materials).
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.repo.SetActive(ctx, id, false); err != nil {
+		if errors.Is(err, domain.ErrMaterialNotFound) {
+			return domain.ErrMaterialNotFound
+		}
+		return fmt.Errorf("delete material %d: %w", id, err)
+	}
+	return nil
 }

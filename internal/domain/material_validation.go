@@ -6,16 +6,20 @@ import (
 	"strings"
 )
 
-func NewMaterial(catalog MaterialsCatalog, family, naturalUnit string, values []MaterialAttributeValue) (Material, error) {
+func NewMaterial(catalog MaterialsCatalog, family, productType, naturalUnit string, values []MaterialAttributeValue) (Material, error) {
 	family = canonical(family)
 	if !catalog.hasFamily(family) {
 		return Material{}, validation("family %q is not defined", family)
+	}
+	productType = canonical(productType)
+	if !catalog.hasProductType(family, productType) {
+		return Material{}, validation("product type %q is not defined for family %q", productType, family)
 	}
 	naturalUnit = canonical(naturalUnit)
 	if !catalog.allowedUnit(family, naturalUnit) {
 		return Material{}, validation("natural unit %q is not allowed for family %q", naturalUnit, family)
 	}
-	attributes := catalog.familyAttributes(family)
+	attributes := catalog.familyAttributes(family, productType)
 	byCode := map[string]MaterialAttributeValue{}
 	for _, value := range values {
 		code := canonicalAttribute(value.AttributeCode)
@@ -67,12 +71,21 @@ func NewMaterial(catalog MaterialsCatalog, family, naturalUnit string, values []
 	}
 	sort.Slice(canonicalValues, func(i, j int) bool { return canonicalValues[i].AttributeCode < canonicalValues[j].AttributeCode })
 	sort.Strings(identity)
-	return Material{FamilyCode: family, NaturalUnit: naturalUnit, Attributes: canonicalValues, IdentityKey: family + "|" + strings.Join(identity, "|")}, nil
+	return Material{FamilyCode: family, ProductTypeCode: productType, NaturalUnit: naturalUnit, Attributes: canonicalValues, IdentityKey: family + "|" + productType + "|" + strings.Join(identity, "|")}, nil
 }
 
 func (c MaterialsCatalog) hasFamily(code string) bool {
 	for _, family := range c.Families {
 		if canonical(family.Code) == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (c MaterialsCatalog) hasProductType(family, code string) bool {
+	for _, productType := range c.ProductTypes {
+		if canonical(productType.FamilyCode) == family && canonical(productType.Code) == code {
 			return true
 		}
 	}
@@ -97,12 +110,17 @@ func (c MaterialsCatalog) hasUnit(code string) bool {
 	return false
 }
 
-func (c MaterialsCatalog) familyAttributes(family string) map[string]FamilyAttribute {
+func (c MaterialsCatalog) familyAttributes(family, productType string) map[string]FamilyAttribute {
 	result := map[string]FamilyAttribute{}
 	for _, attribute := range c.FamilyAttributes {
-		if canonical(attribute.FamilyCode) == family {
-			result[canonicalAttribute(attribute.Definition.Code)] = attribute
+		if canonical(attribute.FamilyCode) != family {
+			continue
 		}
+		scope := canonical(attribute.ProductTypeCode)
+		if scope != "" && scope != productType {
+			continue
+		}
+		result[canonicalAttribute(attribute.Definition.Code)] = attribute
 	}
 	return result
 }

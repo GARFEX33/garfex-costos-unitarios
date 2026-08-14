@@ -11,7 +11,7 @@ import (
 )
 
 func TestMaterialsWorkspaceAdapterGreeting(t *testing.T) {
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	greeting, ok := adapter.Greeting().(TextMessage)
 	if !ok {
 		t.Fatalf("Greeting() = %T, want TextMessage", adapter.Greeting())
@@ -34,7 +34,7 @@ func TestMaterialsWorkspaceAdapterGreeting(t *testing.T) {
 func TestMaterialsWorkspaceAdapterRespondNonTextInputsNeverFabricateOrSearch(t *testing.T) {
 	fake := &fakeMaterialSearcher{}
 	getter := &fakeMaterialGetter{}
-	adapter := NewMaterialsWorkspaceAdapter(fake, getter)
+	adapter := NewMaterialsWorkspaceAdapter(fake, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	inputs := []InteractionInput{
 		{Kind: InputSelection, Key: "some-other-key", Value: "some-option"},
 		{Kind: InputAction, ActionID: "whatever"},
@@ -77,15 +77,15 @@ func TestMaterialsWorkspaceAdapterRespondNonTextInputsNeverFabricateOrSearch(t *
 func TestMaterialsWorkspaceAdapterAcceptsMaterialSearcherAndGetter(t *testing.T) {
 	var searcher materialSearcher = &fakeMaterialSearcher{}
 	var getter materialGetter = &fakeMaterialGetter{}
-	adapter := NewMaterialsWorkspaceAdapter(searcher, getter)
+	adapter := NewMaterialsWorkspaceAdapter(searcher, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	if adapter == nil {
-		t.Fatal("NewMaterialsWorkspaceAdapter() = nil")
+		t.Fatal("NewMaterialsWorkspaceAdapter() = nil", &fakeMaterialDeleter{})
 	}
 }
 
 func TestMaterialsWorkspaceAdapterRespondSendsTextUnchanged(t *testing.T) {
 	fake := &fakeMaterialSearcher{}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	value := "  Cemento PORTLAND   Tipo I "
 	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: value}); err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -97,7 +97,7 @@ func TestMaterialsWorkspaceAdapterRespondSendsTextUnchanged(t *testing.T) {
 
 func TestMaterialsWorkspaceAdapterRespondSendsLimitEleven(t *testing.T) {
 	fake := &fakeMaterialSearcher{}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"}); err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
 	}
@@ -110,7 +110,7 @@ func TestMaterialsWorkspaceAdapterRespondSendsLimitEleven(t *testing.T) {
 // this PR: 0 results still produces a plain TextMessage, no Pending.
 func TestMaterialsWorkspaceAdapterRespondZeroResults(t *testing.T) {
 	fake := &fakeMaterialSearcher{results: nil}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "inexistente"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -135,7 +135,7 @@ func TestMaterialsWorkspaceAdapterRespondZeroResults(t *testing.T) {
 // no Pending.
 func TestMaterialsWorkspaceAdapterRespondErrorNeverLeaksRawError(t *testing.T) {
 	fake := &fakeMaterialSearcher{err: errors.New("connect to database: dial tcp refused")}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil (failure must already be converted to an InteractionMessage)", err)
@@ -169,7 +169,7 @@ func TestMaterialsWorkspaceAdapterRespondOneResultReturnsSelectableQuestion(t *t
 		Attributes: []domain.MaterialAttributeValue{domain.OptionValue("color", "GRIS")},
 	}
 	fake := &fakeMaterialSearcher{results: []domain.Material{material}}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -213,7 +213,7 @@ func TestMaterialsWorkspaceAdapterRespondMultipleResultsPreserveOrder(t *testing
 		{FamilyCode: "GRAVA", NaturalUnit: "m3", IdentityKey: "GRAVA|m3|3"},
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "x"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -245,7 +245,7 @@ func TestMaterialsWorkspaceAdapterRespondTenResultsNoMoreResultsHint(t *testing.
 		materials[i] = domain.Material{FamilyCode: fmt.Sprintf("FAM%d", i), NaturalUnit: "u", IdentityKey: fmt.Sprintf("FAM%d|u|%d", i, i)}
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "x"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -274,7 +274,7 @@ func TestMaterialsWorkspaceAdapterRespondElevenResultsShowsTenAndMoreHint(t *tes
 		materials[i] = domain.Material{FamilyCode: fmt.Sprintf("FAM%d", i), NaturalUnit: "u", IdentityKey: fmt.Sprintf("FAM%d|u|%d", i, i)}
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "x"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
@@ -301,7 +301,7 @@ func TestMaterialsWorkspaceAdapterRespondSelectResultOpensDetail(t *testing.T) {
 		Attributes: []domain.MaterialAttributeValue{domain.OptionValue("color", "GRIS")},
 	}
 	getter := &fakeMaterialGetter{material: material}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{
 		Kind: InputSelection, Key: searchResultsKey, Value: "CEMENT|CEMENT|kg|SECRET-42",
@@ -334,8 +334,8 @@ func TestMaterialsWorkspaceAdapterRespondSelectResultOpensDetail(t *testing.T) {
 	if !ok {
 		t.Fatalf("Pending = %T, want ActionRequest", response.Pending)
 	}
-	if len(action.Actions) != 1 || action.Actions[0].ID != backActionID {
-		t.Fatalf("Actions = %+v, want exactly one action with ID %q", action.Actions, backActionID)
+	if len(action.Actions) != 4 || action.Actions[0].ID != editActionID || action.Actions[1].ID != duplicateActionID || action.Actions[2].ID != deleteActionID || action.Actions[3].ID != backActionID {
+		t.Fatalf("Actions = %+v, want exactly [%q, %q, %q, %q] in that order", action.Actions, editActionID, duplicateActionID, deleteActionID, backActionID)
 	}
 }
 
@@ -344,7 +344,7 @@ func TestMaterialsWorkspaceAdapterRespondSelectResultOpensDetail(t *testing.T) {
 // discipline for the Search failure path.
 func TestMaterialsWorkspaceAdapterRespondGetErrorNeverLeaksRawError(t *testing.T) {
 	getter := &fakeMaterialGetter{err: errors.New("connect to database: dial tcp refused")}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{
 		Kind: InputSelection, Key: searchResultsKey, Value: "CEMENT|CEMENT|kg|1",
@@ -377,7 +377,7 @@ func TestMaterialsWorkspaceAdapterRespondBackReRunsSameSearch(t *testing.T) {
 		{FamilyCode: "ARENA", NaturalUnit: "m3", IdentityKey: "ARENA|m3|2"},
 	}
 	fake := &fakeMaterialSearcher{results: materials}
-	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{material: materials[0]})
+	adapter := NewMaterialsWorkspaceAdapter(fake, &fakeMaterialGetter{material: materials[0]}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	original, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento arena"})
 	if err != nil {
@@ -433,7 +433,7 @@ func TestMaterialsWorkspaceAdapterRespondDetailOmitsNotApplicableAttributes(t *t
 		},
 	}
 	getter := &fakeMaterialGetter{material: material}
-	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter)
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
 
 	response, err := adapter.Respond(context.Background(), InteractionInput{
 		Kind: InputSelection, Key: searchResultsKey, Value: "CONDUCTORES|CONDUCTORES|m|1",
@@ -472,4 +472,255 @@ func (f *fakeMaterialSearcher) Search(_ context.Context, criteria domain.SearchC
 	f.gotCriteria = criteria
 	f.callCount++
 	return f.results, f.err
+}
+
+type fakeMaterialDescriber struct{ text string }
+
+func (f *fakeMaterialDescriber) Describe(domain.Material) string { return f.text }
+
+// TestMaterialsWorkspaceAdapterRespondDetailUsesDescriberForTitle proves the
+// adapter composes its detail title as FamilyCode + " — " +
+// describer.Describe(...) instead of any locally-built headline — the
+// canonical presentation is entirely delegated to materialDescriber.
+func TestMaterialsWorkspaceAdapterRespondDetailUsesDescriberForTitle(t *testing.T) {
+	material := domain.Material{
+		FamilyCode: "CONDUCTORES", ProductTypeCode: "CABLE", NaturalUnit: "M", IdentityKey: "CONDUCTORES|CABLE|1",
+		Attributes: []domain.MaterialAttributeValue{domain.OptionValue("insulation", "THHN")},
+	}
+	getter := &fakeMaterialGetter{material: material}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{text: "Cable THHN 12 AWG BLANCO"}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: searchResultsKey, Value: "CONDUCTORES|CONDUCTORES|CABLE|1",
+	})
+	if err != nil {
+		t.Fatalf("Respond() error = %v, want nil", err)
+	}
+	result, ok := response.Messages[0].(StructuredResult)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
+	}
+	want := "CONDUCTORES — Cable THHN 12 AWG BLANCO"
+	if result.Title != want {
+		t.Fatalf("Title = %q, want %q", result.Title, want)
+	}
+}
+
+// openDeleteConfirmationDetail is a small test helper: it opens a detail
+// view for material (via the fakeMaterialGetter) and returns the adapter
+// plus the fakeMaterialDeleter it was wired with, ready for the "Eliminar"
+// action.
+func openDeleteConfirmationDetail(t *testing.T, material domain.Material) (*MaterialsWorkspaceAdapter, *fakeMaterialDeleter) {
+	t.Helper()
+	getter := &fakeMaterialGetter{material: material}
+	deleter := &fakeMaterialDeleter{}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, deleter)
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: searchResultsKey, Value: "CONDUCTORES|CONDUCTORES|M|1",
+	})
+	if err != nil {
+		t.Fatalf("Respond(open detail) error = %v, want nil", err)
+	}
+	if _, ok := response.Pending.(ActionRequest); !ok {
+		t.Fatalf("Pending = %T, want ActionRequest after opening detail", response.Pending)
+	}
+	return adapter, deleter
+}
+
+// TestMaterialsWorkspaceAdapterRespondDeleteActionShowsConfirmation covers
+// selecting "Eliminar" from the detail view: it shows a ConfirmationRequest
+// naming the material and does NOT call Delete yet.
+func TestMaterialsWorkspaceAdapterRespondDeleteActionShowsConfirmation(t *testing.T) {
+	material := domain.Material{
+		ID: 42, FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "CONDUCTORES|M|1",
+	}
+	adapter, deleter := openDeleteConfirmationDetail(t, material)
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: deleteActionID})
+	if err != nil {
+		t.Fatalf("Respond(delete action) error = %v, want nil", err)
+	}
+	confirmation, ok := response.Pending.(ConfirmationRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
+	}
+	if !strings.Contains(confirmation.Question, "CONDUCTORES") {
+		t.Fatalf("Question = %q, want it to name the material", confirmation.Question)
+	}
+	if confirmation.Key != materialsDeleteConfirmKey {
+		t.Fatalf("Key = %q, want %q", confirmation.Key, materialsDeleteConfirmKey)
+	}
+	if deleter.callCount != 0 {
+		t.Fatalf("Delete callCount = %d, want 0 before confirming", deleter.callCount)
+	}
+}
+
+// TestMaterialsWorkspaceAdapterRespondDeleteConfirmYesCallsDelete covers
+// confirming "yes": Delete is called exactly once with the material's ID,
+// and the response is a plain success message, not the detail's action menu
+// again and not an error.
+func TestMaterialsWorkspaceAdapterRespondDeleteConfirmYesCallsDelete(t *testing.T) {
+	material := domain.Material{
+		ID: 42, FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "CONDUCTORES|M|1",
+	}
+	adapter, deleter := openDeleteConfirmationDetail(t, material)
+
+	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: deleteActionID}); err != nil {
+		t.Fatalf("Respond(delete action) error = %v, want nil", err)
+	}
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: materialsDeleteConfirmKey, Value: "yes",
+	})
+	if err != nil {
+		t.Fatalf("Respond(confirm yes) error = %v, want nil", err)
+	}
+	if deleter.callCount != 1 {
+		t.Fatalf("Delete callCount = %d, want exactly 1", deleter.callCount)
+	}
+	if deleter.gotID != 42 {
+		t.Fatalf("Delete gotID = %d, want %d", deleter.gotID, 42)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil after a successful delete", response.Pending)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("Messages = %v, want exactly one message", response.Messages)
+	}
+	message, ok := response.Messages[0].(TextMessage)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want TextMessage", response.Messages[0])
+	}
+	if !strings.Contains(message.Text, "CONDUCTORES") {
+		t.Fatalf("text = %q, want it to mention the deleted material", message.Text)
+	}
+}
+
+// TestMaterialsWorkspaceAdapterRespondDeleteConfirmNoReturnsToSameDetail
+// covers declining "no": Delete is NEVER called, and the response shows the
+// SAME detail (title/fields) with the full 4-action menu again — not a bare
+// cancellation message.
+func TestMaterialsWorkspaceAdapterRespondDeleteConfirmNoReturnsToSameDetail(t *testing.T) {
+	material := domain.Material{
+		ID: 42, FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "CONDUCTORES|M|1",
+	}
+	adapter, deleter := openDeleteConfirmationDetail(t, material)
+
+	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: deleteActionID}); err != nil {
+		t.Fatalf("Respond(delete action) error = %v, want nil", err)
+	}
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: materialsDeleteConfirmKey, Value: "no",
+	})
+	if err != nil {
+		t.Fatalf("Respond(confirm no) error = %v, want nil", err)
+	}
+	if deleter.callCount != 0 {
+		t.Fatalf("Delete callCount = %d, want 0 after declining", deleter.callCount)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("Messages = %v, want exactly one message (the same detail again)", response.Messages)
+	}
+	result, ok := response.Messages[0].(StructuredResult)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
+	}
+	if !strings.HasPrefix(result.Title, "CONDUCTORES") {
+		t.Fatalf("Title = %q, want it to start with CONDUCTORES", result.Title)
+	}
+	action, ok := response.Pending.(ActionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want ActionRequest", response.Pending)
+	}
+	if len(action.Actions) != 4 || action.Actions[0].ID != editActionID || action.Actions[1].ID != duplicateActionID || action.Actions[2].ID != deleteActionID || action.Actions[3].ID != backActionID {
+		t.Fatalf("Actions = %+v, want exactly [%q, %q, %q, %q] in that order", action.Actions, editActionID, duplicateActionID, deleteActionID, backActionID)
+	}
+}
+
+// TestMaterialsWorkspaceAdapterRespondDeleteFailureNeverLeaksRawError
+// mirrors TestMaterialsWorkspaceAdapterRespondErrorNeverLeaksRawError's
+// discipline for the Delete failure path: a generic ErrorMessage, no Pending,
+// and the raw error text never appears in it.
+func TestMaterialsWorkspaceAdapterRespondDeleteFailureNeverLeaksRawError(t *testing.T) {
+	material := domain.Material{
+		ID: 42, FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "CONDUCTORES|M|1",
+	}
+	getter := &fakeMaterialGetter{material: material}
+	deleter := &fakeMaterialDeleter{err: errors.New("connect to database: dial tcp refused")}
+	adapter := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, deleter)
+
+	if _, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: searchResultsKey, Value: "CONDUCTORES|CONDUCTORES|M|1",
+	}); err != nil {
+		t.Fatalf("Respond(open detail) error = %v, want nil", err)
+	}
+	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: deleteActionID}); err != nil {
+		t.Fatalf("Respond(delete action) error = %v, want nil", err)
+	}
+
+	response, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: materialsDeleteConfirmKey, Value: "yes",
+	})
+	if err != nil {
+		t.Fatalf("Respond(confirm yes) error = %v, want nil (failure must already be converted to an InteractionMessage)", err)
+	}
+	if response.Pending != nil {
+		t.Fatalf("Pending = %#v, want nil when Delete fails", response.Pending)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("Messages = %v, want exactly one message", response.Messages)
+	}
+	message, ok := response.Messages[0].(ErrorMessage)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want ErrorMessage", response.Messages[0])
+	}
+	if strings.Contains(message.Text, "connect to database") || strings.Contains(message.Text, "dial tcp") {
+		t.Fatalf("text = %q, must not leak the raw error", message.Text)
+	}
+}
+
+// TestMaterialsWorkspaceAdapterRespondDeleteThenSearchStillWorks is a
+// regression guard mirroring TestMaterialEditorCancelResetsAndOrdinarySearchStillWorks's
+// discipline for the delete flow: after a successful delete (or a decline),
+// an ordinary subsequent search still works normally.
+func TestMaterialsWorkspaceAdapterRespondDeleteThenSearchStillWorks(t *testing.T) {
+	material := domain.Material{
+		ID: 42, FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "CONDUCTORES|M|1",
+	}
+	getter := &fakeMaterialGetter{material: material}
+	deleter := &fakeMaterialDeleter{}
+	fake := &fakeMaterialSearcher{results: []domain.Material{
+		{FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|1"},
+	}}
+	adapter := NewMaterialsWorkspaceAdapter(fake, getter, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, deleter)
+
+	if _, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: searchResultsKey, Value: "CONDUCTORES|CONDUCTORES|M|1",
+	}); err != nil {
+		t.Fatalf("Respond(open detail) error = %v, want nil", err)
+	}
+	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputAction, ActionID: deleteActionID}); err != nil {
+		t.Fatalf("Respond(delete action) error = %v, want nil", err)
+	}
+	if _, err := adapter.Respond(context.Background(), InteractionInput{
+		Kind: InputSelection, Key: materialsDeleteConfirmKey, Value: "yes",
+	}); err != nil {
+		t.Fatalf("Respond(confirm yes) error = %v, want nil", err)
+	}
+
+	searchResponse, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
+	if err != nil {
+		t.Fatalf("Respond(search) error = %v, want nil", err)
+	}
+	if fake.callCount != 1 {
+		t.Fatalf("Search call count = %d, want 1 (a fresh search after a delete must work normally)", fake.callCount)
+	}
+	if fake.gotCriteria.Text != "cemento" {
+		t.Fatalf("gotCriteria.Text = %q, want %q", fake.gotCriteria.Text, "cemento")
+	}
+	if _, ok := searchResponse.Pending.(QuestionRequest); !ok {
+		t.Fatalf("Pending = %T, want a normal search-results QuestionRequest", searchResponse.Pending)
+	}
 }

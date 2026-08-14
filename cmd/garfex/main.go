@@ -57,8 +57,8 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 			fmt.Fprintf(errw, "database unavailable: %v\n", err)
 			return 1
 		}
-		service := materiales.NewService(repo)
-		materialsAdapter := tui.NewMaterialsWorkspaceAdapter(service, service)
+		service := materiales.NewService(repo, domain.NewMaterialsCatalog())
+		materialsAdapter := tui.NewMaterialsWorkspaceAdapter(service, service, service, service, service, service)
 		assistantAgent := tui.NewAssistantShellAgent()
 		if _, err := launch(tui.NewWithAgents(tui.Handlers{
 			Version: tui.Version(version),

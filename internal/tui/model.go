@@ -441,7 +441,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) respond(input InteractionInput) {
-	wasAtBottom := m.viewport.AtBottom()
 	response := m.engine.Respond(context.Background(), input)
 	for _, message := range response.Messages {
 		if isActivePendingMessage(message, response.Pending) {
@@ -462,18 +461,27 @@ func (m *Model) respond(input InteractionInput) {
 	m.choiceSelected = nil
 	m.syncChoiceFields()
 	m.refreshViewport()
-	if wasAtBottom {
-		m.viewport.GotoBottom()
+}
+
+// activePaletteActions returns the action tree the "/" palette should show:
+// materials-workspace-scoped actions while inside that workspace, the
+// global assistant actions otherwise. Reused everywhere the palette
+// (re)builds its action list so backspacing to an empty query or retyping
+// "/" never silently falls back to the wrong tree.
+func (m Model) activePaletteActions() []assistantAction {
+	if m.activeCatalog == "materials" {
+		return materialsActions
 	}
+	return assistantActions
 }
 
 func (m *Model) openPalette(query string) {
 	m.heroActive = false
 	m.paletteFlat = query != ""
 	if query == "" {
-		m.paletteActions = assistantActions
+		m.paletteActions = m.activePaletteActions()
 	} else {
-		m.paletteActions = flattenLeafActions(assistantActions)
+		m.paletteActions = flattenLeafActions(m.activePaletteActions())
 	}
 	m.paletteTitle = ""
 	m.paletteQuery = query
@@ -507,11 +515,11 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 		if m.paletteQuery == "" {
 			if m.paletteFlat {
 				m.paletteFlat = false
-				m.paletteActions = assistantActions
+				m.paletteActions = m.activePaletteActions()
 			}
 		} else if !m.paletteFlat {
 			m.paletteFlat = true
-			m.paletteActions = flattenLeafActions(assistantActions)
+			m.paletteActions = flattenLeafActions(m.activePaletteActions())
 		}
 	case "enter":
 		if len(options) == 0 {
@@ -543,6 +551,13 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 				m.input = ""
 				m.interactionMode = interactionModeChat
 				m.enterMaterialsWorkspace()
+			} else {
+				m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
+				m.paletteTitle = ""
+				m.paletteFlat = false
+				m.input = ""
+				m.interactionMode = interactionModeChat
+				m.respond(InteractionInput{Kind: InputAction, ActionID: action.id, Value: action.id, Target: ActionTargetAgent})
 			}
 			return
 		}
@@ -553,7 +568,7 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 			m.paletteIndex = 0
 			if !m.paletteFlat {
 				m.paletteFlat = true
-				m.paletteActions = flattenLeafActions(assistantActions)
+				m.paletteActions = flattenLeafActions(m.activePaletteActions())
 			}
 		}
 	}
@@ -1059,6 +1074,7 @@ func workspaceViewportHeight(height int, mode interactionMode) int {
 }
 
 func (m *Model) refreshViewport() {
+	wasAtBottom := m.viewport.AtBottom()
 	lines := make([]string, 0, len(m.history)*3)
 	for _, message := range m.history {
 		if message.resolved != nil {
@@ -1092,6 +1108,9 @@ func (m *Model) refreshViewport() {
 	}
 	contentHeight := max(1, strings.Count(m.viewport.GetContent(), "\n")+1)
 	m.viewport.SetHeight(min(maxHeight, contentHeight))
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m Model) interactionDockLines(width int) int {

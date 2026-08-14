@@ -7,7 +7,7 @@ import (
 )
 
 func TestMaterialValidationErrorsAreActionable(t *testing.T) {
-	_, err := NewMaterial(NewMaterialsCatalog(), "CONDUCTORES", "M", nil)
+	_, err := NewMaterial(NewMaterialsCatalog(), "CONDUCTORES", "CABLE", "M", nil)
 	if err == nil || !strings.Contains(err.Error(), "required attribute") {
 		t.Fatalf("error = %v, want missing attribute", err)
 	}

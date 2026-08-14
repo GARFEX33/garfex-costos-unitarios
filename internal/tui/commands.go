@@ -13,6 +13,13 @@ var assistantActions = []assistantAction{
 	{id: "suppliers", label: "Proveedores"},
 }
 
+// materialsActions is the "/" palette's action tree while inside the
+// Materiales Maestros workspace (see Model.activePaletteActions) — scoped
+// to that workspace instead of the global assistantActions tree.
+var materialsActions = []assistantAction{
+	{id: createMaterialActionID, label: "Crear material"},
+}
+
 func flattenLeafActions(actions []assistantAction) []assistantAction {
 	var result []assistantAction
 	for _, action := range actions {
