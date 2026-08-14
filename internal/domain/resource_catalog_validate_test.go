@@ -30,7 +30,7 @@ func validResourceCatalog() ResourceCatalog {
 				Definition: AttributeDefinition{Code: "color", Name: "Color", ValueType: ValueTypeControlledOption},
 			},
 		},
-		Options: []ResourceOption{
+		Options: []AttributeOption{
 			{OptionSet: "COLORES", AttributeCode: "color", Code: "NEGRO", Label: "Negro"},
 		},
 		Units: []UnitDefinition{

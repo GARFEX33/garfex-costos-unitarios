@@ -47,42 +47,11 @@ type ResourceAttribute struct {
 	Rules                           []AttributeRule
 }
 
-// ResourceOption is one controlled value of a named OptionSet (design D3).
-//
-// It is deliberately a NEW type rather than a field added to the existing
-// AttributeOption: PR1 is additive-only and must not modify
-// material_types.go, where AttributeOption is defined today without an
-// OptionSet field. Design §2's final shape adds OptionSet directly onto
-// AttributeOption in place; the phase that renames+rewrites
-// material_types.go -> resource_types.go is expected to fold this shape
-// into AttributeOption and retire ResourceOption.
-type ResourceOption struct {
-	OptionSet     string
-	AttributeCode string
-	Code          string
-	Label         string
-}
-
-// ResourceUnitPolicy is the class/family-scoped analogue of
+// ResourceUnitPolicy is the class/family-scoped analogue of the retired
 // FamilyUnitPolicy (design §2) — management units only, no identity flag.
 type ResourceUnitPolicy struct {
 	ClassCode, FamilyCode, UnitCode string
 	Allowed, Suggested              bool
-}
-
-// ResourceCatalog is the additive, PR1-scoped predecessor of the unified
-// catalog recursos-maestro design §2 describes. It carries only the fields
-// Validate needs today; later phases (the domain rename fan-out) grow it
-// with PresentationFields, Definitions, and Relations as those concerns are
-// threaded through ResourceScope.
-type ResourceCatalog struct {
-	Classes      []ResourceClass
-	Families     []ResourceFamily
-	Types        []ResourceType
-	Attributes   []ResourceAttribute
-	Options      []ResourceOption
-	Units        []UnitDefinition
-	UnitPolicies []ResourceUnitPolicy
 }
 
 // Validate reports every structural defect in the catalog at once via

@@ -10,10 +10,9 @@ package domain
 // class selection while leaving resources already created under it
 // readable (owner-confirmed behavior, recursos-maestro proposal id 1005).
 //
-// This is an additive, PR1-scoped type: it is not yet seeded into
-// MaterialsCatalog or wired into any production code path. Later phases of
-// recursos-maestro seed MATERIAL/MANO_DE_OBRA/EQUIPO_HERRAMIENTA and build
-// the catalog-driven menu from it.
+// Seeded by NewResourceCatalog() (resource_catalog.go) with the MATERIAL
+// class as of PR2a; MANO_DE_OBRA/EQUIPO_HERRAMIENTA and the catalog-driven
+// TUI menu are later recursos-maestro phases.
 type ResourceClass struct {
 	Code     string
 	Name     string
