@@ -29,10 +29,10 @@ func syntheticServiceClassCatalog() domain.ResourceCatalog {
 		Aliases: []string{"servicio", "especializado"}, Keywords: []string{"servicio especializado"},
 	})
 	catalog.Families = append(catalog.Families, domain.ResourceFamily{
-		ClassCode: "SERVICIO_ESPECIALIZADO", Code: "INSTALACION", Name: "Instalación",
+		ClassCode: "SERVICIO_ESPECIALIZADO", Code: "INSTALACION", Name: "Instalación", Active: true,
 	})
 	catalog.Types = append(catalog.Types, domain.ResourceType{
-		ClassCode: "SERVICIO_ESPECIALIZADO", FamilyCode: "INSTALACION", Code: "PUESTA_EN_MARCHA", Name: "Puesta en marcha",
+		ClassCode: "SERVICIO_ESPECIALIZADO", FamilyCode: "INSTALACION", Code: "PUESTA_EN_MARCHA", Name: "Puesta en marcha", Active: true,
 	})
 	catalog.Definitions = append(catalog.Definitions, domain.AttributeDefinition{
 		Code: "nivel_servicio", Name: "Nivel de servicio", ValueType: domain.ValueTypeControlledOption, DefaultIdentityParticipates: true,
@@ -43,8 +43,8 @@ func syntheticServiceClassCatalog() domain.ResourceCatalog {
 		Mode:       domain.ModeRequired, IdentityParticipates: true,
 	})
 	catalog.Options = append(catalog.Options,
-		domain.AttributeOption{AttributeCode: "nivel_servicio", Code: "BASICO", Label: "Básico"},
-		domain.AttributeOption{AttributeCode: "nivel_servicio", Code: "AVANZADO", Label: "Avanzado"},
+		domain.AttributeOption{AttributeCode: "nivel_servicio", Code: "BASICO", Label: "Básico", Active: true},
+		domain.AttributeOption{AttributeCode: "nivel_servicio", Code: "AVANZADO", Label: "Avanzado", Active: true},
 	)
 	catalog.UnitPolicies = append(catalog.UnitPolicies, domain.ResourceUnitPolicy{
 		ClassCode: "SERVICIO_ESPECIALIZADO", FamilyCode: "INSTALACION", UnitCode: "PZA", Allowed: true, Suggested: true,

@@ -45,6 +45,9 @@ func (c ResourceCatalog) OptionsFor(attr ResourceAttribute) []AttributeOption {
 	set := attr.setKey()
 	var options []AttributeOption
 	for _, option := range c.Options {
+		if !option.Active {
+			continue
+		}
 		if canonicalAttribute(option.AttributeCode) == code && canonicalOptionSet(option.OptionSet) == set {
 			options = append(options, option)
 		}
@@ -64,6 +67,9 @@ func (c ResourceCatalog) NaturalUnitsFor(s ResourceScope) []UnitDefinition {
 			continue
 		}
 		for _, unit := range c.Units {
+			if !unit.Active {
+				continue
+			}
 			if canonical(unit.Code) != canonical(policy.UnitCode) {
 				continue
 			}
@@ -84,6 +90,9 @@ func (c ResourceCatalog) FamiliesFor(classCode string) []ResourceFamily {
 	classCode = canonical(classCode)
 	var families []ResourceFamily
 	for _, family := range c.Families {
+		if !family.Active {
+			continue
+		}
 		if canonical(family.ClassCode) == classCode {
 			families = append(families, family)
 		}
@@ -159,6 +168,9 @@ func (c ResourceCatalog) TypesFor(s ResourceScope) []ResourceType {
 	s = s.canonicalize()
 	var types []ResourceType
 	for _, t := range c.Types {
+		if !t.Active {
+			continue
+		}
 		if canonical(t.ClassCode) == s.ClassCode && canonical(t.FamilyCode) == s.FamilyCode {
 			types = append(types, t)
 		}

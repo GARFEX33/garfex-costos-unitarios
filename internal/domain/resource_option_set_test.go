@@ -30,14 +30,14 @@ func twoClassOptionSetCatalog() ResourceCatalog {
 			{Code: "TEST_CLASS_B", Name: "Test Class B", Plural: "Test Classes B", Slug: "test-class-b", Order: 2, Active: true},
 		},
 		Families: []ResourceFamily{
-			{ClassCode: "TEST_CLASS_A", Code: "WIDGETS", Name: "Widgets A"},
-			{ClassCode: "TEST_CLASS_B", Code: "WIDGETS", Name: "Widgets B"},
+			{ClassCode: "TEST_CLASS_A", Code: "WIDGETS", Name: "Widgets A", Active: true},
+			{ClassCode: "TEST_CLASS_B", Code: "WIDGETS", Name: "Widgets B", Active: true},
 		},
 		Types: []ResourceType{
-			{ClassCode: "TEST_CLASS_A", FamilyCode: "WIDGETS", Code: "WIDGET", Name: "Widget A"},
-			{ClassCode: "TEST_CLASS_B", FamilyCode: "WIDGETS", Code: "WIDGET", Name: "Widget B"},
+			{ClassCode: "TEST_CLASS_A", FamilyCode: "WIDGETS", Code: "WIDGET", Name: "Widget A", Active: true},
+			{ClassCode: "TEST_CLASS_B", FamilyCode: "WIDGETS", Code: "WIDGET", Name: "Widget B", Active: true},
 		},
-		Units: []UnitDefinition{{Code: "PZA", Symbol: "PZA", Dimension: "PIECE"}},
+		Units: []UnitDefinition{{Code: "PZA", Symbol: "PZA", Dimension: "PIECE", Active: true}},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "TEST_CLASS_A", FamilyCode: "WIDGETS", UnitCode: "PZA", Allowed: true, Suggested: true},
 			{ClassCode: "TEST_CLASS_B", FamilyCode: "WIDGETS", UnitCode: "PZA", Allowed: true, Suggested: true},
@@ -53,10 +53,10 @@ func twoClassOptionSetCatalog() ResourceCatalog {
 			{ClassCode: "TEST_CLASS_B", FamilyCode: "WIDGETS", TypeCode: "WIDGET", OptionSet: "SHARED", Definition: AttributeDefinition{Code: "size", ValueType: ValueTypeControlledOption}, Mode: ModeRequired, IdentityParticipates: true},
 		},
 		Options: []AttributeOption{
-			{OptionSet: "COLOR_A", AttributeCode: "color", Code: "ROJO", Label: "Rojo"},
-			{OptionSet: "COLOR_B", AttributeCode: "color", Code: "AZUL", Label: "Azul"},
-			{OptionSet: "SHARED", AttributeCode: "size", Code: "CHICO", Label: "Chico"},
-			{OptionSet: "SHARED", AttributeCode: "size", Code: "GRANDE", Label: "Grande"},
+			{OptionSet: "COLOR_A", AttributeCode: "color", Code: "ROJO", Label: "Rojo", Active: true},
+			{OptionSet: "COLOR_B", AttributeCode: "color", Code: "AZUL", Label: "Azul", Active: true},
+			{OptionSet: "SHARED", AttributeCode: "size", Code: "CHICO", Label: "Chico", Active: true},
+			{OptionSet: "SHARED", AttributeCode: "size", Code: "GRANDE", Label: "Grande", Active: true},
 		},
 	}
 }
