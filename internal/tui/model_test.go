@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -1523,7 +1524,7 @@ func TestPaletteInsideAssistantDoesNotShowCreateMaterial(t *testing.T) {
 // family, appears) — not just the dispatch-level unit test already covered
 // in material_editor_test.go.
 func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
-	materials := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
+	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.NewResourceCatalog(), "MATERIAL")
 	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, key('/'))
@@ -1552,7 +1553,7 @@ func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
 // so every caller gets it automatically instead of each call site having
 // to remember to pair it.
 func TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne(t *testing.T) {
-	materials := NewMaterialsWorkspaceAdapter(&fakeMaterialSearcher{results: nil}, &fakeMaterialGetter{}, &fakeMaterialDescriber{}, &fakeMaterialCreator{}, &fakeMaterialUpdater{}, &fakeMaterialDeleter{})
+	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{results: nil}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.NewResourceCatalog(), "MATERIAL")
 	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -1582,7 +1583,7 @@ func TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne(t *testing.T) 
 	// the newly-revealed product type question.
 	m, _ = update(t, m, enter())
 	plain = ansi.Strip(m.View().Content)
-	if !strings.Contains(plain, "¿Qué tipo de producto querés crear?") {
+	if !strings.Contains(plain, "¿Qué tipo querés crear?") {
 		t.Fatalf("product type question not visible after answering family: view = %q", plain)
 	}
 }

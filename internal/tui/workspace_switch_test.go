@@ -143,3 +143,79 @@ func TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits(t *testin
 		t.Fatalf("materials history on re-entry = %#v, want the persisted history from the first visit", m.history)
 	}
 }
+
+// TestWorkspaceRegistrySeparatesStateAcrossTwoIndependentWorkspaces is the
+// recursos-maestro PR7a RED test (design's flagged "primary D4 regression
+// surface", risk R9): it proves the NEW N-workspace registry
+// (WorkspaceDescriptor/workspaceSlot/Model.workspaces/enterWorkspace/
+// leaveActiveWorkspace) keeps two independently-registered workspaces'
+// conversations completely separate — never blended — exactly like
+// TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits above
+// already proves for the OLD single-workspace activeCatalog mechanism. It is
+// written BEFORE any of those identifiers exist in model.go, so it is
+// expected to fail to compile until 7a.2's GREEN step adds them (the same
+// "compiler as RED" evidence class recursos-maestro PR6 already established
+// for this project's mechanical/structural additions).
+func TestWorkspaceRegistrySeparatesStateAcrossTwoIndependentWorkspaces(t *testing.T) {
+	first := &fakeCatalogAgent{}
+	second := &fakeCatalogAgent{}
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), []WorkspaceDescriptor{
+		{Slug: "alpha", Title: "GARFEX / ALPHA", CreateLabel: "Crear alpha", Agent: first},
+		{Slug: "beta", Title: "GARFEX / BETA", CreateLabel: "Crear beta", Agent: second},
+	})
+
+	if ok := m.enterWorkspace("alpha"); !ok {
+		t.Fatal("enterWorkspace(\"alpha\") = false, want true")
+	}
+	if m.activeWorkspace != "alpha" {
+		t.Fatalf("activeWorkspace = %q, want %q", m.activeWorkspace, "alpha")
+	}
+	m = submitText(t, m, "alpha draft")
+	if !historyContains(m.history, "alpha draft") {
+		t.Fatalf("alpha history = %#v, want it to contain the alpha draft", m.history)
+	}
+	alphaHistoryLen := len(m.history)
+
+	// Leave alpha and enter beta: beta's first visit must start completely
+	// empty, never mixed with alpha's own history.
+	m.leaveActiveWorkspace()
+	if m.activeWorkspace != "" {
+		t.Fatalf("activeWorkspace after leaving = %q, want \"\"", m.activeWorkspace)
+	}
+	if ok := m.enterWorkspace("beta"); !ok {
+		t.Fatal("enterWorkspace(\"beta\") = false, want true")
+	}
+	if len(m.history) != 0 {
+		t.Fatalf("beta first-visit history = %#v, want empty (a fresh, independent workspace)", m.history)
+	}
+	m = submitText(t, m, "beta draft")
+	if !historyContains(m.history, "beta draft") {
+		t.Fatalf("beta history = %#v, want it to contain the beta draft", m.history)
+	}
+	if historyContains(m.history, "alpha draft") {
+		t.Fatalf("beta history = %#v, must not contain the alpha draft (state separation)", m.history)
+	}
+
+	// Leave beta and re-enter alpha: alpha's own history from the first
+	// visit must still be there, unmixed with beta's — proving
+	// workspaceSlot.saved persistence AND separation, not a shared/blended
+	// snapshot.
+	m.leaveActiveWorkspace()
+	if ok := m.enterWorkspace("alpha"); !ok {
+		t.Fatal("re-entering \"alpha\" = false, want true")
+	}
+	if len(m.history) != alphaHistoryLen || !historyContains(m.history, "alpha draft") {
+		t.Fatalf("alpha history on re-entry = %#v, want the persisted alpha history from the first visit", m.history)
+	}
+	if historyContains(m.history, "beta draft") {
+		t.Fatalf("alpha history on re-entry = %#v, must not contain the beta draft", m.history)
+	}
+
+	// An unknown slug must leave every field untouched.
+	if ok := m.enterWorkspace("does-not-exist"); ok {
+		t.Fatal("enterWorkspace(unknown slug) = true, want false")
+	}
+	if m.activeWorkspace != "alpha" {
+		t.Fatalf("activeWorkspace after an unknown enterWorkspace call = %q, want it untouched (%q)", m.activeWorkspace, "alpha")
+	}
+}

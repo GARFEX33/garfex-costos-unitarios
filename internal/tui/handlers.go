@@ -21,63 +21,38 @@ func Result(text string, err error) tea.Msg {
 	return resultMsg{text: text, err: err}
 }
 
-// materialLister is the minimal surface the materials handler needs from the
-// application service.
-type materialGetter interface {
-	Get(ctx context.Context, familyCode, identityKey string) (domain.Material, error)
-}
-
-// Materials returns a handler that renders one material's technical detail.
-func Materials(getter materialGetter, familyCode, identityKey string) Handler {
+// Resources returns a handler that renders one resource's technical detail.
+// getter is resourceGetter (defined in resource_editor.go: Get(ctx,
+// classCode, identityKey) (domain.Resource, error)) — reused directly here
+// rather than a second, duplicate interface declaration, since the shape is
+// identical.
+func Resources(getter resourceGetter, classCode, identityKey string) Handler {
 	return func() tea.Cmd {
 		return func() tea.Msg {
-			material, err := getter.Get(context.Background(), familyCode, identityKey)
+			resource, err := getter.Get(context.Background(), classCode, identityKey)
 			if err != nil {
-				return resultMsg{err: fmt.Errorf("materiales: %w", err)}
+				return resultMsg{err: fmt.Errorf("recursos: %w", err)}
 			}
-			return resultMsg{text: renderMaterialDetail(material)}
+			return resultMsg{text: renderResourceDetail(resource)}
 		}
 	}
 }
 
-func renderMaterialDetail(material domain.Material) string {
-	attributes := append([]domain.MaterialAttributeValue(nil), material.Attributes...)
+func renderResourceDetail(resource domain.Resource) string {
+	attributes := append([]domain.ResourceAttributeValue(nil), resource.Attributes...)
 	sort.SliceStable(attributes, func(i, j int) bool {
 		return attributes[i].AttributeCode < attributes[j].AttributeCode
 	})
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Material\nUnidad natural: %s\nAtributos técnicos:\n", material.NaturalUnit)
+	fmt.Fprintf(&b, "Recurso\nUnidad natural: %s\nAtributos técnicos:\n", resource.NaturalUnit)
 	for _, attribute := range attributes {
-		fmt.Fprintf(&b, "- %s: %s\n", attribute.AttributeCode, formatAttributeValue(attribute))
+		// formatResourceAttributeValue is defined in resource_editor.go —
+		// reused directly rather than duplicated here, since it already
+		// operates on the same domain.ResourceAttributeValue shape.
+		fmt.Fprintf(&b, "- %s: %s\n", attribute.AttributeCode, formatResourceAttributeValue(attribute))
 	}
 	return b.String()
-}
-
-func formatAttributeValue(attribute domain.MaterialAttributeValue) string {
-	switch attribute.Type {
-	case domain.ValueTypeControlledOption:
-		return attribute.OptionCode
-	case domain.ValueTypeInteger:
-		if attribute.Integer != nil {
-			return fmt.Sprintf("%d", *attribute.Integer)
-		}
-	case domain.ValueTypeDecimal:
-		if attribute.Decimal != nil {
-			return attribute.Decimal.String()
-		}
-	case domain.ValueTypeQuantity:
-		if attribute.Quantity != nil {
-			return attribute.Quantity.Value.String() + " " + attribute.Quantity.UnitCode
-		}
-	case domain.ValueTypeBoolean:
-		if attribute.Boolean != nil {
-			return fmt.Sprintf("%t", *attribute.Boolean)
-		}
-	case domain.ValueTypeControlledText:
-		return attribute.Text
-	}
-	return ""
 }
 
 // ErrorHandler returns a handler that presents err as a result message. It is
