@@ -1375,8 +1375,8 @@ func TestPaletteShowsOnlyTopLevelModulesInitially(t *testing.T) {
 
 // TestPaletteDirectFilteringToConcreteActions replaces the pre-existing
 // nested "Materiales" > "Buscar material" drill-down case: since #materials
-// is now a direct leaf (see enterMaterialsWorkspace), a partial query
-// filters straight to it without a module drill-down step.
+// is now a direct leaf (see enterWorkspace), a partial query filters
+// straight to it without a module drill-down step.
 func TestPaletteDirectFilteringToConcreteActions(t *testing.T) {
 	m := New(Handlers{})
 	for _, char := range "/maestros" {
@@ -1485,7 +1485,7 @@ func TestPaletteBackspaceToEmptyRestoresTopLevel(t *testing.T) {
 // workspace-scoped materialsActions tree ("Crear material") instead of the
 // global assistantActions tree used everywhere else.
 func TestPaletteInsideMaterialsWorkspaceShowsCreateMaterialOnly(t *testing.T) {
-	m := NewWithAgents(Handlers{}, NewFakeAgent(), &fakeCatalogAgent{})
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(&fakeCatalogAgent{}))
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, key('/'))
 	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
@@ -1525,7 +1525,7 @@ func TestPaletteInsideAssistantDoesNotShowCreateMaterial(t *testing.T) {
 // in material_editor_test.go.
 func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
 	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.NewResourceCatalog(), "MATERIAL")
-	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(materials))
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, key('/'))
 	m, _ = update(t, m, enter())
@@ -1554,7 +1554,7 @@ func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
 // to remember to pair it.
 func TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne(t *testing.T) {
 	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{results: nil}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.NewResourceCatalog(), "MATERIAL")
-	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(materials))
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 

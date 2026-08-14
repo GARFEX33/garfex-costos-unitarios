@@ -152,8 +152,8 @@ func (m Model) renderWorkspace(width int) string {
 	var lines []string
 	if !m.heroActive {
 		header := "GARFEX / ASSISTANT"
-		if m.activeCatalog == "materials" {
-			header = "GARFEX / MATERIALES"
+		if slot, ok := m.workspaces[m.activeWorkspace]; ok {
+			header = slot.descriptor.Title
 		}
 		lines = append(lines,
 			lipgloss.NewStyle().Foreground(accent).Bold(true).Render(header),
