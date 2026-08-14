@@ -24,6 +24,11 @@ type ResourceFamily struct {
 	ClassCode string
 	Code      string
 	Name      string
+	// Active mirrors ResourceClass.Active (design Risk#3): a deactivated
+	// Familia is hidden from FamiliesFor's filtered result but keeps
+	// existing resources under it readable — see catalog_admin_repository.go
+	// (a later PR) for the IncludeInactive escape hatch.
+	Active bool
 }
 
 // ResourceType is the Tipo level, scoped to exactly one class+family.
@@ -32,6 +37,8 @@ type ResourceType struct {
 	FamilyCode string
 	Code       string
 	Name       string
+	// Active — see ResourceFamily.Active.
+	Active bool
 }
 
 // ResourceAttribute is the class/family/(type)-scoped attribute binding
@@ -66,7 +73,9 @@ func (c ResourceCatalog) Validate() error {
 	errs = append(errs, c.validateFamilies()...)
 	errs = append(errs, c.validateTypes()...)
 	errs = append(errs, c.validateAttributes()...)
+	errs = append(errs, c.validateAttributeRules()...)
 	errs = append(errs, c.validateUnitPolicies()...)
+	errs = append(errs, c.validateActiveHierarchy()...)
 	return errors.Join(errs...)
 }
 
@@ -187,6 +196,56 @@ func (c ResourceCatalog) validateAttributes() []error {
 		}
 		if attribute.OptionSet != "" && !c.hasOptionSet(attribute.OptionSet) {
 			errs = append(errs, fmt.Errorf("%w: attribute %q references unknown option set %q", ErrResourceReference, attribute.Definition.Code, attribute.OptionSet))
+		}
+	}
+	return errs
+}
+
+// validateAttributeRules enforces design D4's invariant, now expressed over
+// the Rules slice rather than the retired inline condition_* columns:
+// Mode==CONDITIONAL if and only if the attribute carries at least one
+// AttributeRule. Both directions are checked — a CONDITIONAL attribute with
+// zero rules can never resolve an effective mode, and a REQUIRED/OPTIONAL/
+// FORBIDDEN attribute carrying rules is dead, never-evaluated data.
+func (c ResourceCatalog) validateAttributeRules() []error {
+	var errs []error
+	for _, attribute := range c.Attributes {
+		hasRules := len(attribute.Rules) > 0
+		switch {
+		case attribute.Mode == ModeConditional && !hasRules:
+			errs = append(errs, fmt.Errorf("%w: conditional attribute %q has no rules", ErrResourceValidation, attribute.Definition.Code))
+		case attribute.Mode != ModeConditional && hasRules:
+			errs = append(errs, fmt.Errorf("%w: non-conditional attribute %q must not have rules (mode %q is not conditional)", ErrResourceValidation, attribute.Definition.Code, attribute.Mode))
+		}
+	}
+	return errs
+}
+
+// validateActiveHierarchy enforces design Risk#3's soft-delete structural
+// invariant: an ACTIVE Familia can never sit under an INACTIVE Clase, and an
+// ACTIVE Tipo can never sit under an INACTIVE Familia — deactivating a
+// parent without also deactivating its active children is a structural
+// inconsistency, not a valid intermediate state. An inactive child under an
+// active parent is the normal, expected shape of Desactivar and is never
+// flagged.
+func (c ResourceCatalog) validateActiveHierarchy() []error {
+	var errs []error
+	classActive := map[string]bool{}
+	for _, class := range c.Classes {
+		classActive[canonical(class.Code)] = class.Active
+	}
+	familyActive := map[string]bool{}
+	for _, family := range c.Families {
+		key := canonical(family.ClassCode) + "|" + canonical(family.Code)
+		familyActive[key] = family.Active
+		if family.Active && !classActive[canonical(family.ClassCode)] {
+			errs = append(errs, fmt.Errorf("%w: active family %q sits under inactive class %q", ErrResourceValidation, family.Code, family.ClassCode))
+		}
+	}
+	for _, t := range c.Types {
+		key := canonical(t.ClassCode) + "|" + canonical(t.FamilyCode)
+		if t.Active && !familyActive[key] {
+			errs = append(errs, fmt.Errorf("%w: active type %q sits under inactive family %q", ErrResourceValidation, t.Code, t.FamilyCode))
 		}
 	}
 	return errs
