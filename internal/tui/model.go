@@ -516,15 +516,16 @@ func (m *Model) respond(input InteractionInput) {
 
 // activePaletteActions returns the action tree the "/" palette should show:
 // workspace-scoped actions while inside ANY registered workspace (slug
-// generic — the check is registry membership, not a hardcoded catalog name;
-// PR8's commands.go rewrite is what makes materialsActions itself
-// per-descriptor instead of a single shared var), the global assistant
-// actions otherwise. Reused everywhere the palette (re)builds its action
-// list so backspacing to an empty query or retyping "/" never silently
-// falls back to the wrong tree.
+// generic — the check is registry membership, not a hardcoded catalog name),
+// the global assistant actions otherwise. workspaceActions (commands.go,
+// recursos-maestro design §7) builds each workspace's own "Crear ..." leaf
+// from its own WorkspaceDescriptor.CreateLabel — the per-descriptor
+// replacement for the old single shared materialsActions var. Reused
+// everywhere the palette (re)builds its action list so backspacing to an
+// empty query or retyping "/" never silently falls back to the wrong tree.
 func (m Model) activePaletteActions() []assistantAction {
-	if m.activeWorkspace != "" {
-		return materialsActions
+	if slot, ok := m.workspaces[m.activeWorkspace]; ok {
+		return workspaceActions(slot.descriptor)
 	}
 	return assistantActions
 }
@@ -980,6 +981,11 @@ func (m Model) pendingAllowsCustom() bool {
 	return ok && request.AllowCustom
 }
 
+// filterOptions keeps every option whose Label OR SearchTerms (design R6 —
+// an assistantAction's Aliases/Keywords, see commands.go's actionOptions)
+// contains every whitespace-separated token in query, case-insensitively.
+// SearchTerms is empty for every non-palette Option, so this is a pure
+// extension of the previous label-only behavior, never a narrowing of it.
 func filterOptions(options []Option, query string) []Option {
 	tokens := strings.Fields(strings.ToLower(query))
 	if len(tokens) == 0 {
@@ -987,10 +993,13 @@ func filterOptions(options []Option, query string) []Option {
 	}
 	filtered := make([]Option, 0, len(options))
 	for _, option := range options {
-		label := strings.ToLower(option.Label)
+		haystack := strings.ToLower(option.Label)
+		if len(option.SearchTerms) > 0 {
+			haystack += " " + strings.ToLower(strings.Join(option.SearchTerms, " "))
+		}
 		matches := true
 		for _, token := range tokens {
-			if !strings.Contains(label, token) {
+			if !strings.Contains(haystack, token) {
 				matches = false
 				break
 			}
