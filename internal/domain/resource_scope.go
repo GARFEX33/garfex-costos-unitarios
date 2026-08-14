@@ -8,10 +8,9 @@ package domain
 //
 // TypeCode == "" means a family-level query: no Tipo narrowing is applied.
 //
-// This is an additive, PR1-scoped type: nothing in the existing Materials
-// model (MaterialFamily, ProductType, FamilyAttribute, ...) consumes it yet.
-// Later phases of recursos-maestro thread it through the catalog query and
-// validation methods that today take bare family/productType strings.
+// Threaded through every ResourceCatalog query/validation method as of
+// PR2a (resource_catalog_query.go, resource_validation.go), replacing the
+// old bare family/productType string parameters.
 type ResourceScope struct {
 	ClassCode  string
 	FamilyCode string
@@ -29,13 +28,13 @@ func (s ResourceScope) canonicalize() ResourceScope {
 	}
 }
 
-// matches is the single narrowing predicate later catalog query methods
-// share. classCode/familyCode/typeCode are one catalog row's own scoping
+// matches is the single narrowing predicate every catalog query method
+// shares. classCode/familyCode/typeCode are one catalog row's own scoping
 // fields; s is the query scope being resolved against that row.
 //
 // An empty typeCode on the CATALOG ROW is a wildcard: "shared by every Tipo
-// of this Familia" — the exact FamilyAttribute.ProductTypeCode == ""
-// semantics MaterialsCatalog already has today. An empty s.TypeCode is a
+// of this Familia" — mirrors the retired FamilyAttribute.ProductTypeCode == ""
+// semantics. An empty s.TypeCode is a
 // family-level query and likewise does not constrain by Tipo (design §1:
 // TypesFor/NaturalUnitsFor ignore TypeCode). Type only blocks a match when
 // BOTH sides name one.
