@@ -9,6 +9,12 @@ type Option struct {
 	Description string
 	Target      ActionTarget
 	Metadata    map[string]string
+	// SearchTerms are extra strings the "/" palette's flat-query matcher
+	// (filterOptions) also matches against, beyond Label — e.g. an
+	// assistantAction's Aliases/Keywords (see commands.go's actionOptions
+	// and recursos-maestro design R6). Empty for every non-palette Option,
+	// which leaves filterOptions' existing label-only behavior unchanged.
+	SearchTerms []string
 }
 
 type Field struct {
