@@ -1,0 +1,234 @@
+package domain
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var (
+	// ErrResourceValidation reports a structural defect ResourceCatalog.Validate
+	// found in the catalog data itself (e.g. a duplicate or empty field),
+	// as opposed to a bad narrowing reference (see ErrResourceReference).
+	ErrResourceValidation = errors.New("resource catalog validation failed")
+	// ErrResourceReference reports a dangling narrowing reference (a
+	// ClassCode/FamilyCode/TypeCode/OptionSet/unit code that names
+	// something the catalog does not define).
+	ErrResourceReference = errors.New("resource catalog reference invalid")
+)
+
+// ResourceFamily is class-owned catalog data (recursos-maestro design §1,
+// D1): a Familia only makes sense inside one Clase, so family codes are
+// unique within a class, not globally.
+type ResourceFamily struct {
+	ClassCode string
+	Code      string
+	Name      string
+}
+
+// ResourceType is the Tipo level, scoped to exactly one class+family.
+type ResourceType struct {
+	ClassCode  string
+	FamilyCode string
+	Code       string
+	Name       string
+}
+
+// ResourceAttribute is the class/family/(type)-scoped attribute binding
+// (design §2). TypeCode == "" means the attribute is shared by every Tipo of
+// its Familia (see ResourceScope.matches). OptionSet names the named option
+// set (design D3) this attribute's controlled values are drawn from.
+type ResourceAttribute struct {
+	ClassCode, FamilyCode, TypeCode string
+	OptionSet                       string
+	Definition                      AttributeDefinition
+	Mode                            AttributeMode
+	IdentityParticipates            bool
+	Rules                           []AttributeRule
+}
+
+// ResourceOption is one controlled value of a named OptionSet (design D3).
+//
+// It is deliberately a NEW type rather than a field added to the existing
+// AttributeOption: PR1 is additive-only and must not modify
+// material_types.go, where AttributeOption is defined today without an
+// OptionSet field. Design §2's final shape adds OptionSet directly onto
+// AttributeOption in place; the phase that renames+rewrites
+// material_types.go -> resource_types.go is expected to fold this shape
+// into AttributeOption and retire ResourceOption.
+type ResourceOption struct {
+	OptionSet     string
+	AttributeCode string
+	Code          string
+	Label         string
+}
+
+// ResourceUnitPolicy is the class/family-scoped analogue of
+// FamilyUnitPolicy (design §2) — management units only, no identity flag.
+type ResourceUnitPolicy struct {
+	ClassCode, FamilyCode, UnitCode string
+	Allowed, Suggested              bool
+}
+
+// ResourceCatalog is the additive, PR1-scoped predecessor of the unified
+// catalog recursos-maestro design §2 describes. It carries only the fields
+// Validate needs today; later phases (the domain rename fan-out) grow it
+// with PresentationFields, Definitions, and Relations as those concerns are
+// threaded through ResourceScope.
+type ResourceCatalog struct {
+	Classes      []ResourceClass
+	Families     []ResourceFamily
+	Types        []ResourceType
+	Attributes   []ResourceAttribute
+	Options      []ResourceOption
+	Units        []UnitDefinition
+	UnitPolicies []ResourceUnitPolicy
+}
+
+// Validate reports every structural defect in the catalog at once via
+// errors.Join (design §1): a dangling Clase/Familia/Tipo/OptionSet
+// reference, a UnitPolicy naming an unknown unit, a family code duplicated
+// within one class (the same code reused under a DIFFERENT class is valid —
+// D1), an empty class Name/Plural/Slug, and a duplicate class Code or Slug.
+// It returns nil when the catalog is structurally sound.
+func (c ResourceCatalog) Validate() error {
+	var errs []error
+	errs = append(errs, c.validateClasses()...)
+	errs = append(errs, c.validateFamilies()...)
+	errs = append(errs, c.validateTypes()...)
+	errs = append(errs, c.validateAttributes()...)
+	errs = append(errs, c.validateUnitPolicies()...)
+	return errors.Join(errs...)
+}
+
+func (c ResourceCatalog) hasClassCode(code string) bool {
+	code = canonical(code)
+	for _, class := range c.Classes {
+		if canonical(class.Code) == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (c ResourceCatalog) hasFamilyIn(classCode, familyCode string) bool {
+	classCode, familyCode = canonical(classCode), canonical(familyCode)
+	for _, family := range c.Families {
+		if canonical(family.ClassCode) == classCode && canonical(family.Code) == familyCode {
+			return true
+		}
+	}
+	return false
+}
+
+func (c ResourceCatalog) hasTypeIn(classCode, familyCode, typeCode string) bool {
+	classCode, familyCode, typeCode = canonical(classCode), canonical(familyCode), canonical(typeCode)
+	for _, t := range c.Types {
+		if canonical(t.ClassCode) == classCode && canonical(t.FamilyCode) == familyCode && canonical(t.Code) == typeCode {
+			return true
+		}
+	}
+	return false
+}
+
+func (c ResourceCatalog) hasOptionSet(optionSet string) bool {
+	optionSet = canonical(optionSet)
+	for _, option := range c.Options {
+		if canonical(option.OptionSet) == optionSet {
+			return true
+		}
+	}
+	return false
+}
+
+func (c ResourceCatalog) hasUnitCode(unitCode string) bool {
+	unitCode = canonical(unitCode)
+	for _, unit := range c.Units {
+		if canonical(unit.Code) == unitCode {
+			return true
+		}
+	}
+	return false
+}
+
+func (c ResourceCatalog) validateClasses() []error {
+	var errs []error
+	seenCode := map[string]bool{}
+	seenSlug := map[string]bool{}
+	for _, class := range c.Classes {
+		if strings.TrimSpace(class.Name) == "" {
+			errs = append(errs, fmt.Errorf("%w: class %q has an empty name", ErrResourceValidation, class.Code))
+		}
+		if strings.TrimSpace(class.Plural) == "" {
+			errs = append(errs, fmt.Errorf("%w: class %q has an empty plural", ErrResourceValidation, class.Code))
+		}
+		if strings.TrimSpace(class.Slug) == "" {
+			errs = append(errs, fmt.Errorf("%w: class %q has an empty slug", ErrResourceValidation, class.Code))
+		}
+		if code := canonical(class.Code); code != "" {
+			if seenCode[code] {
+				errs = append(errs, fmt.Errorf("%w: duplicate class code %q", ErrResourceValidation, class.Code))
+			}
+			seenCode[code] = true
+		}
+		if slug := canonical(class.Slug); slug != "" {
+			if seenSlug[slug] {
+				errs = append(errs, fmt.Errorf("%w: duplicate class slug %q", ErrResourceValidation, class.Slug))
+			}
+			seenSlug[slug] = true
+		}
+	}
+	return errs
+}
+
+func (c ResourceCatalog) validateFamilies() []error {
+	var errs []error
+	seen := map[string]bool{}
+	for _, family := range c.Families {
+		if !c.hasClassCode(family.ClassCode) {
+			errs = append(errs, fmt.Errorf("%w: family %q references unknown class %q", ErrResourceReference, family.Code, family.ClassCode))
+			continue
+		}
+		key := canonical(family.ClassCode) + "|" + canonical(family.Code)
+		if seen[key] {
+			errs = append(errs, fmt.Errorf("%w: duplicate family code %q within class %q", ErrResourceValidation, family.Code, family.ClassCode))
+		}
+		seen[key] = true
+	}
+	return errs
+}
+
+func (c ResourceCatalog) validateTypes() []error {
+	var errs []error
+	for _, t := range c.Types {
+		if !c.hasFamilyIn(t.ClassCode, t.FamilyCode) {
+			errs = append(errs, fmt.Errorf("%w: type %q references unknown family %q in class %q", ErrResourceReference, t.Code, t.FamilyCode, t.ClassCode))
+		}
+	}
+	return errs
+}
+
+func (c ResourceCatalog) validateAttributes() []error {
+	var errs []error
+	for _, attribute := range c.Attributes {
+		if !c.hasFamilyIn(attribute.ClassCode, attribute.FamilyCode) {
+			errs = append(errs, fmt.Errorf("%w: attribute %q references unknown family %q in class %q", ErrResourceReference, attribute.Definition.Code, attribute.FamilyCode, attribute.ClassCode))
+		} else if attribute.TypeCode != "" && !c.hasTypeIn(attribute.ClassCode, attribute.FamilyCode, attribute.TypeCode) {
+			errs = append(errs, fmt.Errorf("%w: attribute %q references unknown type %q in family %q", ErrResourceReference, attribute.Definition.Code, attribute.TypeCode, attribute.FamilyCode))
+		}
+		if attribute.OptionSet != "" && !c.hasOptionSet(attribute.OptionSet) {
+			errs = append(errs, fmt.Errorf("%w: attribute %q references unknown option set %q", ErrResourceReference, attribute.Definition.Code, attribute.OptionSet))
+		}
+	}
+	return errs
+}
+
+func (c ResourceCatalog) validateUnitPolicies() []error {
+	var errs []error
+	for _, policy := range c.UnitPolicies {
+		if !c.hasUnitCode(policy.UnitCode) {
+			errs = append(errs, fmt.Errorf("%w: unit policy for family %q references unknown unit %q", ErrResourceReference, policy.FamilyCode, policy.UnitCode))
+		}
+	}
+	return errs
+}
