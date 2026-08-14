@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 )
 
 const (
@@ -129,6 +130,13 @@ type Model struct {
 	// callers that need deterministic iteration (e.g. a future palette
 	// builder) — the map above is not itself ordered.
 	workspaceOrder []string
+	// assistantActions overrides the package-level assistantActions var for
+	// this Model's global (non-workspace) "/" palette tree, when set by
+	// NewWithCatalog (recursos-maestro design §6/§8 — PR9's resolution of
+	// PR8's flagged global-palette gap). nil for every Model built by
+	// New/NewWithAgent/NewWithWorkspaces, which keeps the legacy flat
+	// package var as their global palette, unchanged.
+	assistantActions []assistantAction
 }
 
 // WorkspaceDescriptor is one registered specialized workspace's static shape
@@ -348,6 +356,22 @@ func NewWithWorkspaces(handlers Handlers, assistant InteractionAgent, descriptor
 	return m
 }
 
+// NewWithCatalog wires the Assistant's own agent, every registered workspace
+// descriptor built from catalog's active classes, AND the catalog-driven
+// global "/" palette tree (recursos-maestro design §6/§7/§8) — the real
+// production wiring cmd/garfex/main.go uses. It resolves PR8's second
+// flagged gap (the global, non-workspace assistantActions var was left as
+// the flat legacy literal) without touching NewWithWorkspaces' existing
+// signature or any of its 160+ pre-existing callers: agentFor is the same
+// per-class InteractionAgent factory BuildWorkspaceDescriptors already
+// takes, called exactly once per registered workspace.
+func NewWithCatalog(handlers Handlers, assistant InteractionAgent, catalog domain.ResourceCatalog, agentFor func(classCode string) InteractionAgent) Model {
+	descriptors := BuildWorkspaceDescriptors(catalog, agentFor)
+	m := NewWithWorkspaces(handlers, assistant, descriptors)
+	m.assistantActions = buildAssistantActions(catalog.ActiveClasses())
+	return m
+}
+
 func (Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -526,6 +550,9 @@ func (m *Model) respond(input InteractionInput) {
 func (m Model) activePaletteActions() []assistantAction {
 	if slot, ok := m.workspaces[m.activeWorkspace]; ok {
 		return workspaceActions(slot.descriptor)
+	}
+	if m.assistantActions != nil {
+		return m.assistantActions
 	}
 	return assistantActions
 }

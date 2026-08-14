@@ -17,37 +17,48 @@ type fakeProgram struct{ err error }
 
 func (p fakeProgram) Run() (tea.Model, error) { return nil, p.err }
 
-// fakeMaterialRepository is a stub domain.MaterialRepository: it is never
+// fakeResourceRepository is a stub domain.ResourceRepository: it is never
 // invoked along the composition path exercised by TestRun, it only needs to
 // satisfy the interface so a successful repositoryBuilder can be stubbed.
-type fakeMaterialRepository struct{}
+type fakeResourceRepository struct{}
 
-func (fakeMaterialRepository) Create(context.Context, domain.Material) error { return nil }
-func (fakeMaterialRepository) Get(context.Context, string, string) (domain.Material, error) {
-	return domain.Material{}, nil
+func (fakeResourceRepository) Create(context.Context, domain.Resource) error { return nil }
+func (fakeResourceRepository) Get(context.Context, string, string) (domain.Resource, error) {
+	return domain.Resource{}, nil
 }
-func (fakeMaterialRepository) Search(context.Context, domain.SearchCriteria) ([]domain.Material, error) {
+func (fakeResourceRepository) Search(context.Context, domain.SearchCriteria) ([]domain.Resource, error) {
 	return nil, nil
 }
-func (fakeMaterialRepository) Update(context.Context, domain.Material) error { return nil }
-func (fakeMaterialRepository) SetActive(context.Context, int64, bool) error  { return nil }
+func (fakeResourceRepository) Update(context.Context, domain.Resource) error { return nil }
+func (fakeResourceRepository) SetActive(context.Context, int64, bool) error  { return nil }
+
+// brokenCatalog is a deliberately structurally-invalid domain.ResourceCatalog
+// (a family referencing a class code the catalog never defines) — used to
+// drive run()'s catalog.Validate() fail-fast path without touching the real
+// seeded domain.NewResourceCatalog().
+func brokenCatalog() domain.ResourceCatalog {
+	return domain.ResourceCatalog{
+		Families: []domain.ResourceFamily{{ClassCode: "GHOST", Code: "X", Name: "X"}},
+	}
+}
 
 func TestRun(t *testing.T) {
 	valid := map[string]string{
 		"GARFEX_DB_HOST": "localhost", "GARFEX_DB_PORT": "5432", "GARFEX_DB_NAME": "garfex", "GARFEX_DB_USER": "garfex_app", "GARFEX_DB_PASSWORD": "a-secret-value", "GARFEX_DB_SSLMODE": "disable",
 	}
 	tests := []struct {
-		name        string
-		args        []string
-		env         map[string]string
-		wantCode    int
-		wantOut     string
-		wantErr     string
-		exactOut    string
-		exactErr    string
-		forbidText  string
-		launcher    programLauncher
-		repoBuilder repositoryBuilder
+		name           string
+		args           []string
+		env            map[string]string
+		wantCode       int
+		wantOut        string
+		wantErr        string
+		exactOut       string
+		exactErr       string
+		forbidText     string
+		launcher       programLauncher
+		repoBuilder    repositoryBuilder
+		catalogBuilder catalogBuilder
 	}{
 		{name: "no arguments launch TUI", args: nil, env: valid, wantCode: 0, launcher: func(model tea.Model) program {
 			m, ok := model.(tui.Model)
@@ -73,11 +84,23 @@ func TestRun(t *testing.T) {
 			return fakeProgram{}
 		}},
 		{name: "database unavailable does not launch TUI", args: nil, env: valid, wantCode: 1, wantErr: "database unavailable: connection refused",
-			repoBuilder: func(context.Context, string) (domain.MaterialRepository, error) {
+			repoBuilder: func(context.Context, string) (domain.ResourceRepository, error) {
 				return nil, errors.New("connection refused")
 			},
 			launcher: func(tea.Model) program {
 				t.Fatal("launcher must not be invoked when the database is unavailable")
+				return fakeProgram{}
+			}},
+		// TestRun/invalid_resource_catalog_does_not_launch_TUI is the 9.1 RED
+		// case: run() must fail fast (non-zero exit, no launch) when
+		// catalog.Validate() reports a structural defect, using the same
+		// injectable-dependency seam every other composition-failure case
+		// above already uses — no real DB is touched, brokenCatalog() is a
+		// pure in-memory fixture.
+		{name: "invalid resource catalog does not launch TUI", args: nil, env: valid, wantCode: 1, wantErr: "catálogo de recursos inválido",
+			catalogBuilder: brokenCatalog,
+			launcher: func(tea.Model) program {
+				t.Fatal("launcher must not be invoked when the resource catalog is invalid")
 				return fakeProgram{}
 			}},
 		{name: "version", args: []string{"version"}, wantCode: 0, wantOut: version, exactOut: version + "\n"},
@@ -94,11 +117,15 @@ func TestRun(t *testing.T) {
 			}
 			repoBuilder := tt.repoBuilder
 			if repoBuilder == nil {
-				repoBuilder = func(context.Context, string) (domain.MaterialRepository, error) {
-					return fakeMaterialRepository{}, nil
+				repoBuilder = func(context.Context, string) (domain.ResourceRepository, error) {
+					return fakeResourceRepository{}, nil
 				}
 			}
-			gotCode := run(tt.args, mapLook(tt.env), &out, &errw, launcher, repoBuilder)
+			catalogBuilder := tt.catalogBuilder
+			if catalogBuilder == nil {
+				catalogBuilder = domain.NewResourceCatalog
+			}
+			gotCode := run(tt.args, mapLook(tt.env), &out, &errw, launcher, repoBuilder, catalogBuilder)
 			if gotCode != tt.wantCode {
 				t.Errorf("run() code = %d, want %d", gotCode, tt.wantCode)
 			}

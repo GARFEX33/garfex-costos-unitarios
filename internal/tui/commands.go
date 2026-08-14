@@ -87,6 +87,17 @@ func buildResourceActions(classes []domain.ResourceClass) assistantAction {
 	return assistantAction{id: recursosSlug, label: "Recursos", children: children}
 }
 
+// BuildWorkspaceDescriptors is the exported entry point cmd/garfex/main.go
+// uses (recursos-maestro design §8) — it resolves PR8's flagged
+// exported-ness/naming gap between design §7 (unexported builders) and
+// design §8 (an exported, catalog-level call from a different package) by
+// wrapping buildWorkspaceDescriptors with catalog.ActiveClasses(), so a
+// caller outside package tui never needs to know about the raw
+// []domain.ResourceClass shape or sortedActiveClasses.
+func BuildWorkspaceDescriptors(catalog domain.ResourceCatalog, agentFor func(classCode string) InteractionAgent) []WorkspaceDescriptor {
+	return buildWorkspaceDescriptors(catalog.ActiveClasses(), agentFor)
+}
+
 // buildWorkspaceDescriptors turns an active-class list into the registry
 // descriptors NewWithWorkspaces needs: the unfiltered "/recursos" workspace
 // first (ClassCode ""), then one class-scoped workspace per active class.
