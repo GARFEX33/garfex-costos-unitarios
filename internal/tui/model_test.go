@@ -1524,7 +1524,7 @@ func TestPaletteInsideAssistantDoesNotShowCreateMaterial(t *testing.T) {
 // family, appears) — not just the dispatch-level unit test already covered
 // in material_editor_test.go.
 func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
-	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.NewResourceCatalog(), "MATERIAL")
+	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.SeedResourceCatalog(), "MATERIAL")
 	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(materials))
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, key('/'))
@@ -1553,7 +1553,7 @@ func TestSelectingCreateMaterialFromPaletteStartsEditor(t *testing.T) {
 // so every caller gets it automatically instead of each call site having
 // to remember to pair it.
 func TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne(t *testing.T) {
-	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{results: nil}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.NewResourceCatalog(), "MATERIAL")
+	materials := NewResourcesWorkspaceAdapter(&fakeResourceSearcher{results: nil}, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, domain.SeedResourceCatalog(), "MATERIAL")
 	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(materials))
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})

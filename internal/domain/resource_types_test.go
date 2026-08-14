@@ -9,7 +9,7 @@ import (
 // Task 2b.3: adapted from the pre-rename material_types_test.go.
 
 func TestResourceValidationErrorsAreActionable(t *testing.T) {
-	_, err := NewResource(NewResourceCatalog(), conductoresScope, "M", nil)
+	_, err := NewResource(SeedResourceCatalog(), conductoresScope, "M", nil)
 	if err == nil || !strings.Contains(err.Error(), "required attribute") {
 		t.Fatalf("error = %v, want missing attribute", err)
 	}

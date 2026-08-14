@@ -10,7 +10,7 @@ package domain
 // class selection while leaving resources already created under it
 // readable (owner-confirmed behavior, recursos-maestro proposal id 1005).
 //
-// Seeded by NewResourceCatalog() (resource_catalog.go) with the MATERIAL
+// Seeded by SeedResourceCatalog() (resource_catalog.go) with the MATERIAL
 // class as of PR2a; MANO_DE_OBRA/EQUIPO_HERRAMIENTA and the catalog-driven
 // TUI menu are later recursos-maestro phases.
 type ResourceClass struct {

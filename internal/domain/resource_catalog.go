@@ -1,6 +1,6 @@
 package domain
 
-// NewResourceCatalog returns the approved generic catalog data (was
+// SeedResourceCatalog returns the approved generic catalog data (was
 // NewMaterialsCatalog) — same CONDUCTORES/CANALIZACIONES seed content as
 // before the recursos-maestro rename, class-scoped under ClassCode
 // "MATERIAL" per design §2/D1, with every user-visible Name/Plural rendered
@@ -11,7 +11,7 @@ package domain
 // changed in this pass; every .Code is byte-for-byte unchanged — see
 // TestKnownResourceCodesAreNeverRenderedOrTranslated (resource_codes_test.go).
 // The engine below contains no family-specific branch; each family is data.
-func NewResourceCatalog() ResourceCatalog {
+func SeedResourceCatalog() ResourceCatalog {
 	definitions := catalogDefinitions()
 	return ResourceCatalog{
 		Classes: []ResourceClass{

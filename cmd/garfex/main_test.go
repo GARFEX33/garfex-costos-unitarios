@@ -35,7 +35,7 @@ func (fakeResourceRepository) SetActive(context.Context, int64, bool) error  { r
 // brokenCatalog is a deliberately structurally-invalid domain.ResourceCatalog
 // (a family referencing a class code the catalog never defines) — used to
 // drive run()'s catalog.Validate() fail-fast path without touching the real
-// seeded domain.NewResourceCatalog().
+// seeded domain.SeedResourceCatalog().
 func brokenCatalog() domain.ResourceCatalog {
 	return domain.ResourceCatalog{
 		Families: []domain.ResourceFamily{{ClassCode: "GHOST", Code: "X", Name: "X"}},
@@ -123,7 +123,7 @@ func TestRun(t *testing.T) {
 			}
 			catalogBuilder := tt.catalogBuilder
 			if catalogBuilder == nil {
-				catalogBuilder = domain.NewResourceCatalog
+				catalogBuilder = domain.SeedResourceCatalog
 			}
 			gotCode := run(tt.args, mapLook(tt.env), &out, &errw, launcher, repoBuilder, catalogBuilder)
 			if gotCode != tt.wantCode {

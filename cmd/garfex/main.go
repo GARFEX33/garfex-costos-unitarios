@@ -29,13 +29,13 @@ type repositoryBuilder func(ctx context.Context, dsn string) (domain.ResourceRep
 
 // catalogBuilder builds the domain.ResourceCatalog run() validates and wires
 // through the rest of the composition. It is injected (defaulting to
-// domain.NewResourceCatalog in main()) so a deliberately-broken catalog can
+// domain.SeedResourceCatalog in main()) so a deliberately-broken catalog can
 // drive the Validate() fail-fast path in a test without touching the real
 // seed data (recursos-maestro design §8's structural guard).
 type catalogBuilder func() domain.ResourceCatalog
 
 func main() {
-	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram, newPostgresRepository, domain.NewResourceCatalog))
+	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram, newPostgresRepository, domain.SeedResourceCatalog))
 }
 
 func newProgram(model tea.Model) program { return tea.NewProgram(model) }

@@ -15,7 +15,7 @@ import (
 var conductoresScope = ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 
 func TestConductorCatalogCreatesValidResources(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	base := []ResourceAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW-LS"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	tests := []struct {
 		name   string
@@ -39,7 +39,7 @@ func TestConductorCatalogCreatesValidResources(t *testing.T) {
 }
 
 func TestConductorValidationRejectsMissingForbiddenInvalidAndUnitValues(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	valid := []ResourceAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	tests := []struct {
 		name   string
@@ -57,7 +57,7 @@ func TestConductorValidationRejectsMissingForbiddenInvalidAndUnitValues(t *testi
 }
 
 func TestNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	values := []ResourceAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	a, err := NewResource(catalog, conductoresScope, "M", values)
 	if err != nil {
@@ -74,7 +74,7 @@ func TestNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
 }
 
 func TestExactDuplicateDetectionAndTechnicalDifferences(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	makeResource := func(color, insulation, gauge string) Resource {
 		r, err := NewResource(catalog, conductoresScope, "M", []ResourceAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", gauge), OptionValue("insulation", insulation), OptionValue("color", color), OptionValue("voltage", "600 V")})
 		if err != nil {
@@ -95,7 +95,7 @@ func TestExactDuplicateDetectionAndTechnicalDifferences(t *testing.T) {
 }
 
 func TestControlledOptionsRequireOfficialCodes(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	base := []ResourceAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 	for _, test := range []struct {
 		name  string
@@ -122,7 +122,7 @@ func TestControlledOptionsRequireOfficialCodes(t *testing.T) {
 // an unapproved value is rejected — the exact same shape already used
 // above for gauge/insulation/color.
 func TestVoltageBehavesLikeAnyControlledOption(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	base := []ResourceAttributeValue{OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "10 AWG"), OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V")}
 
 	resource, err := NewResource(catalog, conductoresScope, "M", base)
@@ -142,7 +142,7 @@ func TestVoltageBehavesLikeAnyControlledOption(t *testing.T) {
 // TestVoltageOptionsMatchApprovedCatalogValues covers OptionsFor(voltage)
 // exposing exactly the 7 approved values, in catalog order.
 func TestVoltageOptionsMatchApprovedCatalogValues(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	voltage := findResourceAttribute(t, catalog.AttributesFor(conductoresScope), "voltage")
 	want := []string{"300 V", "600 V", "1000 V", "5000 V", "15000 V", "25000 V", "35000 V"}
 	options := catalog.OptionsFor(voltage)

@@ -67,7 +67,7 @@ func (f *fakeResourceUpdater) Update(_ context.Context, resource domain.Resource
 }
 
 // newTestAdapter builds a ResourcesWorkspaceAdapter against the real
-// production catalog (domain.NewResourceCatalog()) — the editor tests
+// production catalog (domain.SeedResourceCatalog()) — the editor tests
 // deliberately exercise the real CONDUCTORES/CANALIZACIONES seed data, not a
 // synthetic fixture, mirroring the original Materiales Maestros editor
 // tests. resources/deleter are left nil: this PR's tests only drive the
@@ -75,7 +75,7 @@ func (f *fakeResourceUpdater) Update(_ context.Context, resource domain.Resource
 // respondToEditor/startEditEditor/startDuplicateEditor), never the full
 // Respond dispatch that would need a real searcher/deleter.
 func newTestAdapter(getter resourceGetter, creator resourceCreator, updater resourceUpdater, classFilter string) *ResourcesWorkspaceAdapter {
-	return NewResourcesWorkspaceAdapter(nil, getter, &fakeResourceDescriber{}, creator, updater, nil, domain.NewResourceCatalog(), classFilter)
+	return NewResourcesWorkspaceAdapter(nil, getter, &fakeResourceDescriber{}, creator, updater, nil, domain.SeedResourceCatalog(), classFilter)
 }
 
 // answerQuestion is a small test helper: it asserts response.Pending is a
@@ -242,7 +242,7 @@ func TestResourceEditorUnfilteredCreateFlowAsksClaseFamiliaTipoAttributesUnit(t 
 		t.Fatalf("Create call count = %d, want 1", creator.callCount)
 	}
 
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	want, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -431,7 +431,7 @@ func TestResourceEditorCancelResetsEditor(t *testing.T) {
 // confirming it calls updater.Update (never creator.Create) with the
 // original Resource.ID preserved and the exact same IdentityKey.
 func TestResourceEditorEditFullHappyPathReproducesSameResource(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -492,7 +492,7 @@ func TestResourceEditorEditFullHappyPathReproducesSameResource(t *testing.T) {
 // sibling), while a color change on a CONDUCTORES/CABLE resource still
 // produces the expected Update with every other attribute unchanged.
 func TestResourceEditorEditChangesOneAttributeAndNarrowsByEditedSiblingOnly(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	cableScope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, cableScope, "M", cableAttributeValues())
 	if err != nil {
@@ -572,7 +572,7 @@ func TestResourceEditorEditChangesOneAttributeAndNarrowsByEditedSiblingOnly(t *t
 // though DESNUDO makes both ModeForbidden/notApplicable — this proves the
 // edit still completes successfully with them silently dropped.
 func TestResourceEditorEditDesnudoDropsNowForbiddenAttributes(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -611,7 +611,7 @@ func TestResourceEditorEditDesnudoDropsNowForbiddenAttributes(t *testing.T) {
 // back to the SAME field picker, and picking "Terminar edición" must reach
 // the confirmation and save via finishEditor.
 func TestResourceEditorEditNaturalUnitEntryRoutesAndSaves(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -654,7 +654,7 @@ func TestResourceEditorEditNaturalUnitEntryRoutesAndSaves(t *testing.T) {
 // confirmation summary mentioning BOTH new values, and a single Update call
 // carrying both changes together.
 func TestResourceEditorEditMultiFieldSavesBothChanges(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -701,7 +701,7 @@ func TestResourceEditorEditMultiFieldSavesBothChanges(t *testing.T) {
 // the final confirmation ("no"): nothing must be persisted and a.editor
 // must reset to nil.
 func TestResourceEditorEditConfirmationDeclineDiscardsChanges(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -738,7 +738,7 @@ func TestResourceEditorEditConfirmationDeclineDiscardsChanges(t *testing.T) {
 // (InputCancel) sent mid loop-edit sequence: the whole edit must abort
 // immediately and nothing must be persisted.
 func TestResourceEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -778,7 +778,7 @@ func TestResourceEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.
 // with nothing changed this must cancel cleanly with a plain message, never
 // a ConfirmationRequest, never call Update/Create.
 func TestResourceEditorEditFinishImmediatelyCancelsCleanly(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -814,7 +814,7 @@ func TestResourceEditorEditFinishImmediatelyCancelsCleanly(t *testing.T) {
 // must never carry the source resource's ID, and must have the changed
 // attribute with every other attribute unchanged.
 func TestResourceEditorDuplicateChangesOneAttributeCreatesNewResource(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -862,7 +862,7 @@ func TestResourceEditorDuplicateChangesOneAttributeCreatesNewResource(t *testing
 // identity as the source, so Create correctly fails with
 // domain.ErrDuplicateResource.
 func TestResourceEditorDuplicateZeroChangesStillProceedsAndDetectsCollision(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 	existing, err := domain.NewResource(catalog, scope, "M", cableAttributeValues())
 	if err != nil {
@@ -920,7 +920,7 @@ func TestResourceEditorDuplicateZeroChangesStillProceedsAndDetectsCollision(t *t
 // finishEditor must surface (with the internal ErrResourceValidation
 // wrapper prefix stripped), not a generic message.
 func TestResourceEditorFinishEditorSurfacesTheSpecificValidationReason(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	scope := domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA"}
 	existing, err := domain.NewResource(catalog, scope, "PZA", tuberiaAttributeValues())
 	if err != nil {

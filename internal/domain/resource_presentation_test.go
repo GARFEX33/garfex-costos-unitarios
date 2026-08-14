@@ -18,7 +18,7 @@ import (
 // an automatic dump of every attribute. Color keeps its catalog-canonical
 // uppercase form ("BLANCO"); no casing/grammar layer is applied.
 func TestDescribeCableComposesInsulationGaugeColor(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	resource, err := NewResource(catalog, conductoresScope, "M", []ResourceAttributeValue{
 		OptionValue("conductor_material", "COBRE"),
 		OptionValue("gauge", "12 AWG"),
@@ -39,7 +39,7 @@ func TestDescribeCableComposesInsulationGaugeColor(t *testing.T) {
 // PresentationFields (tipo, diameter_inch), using the ResourceType's actual
 // catalog Name ("Tubería").
 func TestDescribeTuberiaComposesTipoAndDiameter(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	resource, err := NewResource(catalog, canalizacionesScope, "PZA", []ResourceAttributeValue{
 		OptionValue("tipo", "CONDUIT PARED DELGADA"),
 		OptionValue("diameter_inch", `1/2"`),
@@ -59,7 +59,7 @@ func TestDescribeTuberiaComposesTipoAndDiameter(t *testing.T) {
 // where color/voltage are structurally forbidden and never set) — it is
 // skipped silently, no blank segment.
 func TestDescribeSkipsFieldMissingEntirely(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	resource, err := NewResource(catalog, conductoresScope, "M", []ResourceAttributeValue{
 		OptionValue("conductor_material", "COBRE"),
 		OptionValue("gauge", "12 AWG"),
@@ -79,7 +79,7 @@ func TestDescribeSkipsFieldMissingEntirely(t *testing.T) {
 // Resource fetched from the repository would for a DESNUDO conductor's
 // color) — also skipped silently, no blank segment, no error.
 func TestDescribeSkipsFieldMarkedNotApplicable(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	resource := Resource{
 		ClassCode:   "MATERIAL",
 		FamilyCode:  "CONDUCTORES",
@@ -116,7 +116,7 @@ func TestDescribeWithNoPresentationFieldsReturnsOnlyName(t *testing.T) {
 // TestDescribeUnknownTypeReturnsEmpty covers a Resource whose TypeCode
 // cannot be resolved in the catalog.
 func TestDescribeUnknownTypeReturnsEmpty(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	resource := Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "NOPE", NaturalUnit: "M"}
 	if got := catalog.Describe(resource); got != "" {
 		t.Fatalf("Describe() = %q, want %q", got, "")
@@ -130,7 +130,7 @@ func TestDescribeUnknownTypeReturnsEmpty(t *testing.T) {
 // class+family+type (a row whose TypeCode is either "" (shared) or exactly
 // that entry's TypeCode).
 func TestPresentationFieldsReferenceApplicableResourceAttributes(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	for _, field := range catalog.PresentationFields {
 		found := false
 		for _, resourceType := range catalog.Types {
@@ -162,7 +162,7 @@ func TestPresentationFieldsReferenceApplicableResourceAttributes(t *testing.T) {
 // catalog-self-consistency invariant: no two PresentationFields entries
 // share the same (ClassCode, FamilyCode, TypeCode, AttributeCode) tuple.
 func TestPresentationFieldsNoDuplicateAttributePerType(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	seen := map[string]bool{}
 	for _, field := range catalog.PresentationFields {
 		key := field.ClassCode + "|" + field.FamilyCode + "|" + field.TypeCode + "|" + field.AttributeCode
@@ -177,7 +177,7 @@ func TestPresentationFieldsNoDuplicateAttributePerType(t *testing.T) {
 // catalog-self-consistency invariant: no two PresentationFields entries
 // share the same (ClassCode, FamilyCode, TypeCode, Position) tuple.
 func TestPresentationFieldsNoDuplicatePositionPerType(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	seen := map[string]bool{}
 	for _, field := range catalog.PresentationFields {
 		key := fmt.Sprintf("%s|%s|%s|%d", field.ClassCode, field.FamilyCode, field.TypeCode, field.Position)

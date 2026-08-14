@@ -9,7 +9,7 @@ import "testing"
 // rename — if any of these assertions fail, a Code was accidentally
 // translated instead of the field that should have been.
 func TestKnownResourceCodesAreNeverRenderedOrTranslated(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 
 	t.Run("class codes", func(t *testing.T) {
 		wantCodes := map[string]bool{"MATERIAL": true, "MANO_DE_OBRA": true, "EQUIPO_HERRAMIENTA": true}
@@ -77,7 +77,7 @@ func TestKnownResourceCodesAreNeverRenderedOrTranslated(t *testing.T) {
 // typos during the mechanical Spanish rewrite (3.2): every user-visible
 // Name/Label/Plural in the production catalog must be non-empty.
 func TestEveryRenderedCatalogNameIsNonEmpty(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 
 	for _, class := range catalog.Classes {
 		if class.Name == "" {
@@ -121,11 +121,11 @@ func TestEveryRenderedCatalogNameIsNonEmpty(t *testing.T) {
 // entries to check, so Validate() must still return nil for the real,
 // three-class production catalog.
 func TestSeededCatalogValidatesCleanWithNewClasses(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	if len(catalog.Classes) != 3 {
 		t.Fatalf("expected 3 seeded classes, got %d: %+v", len(catalog.Classes), catalog.Classes)
 	}
 	if err := catalog.Validate(); err != nil {
-		t.Fatalf("expected NewResourceCatalog().Validate() == nil, got %v", err)
+		t.Fatalf("expected SeedResourceCatalog().Validate() == nil, got %v", err)
 	}
 }
