@@ -1,3 +1,0 @@
-DROP TRIGGER product_type_presentation_fields_validate_applicability ON public.product_type_presentation_fields;
-DROP FUNCTION public.validate_presentation_field_applicability();
-DROP TABLE public.product_type_presentation_fields;

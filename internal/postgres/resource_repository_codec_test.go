@@ -15,9 +15,9 @@ func TestEncodeAttributeValuePreservesTypedPayloads(t *testing.T) {
 	boolean := true
 	tests := []struct {
 		name  string
-		value domain.MaterialAttributeValue
+		value domain.ResourceAttributeValue
 		want  valuePayload
-	}{{name: "option", value: domain.OptionValue("color", "NEGRO"), want: valuePayload{state: "SET", option: "NEGRO"}}, {name: "integer", value: domain.MaterialAttributeValue{AttributeCode: "count", Type: domain.ValueTypeInteger, Integer: &integer}, want: valuePayload{state: "SET", integer: &integer}}, {name: "decimal", value: domain.MaterialAttributeValue{AttributeCode: "ratio", Type: domain.ValueTypeDecimal, Decimal: &precise}, want: valuePayload{state: "SET", decimal: &precise}}, {name: "quantity", value: domain.QuantityValue("voltage", "600", "V"), want: valuePayload{state: "SET", quantity: decimal.RequireFromString("600"), quantityUnit: "V"}}, {name: "boolean", value: domain.MaterialAttributeValue{AttributeCode: "enabled", Type: domain.ValueTypeBoolean, Boolean: &boolean}, want: valuePayload{state: "SET", boolean: &boolean}}, {name: "text", value: domain.ControlledTextValue("label", "approved"), want: valuePayload{state: "SET", text: "approved"}}, {name: "not applicable", value: domain.MaterialAttributeValue{AttributeCode: "color", Type: domain.ValueTypeControlledOption, Text: notApplicableState}, want: valuePayload{state: notApplicableState}}}
+	}{{name: "option", value: domain.OptionValue("color", "NEGRO"), want: valuePayload{state: "SET", option: "NEGRO"}}, {name: "integer", value: domain.ResourceAttributeValue{AttributeCode: "count", Type: domain.ValueTypeInteger, Integer: &integer}, want: valuePayload{state: "SET", integer: &integer}}, {name: "decimal", value: domain.ResourceAttributeValue{AttributeCode: "ratio", Type: domain.ValueTypeDecimal, Decimal: &precise}, want: valuePayload{state: "SET", decimal: &precise}}, {name: "quantity", value: domain.QuantityValue("voltage", "600", "V"), want: valuePayload{state: "SET", quantity: decimal.RequireFromString("600"), quantityUnit: "V"}}, {name: "boolean", value: domain.ResourceAttributeValue{AttributeCode: "enabled", Type: domain.ValueTypeBoolean, Boolean: &boolean}, want: valuePayload{state: "SET", boolean: &boolean}}, {name: "text", value: domain.ControlledTextValue("label", "approved"), want: valuePayload{state: "SET", text: "approved"}}, {name: "not applicable", value: domain.ResourceAttributeValue{AttributeCode: "color", Type: domain.ValueTypeControlledOption, Text: notApplicableState}, want: valuePayload{state: notApplicableState}}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := encodeValue(tt.value)
@@ -32,7 +32,7 @@ func TestEncodeAttributeValuePreservesTypedPayloads(t *testing.T) {
 }
 
 func TestEncodeAttributeValueRejectsNotApplicableWithPayload(t *testing.T) {
-	value := domain.MaterialAttributeValue{AttributeCode: "color", Type: domain.ValueTypeControlledOption, OptionCode: "NEGRO", Text: notApplicableState}
+	value := domain.ResourceAttributeValue{AttributeCode: "color", Type: domain.ValueTypeControlledOption, OptionCode: "NEGRO", Text: notApplicableState}
 	if _, err := encodeValue(value); err == nil {
 		t.Fatal("encodeValue() error = nil, want error for NOT_APPLICABLE payload")
 	}
@@ -43,12 +43,12 @@ func TestMapRepositoryError(t *testing.T) {
 		name string
 		code string
 		want error
-	}{{name: "duplicate", code: "23505", want: domain.ErrDuplicateMaterial}, {name: "foreign key", code: "23503", want: domain.ErrMaterialReference}, {name: "check violation", code: "23514", want: domain.ErrMaterialReference}} {
+	}{{name: "duplicate", code: "23505", want: domain.ErrDuplicateResource}, {name: "foreign key", code: "23503", want: domain.ErrResourceReference}, {name: "check violation", code: "23514", want: domain.ErrResourceReference}} {
 		t.Run(tt.name, func(t *testing.T) {
-			constraint := "materials_test"
+			constraint := "resources_test"
 			message := "generic violation"
 			if tt.code == "23505" {
-				constraint = "materiales_family_id_identity_key"
+				constraint = "recursos_class_id_identity_key"
 			}
 			if tt.code == "23514" {
 				message = "SET CONTROLLED_OPTION values require an official option"
