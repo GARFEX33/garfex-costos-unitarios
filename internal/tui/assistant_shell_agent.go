@@ -7,8 +7,8 @@ import "context"
 // LLM or orchestrator yet, so it must never pretend to interpret free text.
 // Specialized capabilities (starting with Materiales Maestros) are reached
 // explicitly via the "/" command palette, which opens their own independent
-// workspace (see enterMaterialsWorkspace in model.go) — this agent never
-// redirects to one based on input content.
+// workspace (see enterWorkspace in model.go) — this agent never redirects to
+// one based on input content.
 type AssistantShellAgent struct{}
 
 // NewAssistantShellAgent returns the Assistant's default production agent.

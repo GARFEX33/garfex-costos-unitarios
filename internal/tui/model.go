@@ -111,28 +111,13 @@ type Model struct {
 	manualReturnInput      string
 	manualReturnOffset     int
 	manualReturnAtBottom   bool
-	// activeCatalog identifies which specialized catalog workspace (if any)
-	// is currently active in place of the Assistant's own chat: "" means the
-	// Assistant itself, "materials" means GARFEX / MATERIALES. It drives the
-	// rendered header and Esc-to-leave behavior.
-	activeCatalog string
 	// assistantSaved snapshots the Assistant's own conversation while a
-	// specialized workspace is active; nil whenever the Assistant is active.
+	// registered workspace is active; nil whenever the Assistant is active.
 	assistantSaved *workspaceState
-	// materialsAgent is the Materiales Maestros workspace's own agent, set
-	// once at construction and never touched again.
-	materialsAgent InteractionAgent
-	// materialsSaved persists the Materiales Maestros workspace's own
-	// conversation across visits: nil until the first entry, then always
-	// non-nil so re-entering resumes where the user left off.
-	materialsSaved *workspaceState
 	// activeWorkspace, workspaces and workspaceOrder are the N-workspace
-	// registry (recursos-maestro design §6), additive alongside
-	// activeCatalog/materialsAgent/materialsSaved above: this PR (7a) only
-	// introduces the shape and enterWorkspace/leaveActiveWorkspace, it does
-	// not yet wire them into the palette-selection/rendering literal sites
-	// (model.go:472/539, view.go:155) — that migration, and the deletion of
-	// the older activeCatalog-based fields/methods above, is PR7b's job.
+	// registry (recursos-maestro design §6): every specialized-workspace
+	// literal site (palette actions, header, Esc-to-leave, palette confirm)
+	// reads this registry instead of a hardcoded catalog name.
 	//
 	// activeWorkspace identifies which registered workspace slot (if any) is
 	// currently active in place of the Assistant's own chat; "" means the
@@ -171,8 +156,8 @@ type WorkspaceDescriptor struct {
 
 // workspaceSlot is one live registry entry: the static descriptor it was
 // built from, plus the conversation state it persists across visits (nil
-// until the first entry, mirroring materialsSaved's "nil means never
-// visited" contract above).
+// until the first entry, then always non-nil so re-entering resumes where
+// the user left off).
 type workspaceSlot struct {
 	descriptor WorkspaceDescriptor
 	agent      InteractionAgent
@@ -261,63 +246,11 @@ func (m *Model) restoreViewportPosition(s workspaceState) {
 	m.viewport.SetYOffset(s.viewportOffset)
 }
 
-// enterMaterialsWorkspace saves the Assistant's current conversation and
-// switches into the independent GARFEX / MATERIALES workspace: a returning
-// visit resumes exactly where it left off, a first visit starts fresh with
-// its own engine bound to materialsAgent.
-func (m *Model) enterMaterialsWorkspace() {
-	saved := m.snapshotWorkspace()
-	m.assistantSaved = &saved
-	if m.materialsSaved != nil {
-		m.applyWorkspace(*m.materialsSaved)
-		m.activeCatalog = "materials"
-		m.refreshViewport()
-		m.restoreViewportPosition(*m.materialsSaved)
-		return
-	}
-	m.engine = NewInteractionEngine(m.materialsAgent)
-	m.history = nil
-	m.input = ""
-	m.interactionMode = interactionModeChat
-	m.pending = nil
-	m.choiceIndex = 0
-	m.choicePrompt = ""
-	m.choiceOptions = nil
-	m.searchQuery = ""
-	m.choiceSelected = nil
-	m.workspacePending = false
-	m.inputFocused = true
-	m.heroActive = false
-	if g, ok := m.materialsAgent.(greeter); ok {
-		m.appendGARFEX(g.Greeting())
-	}
-	m.activeCatalog = "materials"
-	m.refreshViewport()
-}
-
-// leaveActiveCatalog saves the active catalog workspace's own conversation
-// (so re-entering it later resumes where the user left off) and restores
-// the Assistant's conversation exactly as it was before entering. It is a
-// no-op when no catalog workspace is active.
-func (m *Model) leaveActiveCatalog() {
-	if m.activeCatalog == "" {
-		return
-	}
-	saved := m.snapshotWorkspace()
-	m.materialsSaved = &saved
-	restore := *m.assistantSaved
-	m.applyWorkspace(restore)
-	m.assistantSaved = nil
-	m.activeCatalog = ""
-	m.refreshViewport()
-	m.restoreViewportPosition(restore)
-}
-
 // enterWorkspace switches into the registered workspace identified by slug
 // (WorkspaceDescriptor.Slug), saving the Assistant's current conversation
-// first — the registry counterpart of enterMaterialsWorkspace above, sharing
-// the exact same snapshotWorkspace/applyWorkspace/assistantSaved machinery.
-// A returning visit resumes exactly where it left off (slot.saved != nil); a
+// first, using the shared snapshotWorkspace/applyWorkspace/assistantSaved
+// machinery. A returning visit resumes exactly where it left off (slot.saved
+// != nil); a
 // first visit starts fresh with its own engine bound to the slot's Agent. It
 // returns false and leaves every field untouched when slug is not a
 // registered workspace.
@@ -358,9 +291,8 @@ func (m *Model) enterWorkspace(slug string) bool {
 
 // leaveActiveWorkspace saves the active registered workspace's own
 // conversation (so re-entering it later resumes where the user left off) and
-// restores the Assistant's conversation exactly as it was before entering —
-// the registry counterpart of leaveActiveCatalog above. It is a no-op when
-// no registered workspace is active.
+// restores the Assistant's conversation exactly as it was before entering.
+// It is a no-op when no registered workspace is active.
 func (m *Model) leaveActiveWorkspace() {
 	if m.activeWorkspace == "" {
 		return
@@ -399,26 +331,12 @@ func NewWithAgent(handlers Handlers, agent InteractionAgent) Model {
 	return m
 }
 
-// NewWithAgents wires both the Assistant's own agent and the Materiales
-// Maestros workspace's agent. It is used by cmd/garfex/main.go (and tests
-// exercising the Materials-palette-entry flow); every other existing test
-// call site keeps using New/NewWithAgent unmodified, leaving materialsAgent
-// nil (NewInteractionEngine already has a defined nil-agent fallback).
-func NewWithAgents(handlers Handlers, assistant InteractionAgent, materials InteractionAgent) Model {
-	m := NewWithAgent(handlers, assistant)
-	m.materialsAgent = materials
-	return m
-}
-
 // NewWithWorkspaces wires the Assistant's own agent plus every registered
-// workspace descriptor (recursos-maestro design §6) — the eventual
-// replacement for NewWithAgents (kept unmodified alongside this for now; its
-// deletion, and the deletion of activeCatalog/materialsAgent/materialsSaved,
-// is PR7b's job once the literal sites this constructor's registry needs to
-// feed are migrated). Every existing test call site keeps using
-// New/NewWithAgent/NewWithAgents unmodified, leaving workspaces nil
-// (enterWorkspace already has a defined "unknown slug" false-return
-// fallback, mirroring NewInteractionEngine's nil-agent fallback).
+// workspace descriptor (recursos-maestro design §6). Every existing test call
+// site that only needs the Assistant keeps using New/NewWithAgent unmodified,
+// leaving workspaces nil (enterWorkspace already has a defined "unknown slug"
+// false-return fallback, mirroring NewInteractionEngine's nil-agent
+// fallback).
 func NewWithWorkspaces(handlers Handlers, assistant InteractionAgent, descriptors []WorkspaceDescriptor) Model {
 	m := NewWithAgent(handlers, assistant)
 	m.workspaces = make(map[string]*workspaceSlot, len(descriptors))
@@ -496,14 +414,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				switch key {
 				case "esc":
-					// A single Esc from inside a specialized catalog
-					// workspace's plain chat state always returns to the
-					// Assistant, predictably (see leaveActiveCatalog). Esc
-					// still just unfocuses the composer when the Assistant
-					// itself is active; that exact existing behavior is
-					// unchanged here.
-					if m.activeCatalog != "" {
-						m.leaveActiveCatalog()
+					// A single Esc from inside a registered workspace's plain
+					// chat state always returns to the Assistant, predictably
+					// (see leaveActiveWorkspace). Esc still just unfocuses the
+					// composer when the Assistant itself is active; that
+					// exact existing behavior is unchanged here.
+					if m.activeWorkspace != "" {
+						m.leaveActiveWorkspace()
 					} else {
 						m.inputFocused = false
 					}
@@ -598,12 +515,15 @@ func (m *Model) respond(input InteractionInput) {
 }
 
 // activePaletteActions returns the action tree the "/" palette should show:
-// materials-workspace-scoped actions while inside that workspace, the
-// global assistant actions otherwise. Reused everywhere the palette
-// (re)builds its action list so backspacing to an empty query or retyping
-// "/" never silently falls back to the wrong tree.
+// workspace-scoped actions while inside ANY registered workspace (slug
+// generic — the check is registry membership, not a hardcoded catalog name;
+// PR8's commands.go rewrite is what makes materialsActions itself
+// per-descriptor instead of a single shared var), the global assistant
+// actions otherwise. Reused everywhere the palette (re)builds its action
+// list so backspacing to an empty query or retyping "/" never silently
+// falls back to the wrong tree.
 func (m Model) activePaletteActions() []assistantAction {
-	if m.activeCatalog == "materials" {
+	if m.activeWorkspace != "" {
 		return materialsActions
 	}
 	return assistantActions
@@ -670,21 +590,22 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 				m.refreshViewport()
 				return
 			}
-			if action.id == "materials" {
-				// Close the palette itself, mode included, before
-				// snapshotting the Assistant's state: enterMaterialsWorkspace
-				// snapshots whatever is on Model right now, so leaving
-				// interactionMode at interactionModePalette here would wrongly
-				// persist "palette open" into the Assistant's restored state.
-				// A confirmed selection also consumes the typed "/query",
-				// unlike Esc-cancel (handled above) which intentionally
-				// preserves it as a resumable draft.
+			if _, ok := m.workspaces[action.id]; ok {
+				// A workspace's palette action id IS its registry slug
+				// (WorkspaceDescriptor.Slug). Close the palette itself, mode
+				// included, before snapshotting the Assistant's state:
+				// enterWorkspace snapshots whatever is on Model right now, so
+				// leaving interactionMode at interactionModePalette here
+				// would wrongly persist "palette open" into the Assistant's
+				// restored state. A confirmed selection also consumes the
+				// typed "/query", unlike Esc-cancel (handled above) which
+				// intentionally preserves it as a resumable draft.
 				m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
 				m.paletteTitle = ""
 				m.paletteFlat = false
 				m.input = ""
 				m.interactionMode = interactionModeChat
-				m.enterMaterialsWorkspace()
+				m.enterWorkspace(action.id)
 			} else {
 				m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
 				m.paletteTitle = ""

@@ -10,10 +10,10 @@ import (
 )
 
 // fakeCatalogAgent is a minimal, dependency-free InteractionAgent standing in
-// for a specialized catalog workspace's real agent (e.g.
-// MaterialsWorkspaceAdapter) in tests that only need to prove *reachability*
-// and *state separation*, not the real Materials search behavior — that is
-// already covered by materials_workspace_adapter_test.go and left untouched.
+// for a specialized workspace's real agent (e.g. ResourcesWorkspaceAdapter)
+// in tests that only need to prove *reachability* and *state separation*,
+// not the real search behavior — that is already covered by
+// resources_workspace_adapter_test.go and left untouched.
 type fakeCatalogAgent struct {
 	calls int
 	last  InteractionInput
@@ -35,9 +35,21 @@ func openMaterialsWorkspace(t *testing.T, m Model) Model {
 	return m
 }
 
+// materialsWorkspaceDescriptors builds the single-entry registry these tests
+// need: a "materials" slot whose Slug matches the "materials" palette action
+// id already declared in commands.go's assistantActions (unchanged by this
+// PR — PR8's job), so openMaterialsWorkspace's real palette-selection flow
+// reaches this slot through the registry mechanism (registry-based literal
+// sites, design §6), not the retired activeCatalog/materialsAgent mechanism.
+func materialsWorkspaceDescriptors(agent InteractionAgent) []WorkspaceDescriptor {
+	return []WorkspaceDescriptor{
+		{Slug: "materials", Title: "GARFEX / MATERIALES", CreateLabel: "Crear material", Agent: agent},
+	}
+}
+
 func TestAssistantMainChatNeverReachesMaterialsAgent(t *testing.T) {
 	materials := &fakeCatalogAgent{}
-	m := NewWithAgents(Handlers{}, NewAssistantShellAgent(), materials)
+	m := NewWithWorkspaces(Handlers{}, NewAssistantShellAgent(), materialsWorkspaceDescriptors(materials))
 	m, _ = update(t, m, enter())
 	for _, char := range "cable THW-LS 10 AWG" {
 		m, _ = update(t, m, key(char))
@@ -46,8 +58,8 @@ func TestAssistantMainChatNeverReachesMaterialsAgent(t *testing.T) {
 	if materials.calls != 0 {
 		t.Fatalf("materials agent calls = %d, want 0 (the Assistant's main chat must never reach a specialized workspace agent)", materials.calls)
 	}
-	if m.activeCatalog != "" {
-		t.Fatalf("activeCatalog = %q, want \"\" (typing in the Assistant must not enter a catalog workspace)", m.activeCatalog)
+	if m.activeWorkspace != "" {
+		t.Fatalf("activeWorkspace = %q, want \"\" (typing in the Assistant must not enter a registered workspace)", m.activeWorkspace)
 	}
 	if !historyContains(m.history, assistantShellPlaceholder) {
 		t.Fatalf("history = %#v, want the Assistant's own honest placeholder response instead", m.history)
@@ -56,10 +68,10 @@ func TestAssistantMainChatNeverReachesMaterialsAgent(t *testing.T) {
 
 func TestSelectingMaterialesMaestrosOpensIndependentWorkspace(t *testing.T) {
 	materials := &fakeCatalogAgent{}
-	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(materials))
 	m = openMaterialsWorkspace(t, m)
-	if m.activeCatalog != "materials" {
-		t.Fatalf("activeCatalog = %q, want %q", m.activeCatalog, "materials")
+	if m.activeWorkspace != "materials" {
+		t.Fatalf("activeWorkspace = %q, want %q", m.activeWorkspace, "materials")
 	}
 	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "GARFEX / MATERIALES") {
 		t.Fatalf("view = %q, want the GARFEX / MATERIALES header", plain)
@@ -75,11 +87,11 @@ func TestSelectingMaterialesMaestrosOpensIndependentWorkspace(t *testing.T) {
 }
 
 func TestEscFromMaterialsWorkspaceReturnsToAssistant(t *testing.T) {
-	m := NewWithAgents(Handlers{}, NewFakeAgent(), &fakeCatalogAgent{})
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(&fakeCatalogAgent{}))
 	m = openMaterialsWorkspace(t, m)
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if m.activeCatalog != "" {
-		t.Fatalf("activeCatalog = %q, want \"\" after a single Esc from Materiales' plain chat state", m.activeCatalog)
+	if m.activeWorkspace != "" {
+		t.Fatalf("activeWorkspace = %q, want \"\" after a single Esc from Materiales' plain chat state", m.activeWorkspace)
 	}
 	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "GARFEX / ASSISTANT") {
 		t.Fatalf("view = %q, want the GARFEX / ASSISTANT header restored", plain)
@@ -88,7 +100,7 @@ func TestEscFromMaterialsWorkspaceReturnsToAssistant(t *testing.T) {
 
 func TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits(t *testing.T) {
 	materials := &fakeCatalogAgent{}
-	m := NewWithAgents(Handlers{}, NewFakeAgent(), materials)
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), materialsWorkspaceDescriptors(materials))
 
 	// Put text/history into the Assistant's own chat.
 	m, _ = update(t, m, enter())
@@ -122,8 +134,8 @@ func TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits(t *testin
 	// Leave via Esc: the Assistant's original history/draft must be intact
 	// and unmixed with Materials' own history.
 	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if m.activeCatalog != "" {
-		t.Fatalf("activeCatalog = %q, want \"\" after leaving", m.activeCatalog)
+	if m.activeWorkspace != "" {
+		t.Fatalf("activeWorkspace = %q, want \"\" after leaving", m.activeWorkspace)
 	}
 	if len(m.history) != assistantHistoryLen || !historyContains(m.history, "assistant draft") {
 		t.Fatalf("assistant history after leaving = %#v, want the original assistant history restored unchanged", m.history)
@@ -133,14 +145,68 @@ func TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits(t *testin
 	}
 
 	// Re-enter Materiales via the palette again: its own history from the
-	// first visit must still be there, proving materialsSaved persistence
-	// across visits (not reset).
+	// first visit must still be there, proving workspaceSlot.saved
+	// persistence across visits (not reset).
 	m = openMaterialsWorkspace(t, m)
-	if m.activeCatalog != "materials" {
-		t.Fatalf("activeCatalog = %q, want %q on re-entry", m.activeCatalog, "materials")
+	if m.activeWorkspace != "materials" {
+		t.Fatalf("activeWorkspace = %q, want %q on re-entry", m.activeWorkspace, "materials")
 	}
 	if len(m.history) != materialsHistoryLen || !historyContains(m.history, "materials draft") {
 		t.Fatalf("materials history on re-entry = %#v, want the persisted history from the first visit", m.history)
+	}
+}
+
+// TestActivePaletteActionsIsWorkspaceSlugGeneric is a PR7b RED test for the
+// activePaletteActions literal site (design §6 table row 1): it proves the
+// "/" palette switches away from the global assistantActions tree for ANY
+// registered workspace slug, not a hardcoded "materials" string comparison —
+// the mechanism this PR introduces, ahead of PR8's per-descriptor
+// workspaceActions builder (which will replace the shared materialsActions
+// var with a real per-slug tree). A workspace named "beta" (never mentioned
+// anywhere in commands.go) reaching this behavior is the proof the check is
+// no longer literal-bound.
+func TestActivePaletteActionsIsWorkspaceSlugGeneric(t *testing.T) {
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), []WorkspaceDescriptor{
+		{Slug: "beta", Title: "GARFEX / BETA", CreateLabel: "Crear beta", Agent: &fakeCatalogAgent{}},
+	})
+	if ok := m.enterWorkspace("beta"); !ok {
+		t.Fatal("enterWorkspace(\"beta\") = false, want true")
+	}
+	actions := m.activePaletteActions()
+	for _, action := range actions {
+		if action.label == "Materiales Maestros" {
+			t.Fatalf("activePaletteActions() while inside \"beta\" = %#v, must not show the global assistantActions tree", actions)
+		}
+	}
+}
+
+// TestEscFromRegisteredWorkspacePlainChatReturnsToAssistant is a PR7b RED
+// test for the Esc-handling literal site (design §6 table row 4): entering a
+// workspace directly through the registry (m.enterWorkspace, NOT the
+// palette's still-materials-only confirm path) and pressing a plain Esc from
+// its chat state must return to the Assistant — proving the check reads
+// activeWorkspace/leaveActiveWorkspace, not the retired
+// activeCatalog/leaveActiveCatalog pair, which this scenario would never
+// touch (activeCatalog stays "" the whole time since enterWorkspace, not
+// enterMaterialsWorkspace, was used to enter).
+func TestEscFromRegisteredWorkspacePlainChatReturnsToAssistant(t *testing.T) {
+	m := NewWithWorkspaces(Handlers{}, NewFakeAgent(), []WorkspaceDescriptor{
+		{Slug: "beta", Title: "GARFEX / BETA", CreateLabel: "Crear beta", Agent: &fakeCatalogAgent{}},
+	})
+	// heroActive suppresses the header line regardless of workspace (see
+	// renderWorkspace); disable it first, exactly as the real "/" keypress
+	// path already does before enterWorkspace ever snapshots the Assistant's
+	// state, so this test isolates the Esc-handling literal site only.
+	m.heroActive = false
+	if ok := m.enterWorkspace("beta"); !ok {
+		t.Fatal("enterWorkspace(\"beta\") = false, want true")
+	}
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.activeWorkspace != "" {
+		t.Fatalf("activeWorkspace = %q, want \"\" after Esc from a registered workspace's plain chat state", m.activeWorkspace)
+	}
+	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "GARFEX / ASSISTANT") {
+		t.Fatalf("view = %q, want the GARFEX / ASSISTANT header restored", plain)
 	}
 }
 
