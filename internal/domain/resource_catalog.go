@@ -2,18 +2,25 @@ package domain
 
 // NewResourceCatalog returns the approved generic catalog data (was
 // NewMaterialsCatalog) — same CONDUCTORES/CANALIZACIONES seed content as
-// before the recursos-maestro rename, now class-scoped under ClassCode
-// "MATERIAL" per design §2/D1 (class-scoping lands ahead of the Spanish
-// Name pass and the new class seeds, both PR3's job). The engine below
-// contains no family-specific branch; each family is data.
+// before the recursos-maestro rename, class-scoped under ClassCode
+// "MATERIAL" per design §2/D1, with every user-visible Name/Plural rendered
+// in Spanish (proposal §Approach step 1, D2) and MANO_DE_OBRA /
+// EQUIPO_HERRAMIENTA seeded as active classes with no family/type/attribute
+// data yet (proposal In Scope #1/#2 — the platform must be right, real
+// content is a later, out-of-scope phase). Only .Name/.Label/.Plural
+// changed in this pass; every .Code is byte-for-byte unchanged — see
+// TestKnownResourceCodesAreNeverRenderedOrTranslated (resource_codes_test.go).
+// The engine below contains no family-specific branch; each family is data.
 func NewResourceCatalog() ResourceCatalog {
 	definitions := catalogDefinitions()
 	return ResourceCatalog{
 		Classes: []ResourceClass{
 			{Code: "MATERIAL", Name: "Material", Plural: "Materiales", Slug: "materiales", Order: 1, Active: true},
+			{Code: "MANO_DE_OBRA", Name: "Mano de obra", Plural: "Mano de obra", Slug: "mano-de-obra", Order: 2, Active: true},
+			{Code: "EQUIPO_HERRAMIENTA", Name: "Equipo/Herramienta", Plural: "Equipo/Herramienta", Slug: "equipo-herramienta", Order: 3, Active: true},
 		},
 		Families: []ResourceFamily{
-			{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductors"},
+			{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductores"},
 			{ClassCode: "MATERIAL", Code: "CANALIZACIONES", Name: "Canalizaciones"},
 		},
 		Types: []ResourceType{
@@ -62,14 +69,14 @@ func definition(code string) AttributeDefinition {
 
 func catalogDefinitions() []AttributeDefinition {
 	return []AttributeDefinition{
-		{Code: "conductor_material", Name: "Conductor material", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
-		{Code: "gauge", Name: "Gauge", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
-		{Code: "insulation", Name: "Insulation", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
+		{Code: "conductor_material", Name: "Material del conductor", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
+		{Code: "gauge", Name: "Calibre", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
+		{Code: "insulation", Name: "Aislamiento", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "color", Name: "Color", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
-		{Code: "voltage", Name: "Voltage", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
+		{Code: "voltage", Name: "Voltaje", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
 		{Code: "tipo", Name: "Tipo", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
-		{Code: "diameter_inch", Name: "Diameter inch", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
-		{Code: "diameter_mm", Name: "Diameter mm", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: false},
+		{Code: "diameter_inch", Name: "Diámetro pulgadas", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: true},
+		{Code: "diameter_mm", Name: "Diámetro mm", ValueType: ValueTypeControlledOption, DefaultIdentityParticipates: false},
 	}
 }
 
