@@ -27,14 +27,14 @@ func clampLimitOffset(limit, offset int) (int, int) {
 	return limit, offset
 }
 
-// Search returns active materials matching criteria. It reuses Get per
-// matched row to reconstruct the full domain.Material with attributes,
+// Search returns active resources matching criteria. It reuses Get per
+// matched row to reconstruct the full domain.Resource with attributes,
 // instead of duplicating attribute-reconstruction SQL. This N+1-style
 // pattern is an intentional v1 simplicity choice, bounded by Limit
 // (default defaultSearchLimit).
-func (r *materialRepository) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Material, error) {
+func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
 	if r.pool == nil {
-		return nil, errors.New("material repository: nil pool")
+		return nil, errors.New("resource repository: nil pool")
 	}
 	limit, offset := clampLimitOffset(criteria.Limit, criteria.Offset)
 
@@ -45,13 +45,16 @@ func (r *materialRepository) Search(ctx context.Context, criteria domain.SearchC
 		return fmt.Sprintf("$%d", len(args))
 	}
 
-	conditions = append(conditions, "m.active")
+	conditions = append(conditions, "r.active")
+	if criteria.ClassCode != "" {
+		conditions = append(conditions, "cl.code = "+arg(criteria.ClassCode))
+	}
 	if criteria.FamilyCode != "" {
 		conditions = append(conditions, "f.code = "+arg(criteria.FamilyCode))
 	}
 	if criteria.Text != "" {
 		placeholder := arg("%" + criteria.Text + "%")
-		conditions = append(conditions, fmt.Sprintf("(m.identity_key ILIKE %s OR f.code ILIKE %s OR f.name ILIKE %s)", placeholder, placeholder, placeholder))
+		conditions = append(conditions, fmt.Sprintf("(r.identity_key ILIKE %s OR f.code ILIKE %s OR f.name ILIKE %s)", placeholder, placeholder, placeholder))
 	}
 	for _, filter := range criteria.Filters {
 		payload, err := encodeValue(filter)
@@ -77,41 +80,42 @@ func (r *materialRepository) Search(ctx context.Context, criteria domain.SearchC
 			return nil, fmt.Errorf("unsupported filter value type %q", filter.Type)
 		}
 		conditions = append(conditions, fmt.Sprintf(
-			`EXISTS (SELECT 1 FROM public.material_attribute_values v
-			 JOIN public.family_attributes fa ON fa.id = v.family_attribute_id
-			 JOIN public.attribute_definitions d ON d.id = fa.definition_id
+			`EXISTS (SELECT 1 FROM public.resource_attribute_values v
+			 JOIN public.resource_attributes ra ON ra.id = v.resource_attribute_id
+			 JOIN public.attribute_definitions d ON d.id = ra.definition_id
 			 LEFT JOIN public.unit_definitions qu ON qu.id = v.quantity_unit_id
-			 WHERE v.material_id = m.id AND d.code = %s AND v.value_state = 'SET' AND %s)`,
+			 WHERE v.resource_id = r.id AND d.code = %s AND v.value_state = 'SET' AND %s)`,
 			codeArg, valueCond))
 	}
 
 	limitArg, offsetArg := arg(limit), arg(offset)
 	query := fmt.Sprintf(`
-		SELECT f.code, u.code, m.identity_key
-		FROM public.materiales m
-		JOIN public.material_families f ON f.id = m.family_id
-		JOIN public.unit_definitions u ON u.id = m.natural_unit_id
+		SELECT cl.code, u.code, r.identity_key
+		FROM public.recursos r
+		JOIN public.resource_classes cl ON cl.id = r.class_id
+		JOIN public.resource_families f ON f.id = r.family_id
+		JOIN public.unit_definitions u ON u.id = r.natural_unit_id
 		WHERE %s
-		ORDER BY m.identity_key ASC
+		ORDER BY r.identity_key ASC
 		LIMIT %s OFFSET %s`, strings.Join(conditions, " AND "), limitArg, offsetArg)
 
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("search materials: %w", err)
+		return nil, fmt.Errorf("search resources: %w", err)
 	}
 	defer rows.Close()
 
-	var results []domain.Material
+	var results []domain.Resource
 	for rows.Next() {
-		var familyCode, naturalUnit, identityKey string
-		if err := rows.Scan(&familyCode, &naturalUnit, &identityKey); err != nil {
+		var classCode, naturalUnit, identityKey string
+		if err := rows.Scan(&classCode, &naturalUnit, &identityKey); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
-		material, err := r.Get(ctx, familyCode, identityKey)
+		resource, err := r.Get(ctx, classCode, identityKey)
 		if err != nil {
-			return nil, fmt.Errorf("load matched material %s/%s: %w", familyCode, identityKey, err)
+			return nil, fmt.Errorf("load matched resource %s/%s: %w", classCode, identityKey, err)
 		}
-		results = append(results, material)
+		results = append(results, resource)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read search results: %w", err)

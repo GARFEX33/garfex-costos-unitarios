@@ -22,10 +22,10 @@ type valuePayload struct {
 	text         string
 }
 
-func encodeValue(value domain.MaterialAttributeValue) (valuePayload, error) {
+func encodeValue(value domain.ResourceAttributeValue) (valuePayload, error) {
 	if value.Text == notApplicableState {
 		if hasPayload(value) {
-			return valuePayload{}, fmt.Errorf("%w: NOT_APPLICABLE attribute %q has a payload", domain.ErrMaterialReference, value.AttributeCode)
+			return valuePayload{}, fmt.Errorf("%w: NOT_APPLICABLE attribute %q has a payload", domain.ErrResourceReference, value.AttributeCode)
 		}
 		return valuePayload{state: notApplicableState}, nil
 	}
@@ -52,7 +52,7 @@ func encodeValue(value domain.MaterialAttributeValue) (valuePayload, error) {
 	return p, nil
 }
 
-func hasPayload(value domain.MaterialAttributeValue) bool {
+func hasPayload(value domain.ResourceAttributeValue) bool {
 	return value.OptionCode != "" || value.Integer != nil || value.Decimal != nil || value.Quantity != nil || value.Boolean != nil || (value.Type == domain.ValueTypeControlledText && value.Text != notApplicableState)
 }
 
@@ -70,11 +70,11 @@ func nullableString(value string) any {
 	return value
 }
 
-func decodeValue(code string, valueType domain.AttributeValueType, state string, option *string, integer *int64, dec, quantity, unit *string, boolean *bool, text *string) (domain.MaterialAttributeValue, error) {
+func decodeValue(code string, valueType domain.AttributeValueType, state string, option *string, integer *int64, dec, quantity, unit *string, boolean *bool, text *string) (domain.ResourceAttributeValue, error) {
 	if state == notApplicableState {
-		return domain.MaterialAttributeValue{AttributeCode: code, Type: valueType, Text: notApplicableState}, nil
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: valueType, Text: notApplicableState}, nil
 	}
-	value := domain.MaterialAttributeValue{AttributeCode: code, Type: valueType}
+	value := domain.ResourceAttributeValue{AttributeCode: code, Type: valueType}
 	switch valueType {
 	case domain.ValueTypeControlledOption:
 		value.OptionCode = dereference(option)
@@ -114,9 +114,9 @@ func mapRepositoryError(err error) error {
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "23505":
-			return fmt.Errorf("%w: %s", domain.ErrDuplicateMaterial, pgErr.ConstraintName)
+			return fmt.Errorf("%w: %s", domain.ErrDuplicateResource, pgErr.ConstraintName)
 		case "23503", "23514":
-			return fmt.Errorf("%w: %s", domain.ErrMaterialReference, pgErr.Message)
+			return fmt.Errorf("%w: %s", domain.ErrResourceReference, pgErr.Message)
 		}
 	}
 	return err
