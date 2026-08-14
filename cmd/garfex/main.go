@@ -7,7 +7,7 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/GARFEX33/garfex-costos-unitarios/internal/app/materiales"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/app/recursos"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/config"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/postgres"
@@ -23,17 +23,24 @@ type program interface {
 
 type programLauncher func(tea.Model) program
 
-// repositoryBuilder builds the real Materials repository from a DSN. It is
+// repositoryBuilder builds the real Resources repository from a DSN. It is
 // injected so run() is unit-testable without a real Postgres instance.
-type repositoryBuilder func(ctx context.Context, dsn string) (domain.MaterialRepository, error)
+type repositoryBuilder func(ctx context.Context, dsn string) (domain.ResourceRepository, error)
+
+// catalogBuilder builds the domain.ResourceCatalog run() validates and wires
+// through the rest of the composition. It is injected (defaulting to
+// domain.NewResourceCatalog in main()) so a deliberately-broken catalog can
+// drive the Validate() fail-fast path in a test without touching the real
+// seed data (recursos-maestro design §8's structural guard).
+type catalogBuilder func() domain.ResourceCatalog
 
 func main() {
-	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram, newPostgresRepository))
+	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram, newPostgresRepository, domain.NewResourceCatalog))
 }
 
 func newProgram(model tea.Model) program { return tea.NewProgram(model) }
 
-func newPostgresRepository(ctx context.Context, dsn string) (domain.MaterialRepository, error) {
+func newPostgresRepository(ctx context.Context, dsn string) (domain.ResourceRepository, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect to database: %w", err)
@@ -42,14 +49,22 @@ func newPostgresRepository(ctx context.Context, dsn string) (domain.MaterialRepo
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	return postgres.NewMaterialRepository(pool), nil
+	return postgres.NewResourceRepository(pool), nil
 }
 
-func run(args []string, look func(string) (string, bool), out, errw io.Writer, launch programLauncher, buildRepository repositoryBuilder) int {
+func run(args []string, look func(string) (string, bool), out, errw io.Writer, launch programLauncher, buildRepository repositoryBuilder, buildCatalog catalogBuilder) int {
 	if len(args) == 0 {
 		cfg, err := config.Load(look)
 		if err != nil {
 			fmt.Fprintf(errw, "configuration is invalid: %v\n", err)
+			return 1
+		}
+		// Fail fast: a structurally malformed catalog (e.g. a future data-only
+		// class addition with a dangling reference) must never reach the TUI
+		// silently misbehaving — it aborts the launch instead (design §8).
+		catalog := buildCatalog()
+		if err := catalog.Validate(); err != nil {
+			fmt.Fprintf(errw, "catálogo de recursos inválido: %v\n", err)
 			return 1
 		}
 		repo, err := buildRepository(context.Background(), cfg.DSN())
@@ -57,14 +72,17 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 			fmt.Fprintf(errw, "database unavailable: %v\n", err)
 			return 1
 		}
-		service := materiales.NewService(repo, domain.NewMaterialsCatalog())
-		materialsAdapter := tui.NewMaterialsWorkspaceAdapter(service, service, service, service, service, service)
+		service := recursos.NewService(repo, catalog)
+		agentFor := func(classCode string) tui.InteractionAgent {
+			return tui.NewResourcesWorkspaceAdapter(service, service, service, service, service, service, catalog, classCode)
+		}
 		assistantAgent := tui.NewAssistantShellAgent()
-		if _, err := launch(tui.NewWithAgents(tui.Handlers{
+		model := tui.NewWithCatalog(tui.Handlers{
 			Version: tui.Version(version),
 			Config:  tui.Config(look),
 			Status:  tui.Status(),
-		}, assistantAgent, materialsAdapter)).Run(); err != nil {
+		}, assistantAgent, catalog, agentFor)
+		if _, err := launch(model).Run(); err != nil {
 			fmt.Fprintf(errw, "TUI launcher failed: %v\n", err)
 			return 1
 		}

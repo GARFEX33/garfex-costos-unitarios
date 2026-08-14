@@ -361,16 +361,15 @@ WHERE i.code = 'diameter_inch' AND m.code = 'diameter_mm';
 
 INSERT INTO public.resource_type_presentation_fields (type_id, attribute_definition_id, position)
 SELECT t.id, d.id, x.position
-FROM public.resource_types t
-JOIN public.attribute_definitions d ON d.code = x.attribute_code
-CROSS JOIN (VALUES
+FROM (VALUES
     ('CABLE', 'insulation', 1),
     ('CABLE', 'gauge', 2),
     ('CABLE', 'color', 3),
     ('TUBERIA', 'tipo', 1),
     ('TUBERIA', 'diameter_inch', 2)
 ) AS x(type_code, attribute_code, position)
-WHERE t.code = x.type_code;
+JOIN public.resource_types t ON t.code = x.type_code
+JOIN public.attribute_definitions d ON d.code = x.attribute_code;
 
 GRANT USAGE ON SCHEMA public TO garfex_app;
 REVOKE ALL ON
