@@ -35,7 +35,7 @@ type Item struct {
 	Handler Handler
 	Quit    bool
 }
-type Handlers struct{ Version, Config, Status, Materials Handler }
+type Handlers struct{ Version, Config, Status, Resources Handler }
 type resultMsg struct {
 	text string
 	err  error
@@ -126,6 +126,57 @@ type Model struct {
 	// conversation across visits: nil until the first entry, then always
 	// non-nil so re-entering resumes where the user left off.
 	materialsSaved *workspaceState
+	// activeWorkspace, workspaces and workspaceOrder are the N-workspace
+	// registry (recursos-maestro design §6), additive alongside
+	// activeCatalog/materialsAgent/materialsSaved above: this PR (7a) only
+	// introduces the shape and enterWorkspace/leaveActiveWorkspace, it does
+	// not yet wire them into the palette-selection/rendering literal sites
+	// (model.go:472/539, view.go:155) — that migration, and the deletion of
+	// the older activeCatalog-based fields/methods above, is PR7b's job.
+	//
+	// activeWorkspace identifies which registered workspace slot (if any) is
+	// currently active in place of the Assistant's own chat; "" means the
+	// Assistant itself.
+	activeWorkspace string
+	// workspaces is the registry itself, keyed by WorkspaceDescriptor.Slug.
+	workspaces map[string]*workspaceSlot
+	// workspaceOrder lists every registered slug in registration order, for
+	// callers that need deterministic iteration (e.g. a future palette
+	// builder) — the map above is not itself ordered.
+	workspaceOrder []string
+}
+
+// WorkspaceDescriptor is one registered specialized workspace's static shape
+// (recursos-maestro design §6): the unfiltered "/recursos" workspace, or one
+// class-scoped workspace like "/materiales" (ClassCode == "MATERIAL").
+// BuildWorkspaceDescriptors (a later PR) is what turns a
+// domain.ResourceCatalog into a []WorkspaceDescriptor.
+type WorkspaceDescriptor struct {
+	// Slug is both the registry key (Model.workspaces) and the palette
+	// action id that enters this workspace (e.g. "recursos", "materiales").
+	Slug string
+	// Title is the workspace header rendered in place of "GARFEX / ASSISTANT"
+	// while this workspace is active (e.g. "GARFEX / MATERIALES").
+	Title string
+	// CreateLabel is this workspace's scoped "/" palette leaf label (e.g.
+	// "Crear material").
+	CreateLabel string
+	// ClassCode narrows this workspace to one domain.ResourceClass.Code; ""
+	// means the unfiltered "/recursos" workspace.
+	ClassCode string
+	// Agent is this workspace's own InteractionAgent, set once at
+	// construction (see NewWithWorkspaces) and never touched again.
+	Agent InteractionAgent
+}
+
+// workspaceSlot is one live registry entry: the static descriptor it was
+// built from, plus the conversation state it persists across visits (nil
+// until the first entry, mirroring materialsSaved's "nil means never
+// visited" contract above).
+type workspaceSlot struct {
+	descriptor WorkspaceDescriptor
+	agent      InteractionAgent
+	saved      *workspaceState
 }
 
 // workspaceState snapshots everything that makes up one independent
@@ -262,6 +313,69 @@ func (m *Model) leaveActiveCatalog() {
 	m.restoreViewportPosition(restore)
 }
 
+// enterWorkspace switches into the registered workspace identified by slug
+// (WorkspaceDescriptor.Slug), saving the Assistant's current conversation
+// first — the registry counterpart of enterMaterialsWorkspace above, sharing
+// the exact same snapshotWorkspace/applyWorkspace/assistantSaved machinery.
+// A returning visit resumes exactly where it left off (slot.saved != nil); a
+// first visit starts fresh with its own engine bound to the slot's Agent. It
+// returns false and leaves every field untouched when slug is not a
+// registered workspace.
+func (m *Model) enterWorkspace(slug string) bool {
+	slot, ok := m.workspaces[slug]
+	if !ok {
+		return false
+	}
+	saved := m.snapshotWorkspace()
+	m.assistantSaved = &saved
+	if slot.saved != nil {
+		m.applyWorkspace(*slot.saved)
+		m.activeWorkspace = slug
+		m.refreshViewport()
+		m.restoreViewportPosition(*slot.saved)
+		return true
+	}
+	m.engine = NewInteractionEngine(slot.agent)
+	m.history = nil
+	m.input = ""
+	m.interactionMode = interactionModeChat
+	m.pending = nil
+	m.choiceIndex = 0
+	m.choicePrompt = ""
+	m.choiceOptions = nil
+	m.searchQuery = ""
+	m.choiceSelected = nil
+	m.workspacePending = false
+	m.inputFocused = true
+	m.heroActive = false
+	if g, ok := slot.agent.(greeter); ok {
+		m.appendGARFEX(g.Greeting())
+	}
+	m.activeWorkspace = slug
+	m.refreshViewport()
+	return true
+}
+
+// leaveActiveWorkspace saves the active registered workspace's own
+// conversation (so re-entering it later resumes where the user left off) and
+// restores the Assistant's conversation exactly as it was before entering —
+// the registry counterpart of leaveActiveCatalog above. It is a no-op when
+// no registered workspace is active.
+func (m *Model) leaveActiveWorkspace() {
+	if m.activeWorkspace == "" {
+		return
+	}
+	slot := m.workspaces[m.activeWorkspace]
+	saved := m.snapshotWorkspace()
+	slot.saved = &saved
+	restore := *m.assistantSaved
+	m.applyWorkspace(restore)
+	m.assistantSaved = nil
+	m.activeWorkspace = ""
+	m.refreshViewport()
+	m.restoreViewportPosition(restore)
+}
+
 func New(handlers Handlers) Model {
 	m := Model{items: []Item{{Label: "Materiales Maestros"}, {Label: "Versión", Handler: handlers.Version}, {Label: "Verificar configuración", Handler: handlers.Config}, {Label: "Estado de GARFEX", Handler: handlers.Status}, {Label: "Salir", Quit: true}}, engine: NewInteractionEngine(NewFakeAgent()), screen: screenWorkspace, viewport: viewport.New(viewport.WithWidth(defaultWidth-4), viewport.WithHeight(workspaceViewportHeight(defaultHeight, interactionModeChat))), inputFocused: true, promptHistoryCursor: -1, heroActive: true}
 	m.viewport.SoftWrap, m.viewport.FillHeight = true, true
@@ -293,6 +407,26 @@ func NewWithAgent(handlers Handlers, agent InteractionAgent) Model {
 func NewWithAgents(handlers Handlers, assistant InteractionAgent, materials InteractionAgent) Model {
 	m := NewWithAgent(handlers, assistant)
 	m.materialsAgent = materials
+	return m
+}
+
+// NewWithWorkspaces wires the Assistant's own agent plus every registered
+// workspace descriptor (recursos-maestro design §6) — the eventual
+// replacement for NewWithAgents (kept unmodified alongside this for now; its
+// deletion, and the deletion of activeCatalog/materialsAgent/materialsSaved,
+// is PR7b's job once the literal sites this constructor's registry needs to
+// feed are migrated). Every existing test call site keeps using
+// New/NewWithAgent/NewWithAgents unmodified, leaving workspaces nil
+// (enterWorkspace already has a defined "unknown slug" false-return
+// fallback, mirroring NewInteractionEngine's nil-agent fallback).
+func NewWithWorkspaces(handlers Handlers, assistant InteractionAgent, descriptors []WorkspaceDescriptor) Model {
+	m := NewWithAgent(handlers, assistant)
+	m.workspaces = make(map[string]*workspaceSlot, len(descriptors))
+	m.workspaceOrder = make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		m.workspaces[descriptor.Slug] = &workspaceSlot{descriptor: descriptor, agent: descriptor.Agent}
+		m.workspaceOrder = append(m.workspaceOrder, descriptor.Slug)
+	}
 	return m
 }
 

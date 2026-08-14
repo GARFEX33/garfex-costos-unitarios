@@ -30,11 +30,14 @@ func (f *fakeResourceGetter) Get(_ context.Context, classCode, identityKey strin
 	return f.resource, nil
 }
 
-// fakeResourceDescriber is a no-op resourceDescriber — the editor tests only
-// exercise the technical field list, never the catalog-controlled title.
-type fakeResourceDescriber struct{}
+// fakeResourceDescriber is a resourceDescriber returning a fixed text — the
+// editor tests leave it zero-valued (a no-op, since they only exercise the
+// technical field list, never the catalog-controlled title), while the
+// workspace dispatch tests in resources_workspace_adapter_test.go set text
+// to prove the detail title composes FamilyCode + " — " + Describe(...).
+type fakeResourceDescriber struct{ text string }
 
-func (f *fakeResourceDescriber) Describe(domain.Resource) string { return "" }
+func (f *fakeResourceDescriber) Describe(domain.Resource) string { return f.text }
 
 // fakeResourceCreator is the fake resourceCreator used by every editor test.
 type fakeResourceCreator struct {

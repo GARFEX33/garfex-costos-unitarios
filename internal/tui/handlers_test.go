@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -10,11 +9,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestMaterialsHandler(t *testing.T) {
+func TestResourcesHandler(t *testing.T) {
 	value := int64(25)
-	material := domain.Material{
-		FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|25",
-		Attributes: []domain.MaterialAttributeValue{
+	resource := domain.Resource{
+		ClassCode: "MATERIAL", FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "MATERIAL|CEMENT|kg|25",
+		Attributes: []domain.ResourceAttributeValue{
 			{AttributeCode: "strength", Type: domain.ValueTypeInteger, Integer: &value},
 			domain.DecimalValue("density", "2.40"),
 			domain.QuantityValue("length", "3.5", "m"),
@@ -23,20 +22,24 @@ func TestMaterialsHandler(t *testing.T) {
 	repositoryError := errors.New("database unavailable")
 	cases := []struct {
 		name     string
-		material domain.Material
+		resource domain.Resource
 		err      error
 		want     string
 		wantErr  string
 	}{
-		{name: "renders technical detail", material: material, want: "Material\nUnidad natural: kg\nAtributos técnicos:\n- density: 2.4\n- length: 3.5 m\n- strength: 25\n"},
-		{name: "returns repository error", err: repositoryError, wantErr: "materiales: database unavailable"},
-		{name: "returns not found", err: domain.ErrMaterialNotFound, wantErr: "materiales: material not found"},
+		{name: "renders technical detail", resource: resource, want: "Recurso\nUnidad natural: kg\nAtributos técnicos:\n- density: 2.4\n- length: 3.5 m\n- strength: 25\n"},
+		{name: "returns repository error", err: repositoryError, wantErr: "recursos: database unavailable"},
+		{name: "returns not found", err: domain.ErrResourceNotFound, wantErr: "recursos: resource not found"},
 	}
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			getter := &fakeMaterialGetter{material: tt.material, err: tt.err}
-			msg := Materials(getter, "CEMENT", "CEMENT|kg|25")()().(resultMsg)
+			// fakeResourceGetter is defined in resource_editor_test.go
+			// (same package) — reused directly rather than duplicated here,
+			// per this project's established convention of not duplicating
+			// test fakes across files in the same package.
+			getter := &fakeResourceGetter{resource: tt.resource, err: tt.err}
+			msg := Resources(getter, "MATERIAL", "MATERIAL|CEMENT|kg|25")()().(resultMsg)
 			if tt.wantErr != "" {
 				if msg.err == nil || msg.err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", msg.err, tt.wantErr)
@@ -46,7 +49,7 @@ func TestMaterialsHandler(t *testing.T) {
 			if msg.err != nil || msg.text != tt.want {
 				t.Fatalf("result = (%q, %v), want (%q, nil)", msg.text, msg.err, tt.want)
 			}
-			for _, forbidden := range []string{"UnitCost", "Unit cost", "100.00", "Supplier", "Provider", "precio", "CEMENT|kg|25", "Identity key", "familyCode", "identityKey"} {
+			for _, forbidden := range []string{"UnitCost", "Unit cost", "100.00", "Supplier", "Provider", "precio", "MATERIAL|CEMENT|kg|25", "Identity key", "classCode", "identityKey"} {
 				if strings.Contains(msg.text, forbidden) {
 					t.Fatalf("commercial field %q leaked in %q", forbidden, msg.text)
 				}
@@ -55,36 +58,14 @@ func TestMaterialsHandler(t *testing.T) {
 	}
 }
 
-// fakeMaterialGetter is the shared materialGetter test double for this
-// package (tui) — reused as-is by materials_workspace_adapter_test.go
-// rather than duplicated, per this project's established convention of not
-// duplicating test fakes across files in the same package. It records the
-// most recent call's arguments and a call count so callers can assert on
-// exactly what/how many times Get was invoked.
-type fakeMaterialGetter struct {
-	material domain.Material
-	err      error
-
-	callCount      int
-	gotFamilyCode  string
-	gotIdentityKey string
-}
-
-func (f *fakeMaterialGetter) Get(_ context.Context, familyCode, identityKey string) (domain.Material, error) {
-	f.callCount++
-	f.gotFamilyCode = familyCode
-	f.gotIdentityKey = identityKey
-	return f.material, f.err
-}
-
-func TestRenderMaterialDetailIsDeterministic(t *testing.T) {
-	material := domain.Material{FamilyCode: "F", NaturalUnit: "u", IdentityKey: "k", Attributes: []domain.MaterialAttributeValue{
+func TestRenderResourceDetailIsDeterministic(t *testing.T) {
+	resource := domain.Resource{FamilyCode: "F", NaturalUnit: "u", IdentityKey: "k", Attributes: []domain.ResourceAttributeValue{
 		domain.DecimalValue("z", "1.0"), domain.OptionValue("a", "X"),
 	}}
-	if first, second := renderMaterialDetail(material), renderMaterialDetail(material); first != second {
+	if first, second := renderResourceDetail(resource), renderResourceDetail(resource); first != second {
 		t.Fatalf("render differs: %q != %q", first, second)
 	}
-	if !strings.Contains(renderMaterialDetail(material), decimal.RequireFromString("1.0").String()) {
+	if !strings.Contains(renderResourceDetail(resource), decimal.RequireFromString("1.0").String()) {
 		t.Fatal("decimal attribute missing")
 	}
 }

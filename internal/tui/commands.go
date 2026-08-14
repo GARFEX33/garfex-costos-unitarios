@@ -16,8 +16,14 @@ var assistantActions = []assistantAction{
 // materialsActions is the "/" palette's action tree while inside the
 // Materiales Maestros workspace (see Model.activePaletteActions) — scoped
 // to that workspace instead of the global assistantActions tree.
+//
+// createResourceActionID (not a "materials"-named constant) is intentional:
+// it is the SAME action ID ResourcesWorkspaceAdapter.Respond checks for
+// every workspace slot (see resources_workspace_dispatch.go and design §7's
+// workspaceActions), not a Materials-specific one — this tree is simply the
+// one slot wired up so far pending PR8's full commands.go rewrite.
 var materialsActions = []assistantAction{
-	{id: createMaterialActionID, label: "Crear material"},
+	{id: createResourceActionID, label: "Crear material"},
 }
 
 func flattenLeafActions(actions []assistantAction) []assistantAction {
