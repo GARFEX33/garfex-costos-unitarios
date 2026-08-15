@@ -12,6 +12,11 @@ import (
 // id (recursos-maestro design §7).
 const recursosSlug = "recursos"
 
+// configuracionSlug is both the "Configuración" workspace's registry slug
+// (WorkspaceDescriptor.Slug) and its top-level Assistant palette leaf id
+// (design D13/§8).
+const configuracionSlug = "configuracion"
+
 type assistantAction struct {
 	id       string
 	label    string
@@ -125,21 +130,97 @@ func buildWorkspaceDescriptors(classes []domain.ResourceClass, agentFor func(cla
 	return descriptors
 }
 
-// buildAssistantActions composes the class-derived "Recursos" subtree with
-// the untouched out-of-scope static stubs, class subtree first (design §7).
-func buildAssistantActions(classes []domain.ResourceClass) []assistantAction {
-	actions := make([]assistantAction, 0, 1+len(staticAssistantActions))
+// buildAssistantActions composes the class-derived "Recursos" subtree, the
+// "Configuración" workspace leaf (design §8 — gains this node after the
+// Recursos subtree, before the static stubs), and the untouched
+// out-of-scope static stubs.
+func buildAssistantActions(classes []domain.ResourceClass, kinds []domain.CatalogKind) []assistantAction {
+	actions := make([]assistantAction, 0, 2+len(staticAssistantActions))
 	actions = append(actions, buildResourceActions(classes))
+	actions = append(actions, assistantAction{id: configuracionSlug, label: "Configuración"})
 	actions = append(actions, staticAssistantActions...)
 	return actions
 }
 
+// catalogKindLeaf builds one kind's palette leaf action — id routes through
+// catalogOpenActionID (CatalogAdminAdapter.Respond strips the prefix and
+// looks the kind up in its own registry), label is always the registry's own
+// Spanish Plural, never a raw CatalogKindCode (spec: Spanish-Only
+// Catalog-Admin UI).
+func catalogKindLeaf(byCode map[domain.CatalogKindCode]domain.CatalogKind, code domain.CatalogKindCode) assistantAction {
+	return assistantAction{id: catalogOpenActionID(code), label: byCode[code].Plural}
+}
+
+// buildCatalogAdminActions builds the "Configuración" workspace's own scoped
+// "/" palette tree: "Catálogo de recursos" grouping every registered
+// CatalogKind into the original business-ask's proposed shape (Estructura /
+// Características / Unidades / Configuración de tipos) — group/leaf labels
+// come from the registry's own Spanish Singular/Plural wherever a real kind
+// backs the leaf, never hardcoded per-kind strings, so this stays
+// descriptor-driven (spec: Generic Descriptor-Driven Engine; "Unregistered
+// tables are not exposed" — every leaf here resolves through a real
+// registered CatalogKindCode; "Identidad" is the sole exception, a
+// TUI-layer-only routing sentinel over the same KindAttributeBinding flow as
+// "Aplicabilidad", since Identidad is not its own CatalogKind, design
+// reconciliation). KindUnitPolicy and KindOptionRelation are not named in
+// the business ask's literal proposed shape but are still registered,
+// administrable CatalogKinds (design §3) — placed under their closest
+// natural grouping (Unidades, Características) so every registered kind
+// stays reachable, per the registry-driven completeness the spec's
+// "Generic Descriptor-Driven Engine" requirement implies.
+func buildCatalogAdminActions(kinds []domain.CatalogKind) assistantAction {
+	byCode := make(map[domain.CatalogKindCode]domain.CatalogKind, len(kinds))
+	for _, k := range kinds {
+		byCode[k.Code] = k
+	}
+	estructura := assistantAction{id: "catalog-menu-estructura", label: "Estructura", children: []assistantAction{
+		catalogKindLeaf(byCode, domain.KindClass),
+		catalogKindLeaf(byCode, domain.KindFamily),
+		catalogKindLeaf(byCode, domain.KindType),
+	}}
+	caracteristicas := assistantAction{id: "catalog-menu-caracteristicas", label: "Características", children: []assistantAction{
+		catalogKindLeaf(byCode, domain.KindAttributeDefinition),
+		catalogKindLeaf(byCode, domain.KindOptionSet),
+		catalogKindLeaf(byCode, domain.KindOption),
+		catalogKindLeaf(byCode, domain.KindOptionRelation),
+	}}
+	unidades := assistantAction{id: "catalog-menu-unidades", label: "Unidades", children: []assistantAction{
+		catalogKindLeaf(byCode, domain.KindUnit),
+		catalogKindLeaf(byCode, domain.KindUnitPolicy),
+	}}
+	tipoConfig := assistantAction{id: "catalog-menu-config-tipos", label: "Configuración de tipos", children: []assistantAction{
+		catalogKindLeaf(byCode, domain.KindAttributeBinding),
+		{id: catalogIdentityActionID, label: "Identidad"},
+		catalogKindLeaf(byCode, domain.KindPresentationField),
+	}}
+	return assistantAction{id: "catalog-menu-root", label: "Catálogo de recursos", children: []assistantAction{
+		estructura, caracteristicas, unidades, tipoConfig,
+	}}
+}
+
+// buildCatalogAdminWorkspace builds the "Configuración" WorkspaceDescriptor
+// (design D13) — agent is the production CatalogAdminAdapter (or a fake in
+// tests), PaletteActions is the tree buildCatalogAdminActions builds.
+func buildCatalogAdminWorkspace(kinds []domain.CatalogKind, agent InteractionAgent) WorkspaceDescriptor {
+	return WorkspaceDescriptor{
+		Slug:           configuracionSlug,
+		Title:          "GARFEX / CONFIGURACIÓN",
+		Agent:          agent,
+		PaletteActions: []assistantAction{buildCatalogAdminActions(kinds)},
+	}
+}
+
 // workspaceActions is the "/" palette's action tree while inside ANY
-// registered resources workspace slot (see Model.activePaletteActions) —
-// replaces the old single shared materialsActions var with a per-descriptor
-// tree, so each workspace's own CreateLabel (not just Materiales') renders
-// correctly.
+// registered workspace slot (see Model.activePaletteActions). Design D13:
+// PaletteActions == nil falls back to today's single "Crear ..." leaf built
+// from CreateLabel (every pre-existing WorkspaceDescriptor construction site
+// — Resources' per-class descriptors included — leaves PaletteActions unset
+// and is completely unaffected); a non-nil PaletteActions (the
+// "Configuración" workspace) is returned as-is instead.
 func workspaceActions(d WorkspaceDescriptor) []assistantAction {
+	if d.PaletteActions != nil {
+		return d.PaletteActions
+	}
 	return []assistantAction{{id: createResourceActionID, label: d.CreateLabel}}
 }
 

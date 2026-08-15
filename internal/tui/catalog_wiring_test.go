@@ -41,7 +41,7 @@ func TestBuildWorkspaceDescriptorsWrapsCatalogActiveClasses(t *testing.T) {
 func TestNewWithCatalogGlobalPaletteIsCatalogDriven(t *testing.T) {
 	catalog := domain.SeedResourceCatalog()
 	agentFor := func(string) InteractionAgent { return &fakeCatalogAgent{} }
-	m := NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor)
+	m := NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor, domain.NewCatalogRegistry(), &fakeCatalogAgent{})
 
 	m, _ = update(t, m, key('/'))
 	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
@@ -75,7 +75,7 @@ func TestNewWithCatalogClassWorkspaceReachesItsOwnAgent(t *testing.T) {
 		}
 		return &fakeCatalogAgent{}
 	}
-	m := NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor)
+	m := NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor, domain.NewCatalogRegistry(), &fakeCatalogAgent{})
 
 	if ok := m.enterWorkspace("materiales"); !ok {
 		t.Fatal(`enterWorkspace("materiales") = false, want true`)
@@ -96,9 +96,28 @@ func TestNewWithCatalogUnfilteredWorkspaceUsesEmptyClassCode(t *testing.T) {
 		gotClassCodes = append(gotClassCodes, classCode)
 		return &fakeCatalogAgent{}
 	}
-	NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor)
+	NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor, domain.NewCatalogRegistry(), &fakeCatalogAgent{})
 
 	if len(gotClassCodes) == 0 || gotClassCodes[0] != "" {
 		t.Fatalf("agentFor call order = %v, want the unfiltered entry (empty classCode) called first", gotClassCodes)
+	}
+}
+
+// TestNewWithCatalogRegistersConfigurationWorkspace proves the
+// "Configuración" workspace (design D13) is reachable through the registry
+// exactly like any other registered workspace, wired to the given
+// catalogAgent.
+func TestNewWithCatalogRegistersConfigurationWorkspace(t *testing.T) {
+	catalog := domain.SeedResourceCatalog()
+	agentFor := func(string) InteractionAgent { return &fakeCatalogAgent{} }
+	catalogAgent := &fakeCatalogAgent{}
+	m := NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor, domain.NewCatalogRegistry(), catalogAgent)
+
+	if ok := m.enterWorkspace(configuracionSlug); !ok {
+		t.Fatal(`enterWorkspace("configuracion") = false, want true`)
+	}
+	m = submitText(t, m, "hola")
+	if catalogAgent.calls != 1 {
+		t.Fatalf("catalog admin agent calls = %d, want 1 (the real Configuración agent must have been reached)", catalogAgent.calls)
 	}
 }

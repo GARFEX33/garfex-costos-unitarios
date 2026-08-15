@@ -91,17 +91,110 @@ func TestBuildWorkspaceDescriptorsUnfilteredEntryFirst(t *testing.T) {
 // their existing order.
 func TestBuildAssistantActionsOrdersStaticStubsAfterClassSubtree(t *testing.T) {
 	classes := sortedActiveClasses(commandsTestClasses())
-	actions := buildAssistantActions(classes)
-	if len(actions) != 1+len(staticAssistantActions) {
-		t.Fatalf("len(actions) = %d, want %d (one Recursos subtree plus the static stubs)", len(actions), 1+len(staticAssistantActions))
+	actions := buildAssistantActions(classes, domain.NewCatalogRegistry().Kinds())
+	if len(actions) != 2+len(staticAssistantActions) {
+		t.Fatalf("len(actions) = %d, want %d (one Recursos subtree, one Configuración leaf, plus the static stubs)", len(actions), 2+len(staticAssistantActions))
 	}
 	if actions[0].id != recursosSlug {
 		t.Fatalf("actions[0].id = %q, want %q (the class-derived subtree must come first)", actions[0].id, recursosSlug)
 	}
+	if actions[1].id != configuracionSlug || actions[1].label != "Configuración" {
+		t.Fatalf("actions[1] = %#v, want the Configuración leaf right after the Recursos subtree", actions[1])
+	}
 	for i, stub := range staticAssistantActions {
-		if actions[i+1].id != stub.id || actions[i+1].label != stub.label {
-			t.Fatalf("actions[%d] = %#v, want the static stub %#v (order preserved, after the class subtree)", i+1, actions[i+1], stub)
+		if actions[i+2].id != stub.id || actions[i+2].label != stub.label {
+			t.Fatalf("actions[%d] = %#v, want the static stub %#v (order preserved, after Recursos+Configuración)", i+2, actions[i+2], stub)
 		}
+	}
+}
+
+// TestBuildCatalogAdminActionsGroupsKindsIntoBusinessAskSubtree proves
+// buildCatalogAdminActions groups every registered CatalogKind into the
+// original business-ask's proposed menu shape: one root "Catálogo de
+// recursos" node with Estructura/Características/Unidades/"Configuración de
+// tipos" children, each carrying the registry's own Spanish labels.
+func TestBuildCatalogAdminActionsGroupsKindsIntoBusinessAskSubtree(t *testing.T) {
+	root := buildCatalogAdminActions(domain.NewCatalogRegistry().Kinds())
+	if root.label != "Catálogo de recursos" {
+		t.Fatalf("root.label = %q, want %q", root.label, "Catálogo de recursos")
+	}
+	if len(root.children) != 4 {
+		t.Fatalf("len(root.children) = %d, want 4 (Estructura/Características/Unidades/Configuración de tipos)", len(root.children))
+	}
+	wantLabels := []string{"Estructura", "Características", "Unidades", "Configuración de tipos"}
+	for i, want := range wantLabels {
+		if root.children[i].label != want {
+			t.Fatalf("root.children[%d].label = %q, want %q", i, root.children[i].label, want)
+		}
+	}
+	estructura := root.children[0]
+	wantEstructura := []string{"Clases", "Familias", "Tipos"}
+	if len(estructura.children) != len(wantEstructura) {
+		t.Fatalf("len(estructura.children) = %d, want %d", len(estructura.children), len(wantEstructura))
+	}
+	for i, want := range wantEstructura {
+		if estructura.children[i].label != want {
+			t.Fatalf("estructura.children[%d].label = %q, want %q", i, estructura.children[i].label, want)
+		}
+	}
+}
+
+// TestBuildCatalogAdminActionsUnregisteredKindNotExposed proves only
+// registered CatalogKinds are exposed — passing an empty kind slice produces
+// leaf labels that are all empty strings, never a fabricated CatalogKindCode
+// leaking through as a label (spec: "Unregistered tables are not exposed").
+func TestBuildCatalogAdminActionsUnregisteredKindNotExposed(t *testing.T) {
+	root := buildCatalogAdminActions(nil)
+	for _, group := range root.children {
+		for _, leaf := range group.children {
+			if leaf.id == catalogIdentityActionID {
+				continue // the one TUI-only routing sentinel, not backed by a CatalogKind
+			}
+			if leaf.label != "" {
+				t.Fatalf("leaf %q label = %q, want empty when no CatalogKind is registered for it", leaf.id, leaf.label)
+			}
+		}
+	}
+}
+
+// TestBuildCatalogAdminWorkspaceSetsSlugAndPaletteActions proves
+// buildCatalogAdminWorkspace wires the "Configuración" slug, the given
+// agent, and a single-root PaletteActions tree.
+func TestBuildCatalogAdminWorkspaceSetsSlugAndPaletteActions(t *testing.T) {
+	agent := &fakeCatalogAgent{}
+	descriptor := buildCatalogAdminWorkspace(domain.NewCatalogRegistry().Kinds(), agent)
+	if descriptor.Slug != configuracionSlug {
+		t.Fatalf("descriptor.Slug = %q, want %q", descriptor.Slug, configuracionSlug)
+	}
+	if descriptor.Agent != InteractionAgent(agent) {
+		t.Fatalf("descriptor.Agent = %#v, want the given agent", descriptor.Agent)
+	}
+	if len(descriptor.PaletteActions) != 1 || descriptor.PaletteActions[0].label != "Catálogo de recursos" {
+		t.Fatalf("descriptor.PaletteActions = %#v, want the single Catálogo de recursos root", descriptor.PaletteActions)
+	}
+}
+
+// TestWorkspaceActionsFallsBackWhenPaletteActionsNil is the explicit
+// nil-safety proof task 6.2 calls for: every EXISTING WorkspaceDescriptor
+// construction site (which never sets PaletteActions) must still work
+// exactly as before.
+func TestWorkspaceActionsFallsBackWhenPaletteActionsNil(t *testing.T) {
+	descriptor := WorkspaceDescriptor{Slug: "alphas", CreateLabel: "Crear alpha"}
+	actions := workspaceActions(descriptor)
+	if len(actions) != 1 || actions[0].label != "Crear alpha" || actions[0].id != createResourceActionID {
+		t.Fatalf("workspaceActions(%#v) = %#v, want the original single Crear leaf when PaletteActions is nil", descriptor, actions)
+	}
+}
+
+// TestWorkspaceActionsUsesPaletteActionsWhenSet proves a non-nil
+// PaletteActions (the "Configuración" workspace) is returned as-is instead
+// of the CreateLabel fallback.
+func TestWorkspaceActionsUsesPaletteActionsWhenSet(t *testing.T) {
+	custom := []assistantAction{{id: "custom-root", label: "Personalizado"}}
+	descriptor := WorkspaceDescriptor{Slug: configuracionSlug, PaletteActions: custom}
+	actions := workspaceActions(descriptor)
+	if len(actions) != 1 || actions[0].id != "custom-root" {
+		t.Fatalf("workspaceActions(%#v) = %#v, want the custom PaletteActions returned unchanged", descriptor, actions)
 	}
 }
 

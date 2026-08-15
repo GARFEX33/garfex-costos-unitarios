@@ -8,6 +8,7 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/app/catalogo"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/app/recursos"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/config"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
@@ -91,11 +92,14 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 			return tui.NewResourcesWorkspaceAdapter(service, service, service, service, service, service, catalog, classCode)
 		}
 		assistantAgent := tui.NewAssistantShellAgent()
+		registry := domain.NewCatalogRegistry()
+		catalogService := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), registry, catalog)
+		catalogAgent := tui.NewCatalogAdminAdapter(catalogService, catalogService, catalogService, catalogService, registry)
 		model := tui.NewWithCatalog(tui.Handlers{
 			Version: tui.Version(version),
 			Config:  tui.Config(look),
 			Status:  tui.Status(),
-		}, assistantAgent, catalog, agentFor)
+		}, assistantAgent, catalog, agentFor, registry, catalogAgent)
 		if _, err := launch(model).Run(); err != nil {
 			fmt.Fprintf(errw, "TUI launcher failed: %v\n", err)
 			return 1
