@@ -106,6 +106,21 @@ type catalogEditorState struct {
 	// id is the repository-assigned CatalogRecord.ID — 0 for create, the
 	// existing record's ID for edit (finishEditor's Update target).
 	id int64
+	// parent is the PAUSED outer flow this editor was nested from (task 8.1:
+	// reuse-before-create's nested create sub-flow) — nil for every top-level
+	// flow (startCreateFlow/startEditFlow). A single linked pointer supports
+	// any nesting depth for free, though the business ask only ever needs one
+	// level (a reference field mid-flow needing a brand-new record). While a
+	// nested editor is active, a.editor points at IT, not at parent — parent
+	// itself is never touched until the nested flow ends (success or
+	// cancel/error), at which point it becomes a.editor again.
+	parent *catalogEditorState
+	// resumeField is the PARENT's own FieldDescriptor.Name that triggered
+	// this nested flow (an AllowCreate FieldRef field that received a custom
+	// answer) — finishEditor uses it to bind the newly-created record's Ref
+	// into parent.values once the nested flow completes. Empty when parent is
+	// nil.
+	resumeField string
 }
 
 // startCreateFlow begins the "crear" flow for kind — the generic entry point
@@ -166,6 +181,27 @@ func (a *CatalogAdminAdapter) startEditFlow(ctx context.Context, kind domain.Cat
 // dispatch instead of this method silently swallowing unrelated input.
 func (a *CatalogAdminAdapter) respondToEditor(ctx context.Context, input InteractionInput) (InteractionResponse, bool) {
 	if input.Kind == InputCancel {
+		// Cancelling a NESTED create sub-flow (task 8.1) returns to the
+		// PARENT flow's SAME field/question — never aborts the whole parent
+		// flow, mirroring this codebase's general "cancel is local, not
+		// catastrophic" philosophy (e.g. answerDeleteConfirmation's "no"
+		// returning to the same detail view). Only a top-level flow's own
+		// cancel actually clears a.editor entirely.
+		if a.editor.parent != nil {
+			parent := a.editor.parent
+			a.editor = parent
+			response, err := a.fieldQuestion(ctx, parent.def.Fields[parent.step])
+			if err != nil {
+				a.editor = nil
+				return InteractionResponse{Messages: []InteractionMessage{
+					ErrorMessage{Text: "No pude continuar con la operación. Probá de nuevo en un momento."},
+				}}, true
+			}
+			response.Messages = append([]InteractionMessage{
+				TextMessage{Text: "Se canceló la creación del registro nuevo. Segui con la pregunta anterior."},
+			}, response.Messages...)
+			return response, true
+		}
 		a.editor = nil
 		return InteractionResponse{Messages: []InteractionMessage{
 			TextMessage{Text: "Se canceló la operación."},
@@ -244,18 +280,19 @@ func (a *CatalogAdminAdapter) fieldQuestion(ctx context.Context, field domain.Fi
 		}}, nil
 
 	case domain.FieldText, domain.FieldCode, domain.FieldInt, domain.FieldStringList:
-		// Free text: no Options list for CREATE (the user must type a
+		// Free text: no Options list by default (the user must type a
 		// value, mirroring resource_editor.go's QUANTITY question
 		// precedent — SelectionSingle+AllowCustom with zero Options, since
 		// SelectionFreeText is not wired into model.go's rendering/input
-		// handling anywhere in this codebase). EDIT seeds one "keep
-		// current" Option so pressing Enter without typing reuses the
-		// existing value.
+		// handling anywhere in this codebase). Whenever a current value
+		// already exists — EDIT's stored value, OR task 8.1's nested
+		// create sub-flow pre-seeding a hint field from typed text — one
+		// "keep it" Option is seeded so pressing Enter without typing
+		// reuses/accepts it (currentFreeTextOption, keyed off hasCurrent,
+		// not off mode).
 		var options []Option
-		if state.mode == catalogEditorEdit {
-			if label, value, ok := currentFreeTextOption(field, current, hasCurrent); ok {
-				options = []Option{{ID: "actual", Label: label, Value: value}}
-			}
+		if label, value, ok := currentFreeTextOption(state.mode, field, current, hasCurrent); ok {
+			options = []Option{{ID: "actual", Label: label, Value: value}}
 		}
 		return InteractionResponse{Pending: QuestionRequest{
 			ID: catalogEditorKey, Key: catalogEditorKey, Prompt: prompt, Question: prompt,
@@ -274,6 +311,25 @@ func (a *CatalogAdminAdapter) fieldQuestion(ctx context.Context, field domain.Fi
 func (a *CatalogAdminAdapter) answerField(ctx context.Context, value string) (InteractionResponse, error) {
 	state := a.editor
 	field := state.def.Fields[state.step]
+	// Reuse-before-create (task 8.1/D12): an AllowCreate FieldRef's answer
+	// that does NOT match any existing field.RefKind record already offered
+	// (refOptionMatches) is a genuinely custom answer — pause THIS flow and
+	// start a nested create sub-flow for field.RefKind instead of silently
+	// building a Ref to a code that doesn't exist (which would only surface
+	// as a late ErrCatalogReference from the repository). An answer matching
+	// an existing option (by Código or by its own display Label) falls
+	// through to the normal buildCatalogFieldValue path below, unchanged.
+	if field.Kind == domain.FieldRef && field.AllowCreate {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			matched, err := a.refOptionMatches(ctx, field, state.values, trimmed)
+			if err != nil {
+				return InteractionResponse{}, err
+			}
+			if !matched {
+				return a.startNestedCreateFlow(ctx, field, trimmed)
+			}
+		}
+	}
 	newValue, ok, errMsg := buildCatalogFieldValue(field, value)
 	if !ok {
 		response, err := a.fieldQuestion(ctx, field)
@@ -348,9 +404,21 @@ func (a *CatalogAdminAdapter) fieldIsLocked(ctx context.Context, field domain.Fi
 
 // finishEditor builds the CatalogRecord from the fully-answered editor state
 // and persists it: Create for catalogEditorCreate, Update (targeting the
-// original record's ID) for catalogEditorEdit. It always resets a.editor to
-// nil — success and failure both end the flow, mirroring resource_editor.go
+// original record's ID) for catalogEditorEdit.
+//
+// A TOP-LEVEL flow (state.parent == nil) always resets a.editor to nil —
+// success and failure both end the flow, mirroring resource_editor.go
 // finishEditor's own "simplicity over cleverness" precedent.
+//
+// A NESTED flow (task 8.1: state.parent != nil, started by
+// startNestedCreateFlow) never ends the whole session on its own: success
+// binds the newly-created record's Código into the parent's triggering field,
+// advances the parent PAST that field, and resumes it via nextFieldQuestion
+// (the parent's NEXT question, not a restart); an error resumes the parent at
+// the SAME field/question it was on before nesting, showing the error inline
+// — mirroring cancellation's own "return to the parent, don't abort it"
+// behavior (respondToEditor) rather than losing the whole in-progress parent
+// flow over a nested duplicate-código or validation error.
 func (a *CatalogAdminAdapter) finishEditor(ctx context.Context) (InteractionResponse, error) {
 	state := a.editor
 	rec := domain.CatalogRecord{Kind: state.def.Code, Values: state.values, Active: true}
@@ -364,14 +432,39 @@ func (a *CatalogAdminAdapter) finishEditor(ctx context.Context) (InteractionResp
 		result, err = a.creator.Create(ctx, state.def.Code, rec)
 	}
 
-	mode, def, original, newValues := state.mode, state.def, state.original, state.values
-	a.editor = nil
+	mode, def, original, newValues, parent, resumeField := state.mode, state.def, state.original, state.values, state.parent, state.resumeField
+
 	if err != nil {
-		return InteractionResponse{Messages: []InteractionMessage{
-			ErrorMessage{Text: catalogErrorMessage(mode, def, err)},
-		}}, nil
+		errMessage := ErrorMessage{Text: catalogErrorMessage(mode, def, err)}
+		if parent != nil {
+			a.editor = parent
+			response, ferr := a.fieldQuestion(ctx, parent.def.Fields[parent.step])
+			if ferr != nil {
+				a.editor = nil
+				return InteractionResponse{}, ferr
+			}
+			response.Messages = append([]InteractionMessage{errMessage}, response.Messages...)
+			return response, nil
+		}
+		a.editor = nil
+		return InteractionResponse{Messages: []InteractionMessage{errMessage}}, nil
 	}
 
+	if parent != nil {
+		parent.values[resumeField] = domain.CatalogValue{Ref: domain.CatalogRef{Kind: def.Code, Code: result.Values["code"].Text}}
+		parent.step++
+		a.editor = parent
+		response, nerr := a.nextFieldQuestion(ctx)
+		if nerr != nil {
+			a.editor = nil
+			return InteractionResponse{}, nerr
+		}
+		note := fmt.Sprintf("%s creado: %s.", def.Singular, catalogRecordDisplayLabel(def, result))
+		response.Messages = append([]InteractionMessage{TextMessage{Text: note}}, response.Messages...)
+		return response, nil
+	}
+
+	a.editor = nil
 	verb := "creado"
 	if mode == catalogEditorEdit {
 		verb = "actualizado"
@@ -445,6 +538,87 @@ func (a *CatalogAdminAdapter) refOptions(ctx context.Context, field domain.Field
 		options = append(options, Option{ID: code, Label: catalogRecordDisplayLabel(refDef, rec), Value: code})
 	}
 	return options, nil
+}
+
+// startNestedCreateFlow begins a nested "crear" sub-flow for field.RefKind
+// (task 8.1: reuse-before-create) after answerField determined typed does not
+// match any existing field.RefKind record. The in-progress (parent) editor is
+// preserved via catalogEditorState.parent rather than discarded — finishEditor
+// resumes it once the nested record is created (or respondToEditor resumes it
+// on cancel). typed pre-seeds the nested kind's own display field (name/
+// label/symbol — catalogHintFieldName's priority, the same one
+// catalogRecordDisplayLabel reads when rendering an existing record) as a
+// SUGGESTED default: the nested flow still ASKS that field (fieldQuestion's
+// free-text branch offers it as a selectable "Usar: <typed>" option,
+// generalizing the edit flow's own "Mantener actual" precedent to CREATE via
+// hasCurrent rather than mode) — nothing about what the operator typed is
+// silently committed without their confirmation.
+func (a *CatalogAdminAdapter) startNestedCreateFlow(ctx context.Context, field domain.FieldDescriptor, typed string) (InteractionResponse, error) {
+	refDef, ok := a.registry.Kind(field.RefKind)
+	if !ok {
+		return InteractionResponse{Messages: []InteractionMessage{
+			ErrorMessage{Text: "No reconozco ese tipo de catálogo."},
+		}}, nil
+	}
+	parent := a.editor
+	nested := &catalogEditorState{
+		mode: catalogEditorCreate, def: refDef, values: map[string]domain.CatalogValue{},
+		parent: parent, resumeField: field.Name,
+	}
+	if hintField, ok := catalogHintFieldName(refDef); ok {
+		nested.values[hintField] = domain.CatalogValue{Text: typed}
+	}
+	a.editor = nested
+	response, err := a.nextFieldQuestion(ctx)
+	if err != nil {
+		a.editor = parent
+		return InteractionResponse{Messages: []InteractionMessage{
+			ErrorMessage{Text: "No pude iniciar la creación. Probá de nuevo en un momento."},
+		}}, nil
+	}
+	note := fmt.Sprintf("No encontré %q entre %s existentes. Creando un nuevo registro de %s.",
+		typed, strings.ToLower(refDef.Plural), refDef.Singular)
+	response.Messages = append([]InteractionMessage{TextMessage{Text: note}}, response.Messages...)
+	return response, nil
+}
+
+// catalogHintFieldName returns the first field name def declares among the
+// SAME name/label/symbol display priority catalogRecordDisplayLabel uses to
+// render an existing record — startNestedCreateFlow uses it to decide which
+// field the operator's typed text becomes a suggested default for. ok is
+// false when def declares none of the three (no AllowCreate target kind hits
+// this today — Característica/Unidad/ConjuntoOpciones all declare "name" or
+// "symbol" — but the fallback keeps this helper honest rather than assuming).
+func catalogHintFieldName(def domain.CatalogKind) (string, bool) {
+	for _, name := range []string{"name", "label", "symbol"} {
+		for _, fd := range def.Fields {
+			if fd.Name == name {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// refOptionMatches reports whether raw exactly matches an existing
+// field.RefKind record already offered as an Option for this field's current
+// scope (refOptions) — either its natural Código (Option.Value) or its own
+// Spanish display label (Option.Label, case-insensitive), so an operator who
+// types out an existing record's full name reuses it instead of accidentally
+// creating a duplicate (task 8.1/8.2: search-before-create). Any non-match is
+// what answerField treats as genuinely custom, routing into
+// startNestedCreateFlow.
+func (a *CatalogAdminAdapter) refOptionMatches(ctx context.Context, field domain.FieldDescriptor, values map[string]domain.CatalogValue, raw string) (bool, error) {
+	options, err := a.refOptions(ctx, field, values)
+	if err != nil {
+		return false, err
+	}
+	for _, opt := range options {
+		if opt.Value == raw || strings.EqualFold(opt.Label, raw) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // cloneCatalogEditorValues returns a shallow copy of values — startEditFlow
@@ -525,29 +699,38 @@ func buildCatalogFieldValue(field domain.FieldDescriptor, raw string) (domain.Ca
 	}
 }
 
-// currentFreeTextOption builds the "Mantener actual: X" Option for a
-// catalogEditorEdit free-text field (FieldText/FieldCode/FieldInt/
-// FieldStringList) — ok is false when there is no meaningful current value
-// to offer (e.g. an unset optional field), matching resource_editor.go's
-// "never fabricate a default for nothing" precedent.
-func currentFreeTextOption(field domain.FieldDescriptor, current domain.CatalogValue, hasCurrent bool) (label, value string, ok bool) {
+// currentFreeTextOption builds a pre-filled Option for a free-text field
+// (FieldText/FieldCode/FieldInt/FieldStringList) whenever hasCurrent is true
+// — ok is false when there is no meaningful current value to offer (e.g. an
+// unset optional field), matching resource_editor.go's "never fabricate a
+// default for nothing" precedent. The label prefix depends on WHY a current
+// value exists: catalogEditorEdit's stored value is something to keep
+// ("Mantener actual: X"); a catalogEditorCreate nested sub-flow's hint value
+// (task 8.1: typed text pre-seeding the new record's display field) is only a
+// suggestion to use ("Usar: X") — either way the operator must actively
+// accept it (selecting the Option), nothing is silently committed.
+func currentFreeTextOption(mode catalogEditorMode, field domain.FieldDescriptor, current domain.CatalogValue, hasCurrent bool) (label, value string, ok bool) {
 	if !hasCurrent {
 		return "", "", false
 	}
+	prefix := "Usar"
+	if mode == catalogEditorEdit {
+		prefix = "Mantener actual"
+	}
 	switch field.Kind {
 	case domain.FieldInt:
-		return fmt.Sprintf("Mantener actual: %d", current.Int), strconv.Itoa(current.Int), true
+		return fmt.Sprintf("%s: %d", prefix, current.Int), strconv.Itoa(current.Int), true
 	case domain.FieldStringList:
 		if len(current.List) == 0 {
 			return "", "", false
 		}
 		joined := strings.Join(current.List, ", ")
-		return "Mantener actual: " + joined, joined, true
+		return prefix + ": " + joined, joined, true
 	default: // FieldText, FieldCode
 		if current.Text == "" {
 			return "", "", false
 		}
-		return "Mantener actual: " + current.Text, current.Text, true
+		return prefix + ": " + current.Text, current.Text, true
 	}
 }
 
