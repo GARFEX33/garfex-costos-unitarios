@@ -68,6 +68,19 @@ func (s *Service) Dependencies(ctx context.Context, kind domain.CatalogKindCode,
 	return s.repo.Dependents(ctx, kind, id)
 }
 
+// ReferencedByResources reports whether id is referenced by at least one
+// real resource instance, read directly from the repository's
+// ReferencedByResources probe (design §6). It is the TUI-facing signal task
+// 7.2's Código-immutability UI (and the guarded-delete flow, task 7.1) need
+// to decide, respectively, whether to render a "código" field read-only and
+// whether a hard delete must be blocked in favor of Desactivar — the same
+// probe Update already consults internally, exposed here as its own method
+// since a caller may need the answer BEFORE attempting a write (e.g. to
+// decide how to render a question in the first place).
+func (s *Service) ReferencedByResources(ctx context.Context, kind domain.CatalogKindCode, id int64) (bool, error) {
+	return s.repo.ReferencedByResources(ctx, kind, id)
+}
+
 // Create validates rec as a new kind record against the whole catalog
 // before persisting it (design D9): rec is applied to an in-memory COPY of
 // the current snapshot via domain.ApplyCatalogMutation, the copy's

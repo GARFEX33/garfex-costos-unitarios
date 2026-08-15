@@ -78,11 +78,77 @@ func (f *fakeCatalogUpdater) Update(_ context.Context, kind domain.CatalogKindCo
 	return rec, nil
 }
 
+// fakeCatalogDependencyChecker is the fake catalogDependencyChecker used by
+// the guarded-delete tests (task 7.1) — returns zero dependents by default,
+// so the default newCatalogAdminAdapter helper never blocks a delete unless
+// a test explicitly overrides it.
+type fakeCatalogDependencyChecker struct {
+	deps []domain.CatalogDependency
+	err  error
+}
+
+func (f *fakeCatalogDependencyChecker) Dependencies(_ context.Context, _ domain.CatalogKindCode, _ int64) ([]domain.CatalogDependency, error) {
+	return f.deps, f.err
+}
+
+// fakeCatalogReferenceChecker is the fake catalogReferenceChecker used by
+// the Código-immutability-UI tests (task 7.2) and the guarded-delete tests
+// (task 7.1) — reports "not referenced" by default.
+type fakeCatalogReferenceChecker struct {
+	referenced bool
+	err        error
+}
+
+func (f *fakeCatalogReferenceChecker) ReferencedByResources(_ context.Context, _ domain.CatalogKindCode, _ int64) (bool, error) {
+	return f.referenced, f.err
+}
+
+// fakeCatalogDeactivator/fakeCatalogReactivator/fakeCatalogDeleter are the
+// fake catalogDeactivator/catalogReactivator/catalogDeleter used by the
+// lifecycle-action tests (task 7.1) — succeed by default, recording every
+// call's id.
+type fakeCatalogDeactivator struct {
+	calls []int64
+	err   error
+}
+
+func (f *fakeCatalogDeactivator) Deactivate(_ context.Context, _ domain.CatalogKindCode, id int64) error {
+	f.calls = append(f.calls, id)
+	return f.err
+}
+
+type fakeCatalogReactivator struct {
+	calls []int64
+	err   error
+}
+
+func (f *fakeCatalogReactivator) Reactivate(_ context.Context, _ domain.CatalogKindCode, id int64) error {
+	f.calls = append(f.calls, id)
+	return f.err
+}
+
+type fakeCatalogDeleter struct {
+	calls []int64
+	err   error
+}
+
+func (f *fakeCatalogDeleter) Delete(_ context.Context, _ domain.CatalogKindCode, id int64) error {
+	f.calls = append(f.calls, id)
+	return f.err
+}
+
 // newCatalogAdminAdapter builds a CatalogAdminAdapter against the real
 // production registry (domain.NewCatalogRegistry()) for the tests below —
-// mirrors resources_workspace_adapter_test.go's newDispatchAdapter.
+// mirrors resources_workspace_adapter_test.go's newDispatchAdapter. The five
+// lifecycle dependencies (task 7.1/7.2) default to permissive fakes (zero
+// dependents, not referenced, deactivate/reactivate/delete all succeed) so
+// every pre-existing test in this file keeps compiling and passing unchanged
+// — tests that need to exercise a specific lifecycle behavior construct
+// NewCatalogAdminAdapter directly instead of using this helper.
 func newCatalogAdminAdapter(lister catalogLister, getter catalogGetter, creator catalogRecordCreator, updater catalogRecordUpdater) *CatalogAdminAdapter {
-	return NewCatalogAdminAdapter(lister, getter, creator, updater, domain.NewCatalogRegistry())
+	return NewCatalogAdminAdapter(lister, getter, creator, updater,
+		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, &fakeCatalogDeactivator{}, &fakeCatalogReactivator{}, &fakeCatalogDeleter{},
+		domain.NewCatalogRegistry())
 }
 
 func classRecord(id int64, code, name string) domain.CatalogRecord {
@@ -90,6 +156,50 @@ func classRecord(id int64, code, name string) domain.CatalogRecord {
 		Kind: domain.KindClass, ID: id, Active: true,
 		Values: map[string]domain.CatalogValue{
 			"code": {Text: code}, "name": {Text: name}, "plural": {Text: name + "s"}, "slug": {Text: code},
+		},
+	}
+}
+
+func familyRecord(id int64, classCode, code, name string) domain.CatalogRecord {
+	return domain.CatalogRecord{
+		Kind: domain.KindFamily, ID: id, Active: true,
+		Values: map[string]domain.CatalogValue{
+			"class": {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: classCode}},
+			"code":  {Text: code}, "name": {Text: name},
+		},
+	}
+}
+
+func typeRecord(id int64, classCode, familyCode, code, name string) domain.CatalogRecord {
+	return domain.CatalogRecord{
+		Kind: domain.KindType, ID: id, Active: true,
+		Values: map[string]domain.CatalogValue{
+			"class":  {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: classCode}},
+			"family": {Ref: domain.CatalogRef{Kind: domain.KindFamily, Code: familyCode}},
+			"code":   {Text: code}, "name": {Text: name},
+		},
+	}
+}
+
+func definitionRecord(id int64, code, name string) domain.CatalogRecord {
+	return domain.CatalogRecord{
+		Kind: domain.KindAttributeDefinition, ID: id, Active: true,
+		Values: map[string]domain.CatalogValue{
+			"code": {Text: code}, "name": {Text: name}, "valueType": {Text: "CONTROLLED_TEXT"},
+		},
+	}
+}
+
+func attributeBindingRecord(id int64, classCode, familyCode, typeCode, characteristicCode string, identityParticipates bool) domain.CatalogRecord {
+	return domain.CatalogRecord{
+		Kind: domain.KindAttributeBinding, ID: id, Active: true,
+		Values: map[string]domain.CatalogValue{
+			"class":                {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: classCode}},
+			"family":               {Ref: domain.CatalogRef{Kind: domain.KindFamily, Code: familyCode}},
+			"type":                 {Ref: domain.CatalogRef{Kind: domain.KindType, Code: typeCode}},
+			"characteristic":       {Ref: domain.CatalogRef{Kind: domain.KindAttributeDefinition, Code: characteristicCode}},
+			"mode":                 {Text: "REQUIRED"},
+			"identityParticipates": {Bool: identityParticipates},
 		},
 	}
 }
@@ -460,9 +570,13 @@ func TestCatalogAdminOpenKindMenuListsExistingRecordsPlusCreateOption(t *testing
 	}
 }
 
-// TestCatalogAdminSelectExistingRecordStartsEditFlow proves picking an
-// existing record from startKindMenu's answer opens the edit flow for it.
-func TestCatalogAdminSelectExistingRecordStartsEditFlow(t *testing.T) {
+// TestCatalogAdminSelectExistingRecordOpensDetailWithActions proves picking
+// an existing record from startKindMenu's answer opens a detail view (task
+// 7.1: mirrors resources_workspace_dispatch.go's detailResponse/
+// detailActionsRequest precedent) offering lifecycle actions, rather than
+// jumping straight into the edit flow — the edit flow now starts only once
+// "Editar" is explicitly picked from that action menu (see the next test).
+func TestCatalogAdminSelectExistingRecordOpensDetailWithActions(t *testing.T) {
 	lister := &fakeCatalogLister{records: map[domain.CatalogKindCode][]domain.CatalogRecord{
 		domain.KindClass: {classRecord(1, "MATERIAL", "Materiales")},
 	}}
@@ -476,11 +590,390 @@ func TestCatalogAdminSelectExistingRecordStartsEditFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Respond(select) error = %v", err)
 	}
+	if adapter.editor != nil {
+		t.Fatal("adapter.editor != nil, want no in-progress editor before Editar is explicitly chosen")
+	}
+	if _, ok := response.Messages[0].(StructuredResult); !ok {
+		t.Fatalf("Messages[0] = %T, want a StructuredResult showing the record's detail", response.Messages[0])
+	}
+	actions, ok := response.Pending.(ActionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want ActionRequest", response.Pending)
+	}
+	var gotEdit, gotDeactivate, gotDelete bool
+	for _, action := range actions.Actions {
+		switch action.ID {
+		case catalogRecordEditActionID:
+			gotEdit = true
+		case catalogRecordDeactivateActionID:
+			gotDeactivate = true
+		case catalogRecordDeleteActionID:
+			gotDelete = true
+		}
+	}
+	if !gotEdit || !gotDeactivate || !gotDelete {
+		t.Fatalf("actions = %#v, want Editar+Desactivar+Eliminar (Clase is SoftDelete)", actions.Actions)
+	}
+	if adapter.activeRecord.ID != 1 {
+		t.Fatalf("adapter.activeRecord = %#v, want the opened record", adapter.activeRecord)
+	}
+}
+
+// TestCatalogAdminDetailEditActionStartsEditFlow proves choosing "Editar"
+// from the detail action menu opens the edit flow for the record currently
+// shown.
+func TestCatalogAdminDetailEditActionStartsEditFlow(t *testing.T) {
+	lister := &fakeCatalogLister{records: map[domain.CatalogKindCode][]domain.CatalogRecord{
+		domain.KindClass: {classRecord(1, "MATERIAL", "Materiales")},
+	}}
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	adapter := newCatalogAdminAdapter(lister, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogOpenActionID(domain.KindClass)}); err != nil {
+		t.Fatalf("Respond(open) error = %v", err)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputSelection, Key: catalogKindMenuKey, Value: "1"}); err != nil {
+		t.Fatalf("Respond(select) error = %v", err)
+	}
+	response, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordEditActionID})
+	if err != nil {
+		t.Fatalf("Respond(edit) error = %v", err)
+	}
 	if response.Pending == nil {
 		t.Fatal("Pending = nil, want the edit flow's first field question")
 	}
 	if adapter.editor == nil || adapter.editor.mode != catalogEditorEdit {
 		t.Fatalf("adapter.editor = %#v, want an in-progress catalogEditorEdit", adapter.editor)
+	}
+}
+
+// TestCatalogAdminDeleteBlockedByBlockingDependencyOffersDeactivate proves
+// task 7.1: a delete blocked by a blocking CatalogDependency is rejected
+// with a Spanish "está siendo utilizado por N ..." message, WITHOUT calling
+// the deleter, and the same action menu (including Desactivar) is offered
+// again.
+func TestCatalogAdminDeleteBlockedByBlockingDependencyOffersDeactivate(t *testing.T) {
+	lister := &fakeCatalogLister{}
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	deps := &fakeCatalogDependencyChecker{deps: []domain.CatalogDependency{{Kind: domain.KindFamily, Count: 3, Blocking: true}}}
+	deleter := &fakeCatalogDeleter{}
+	adapter := NewCatalogAdminAdapter(lister, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+		deps, &fakeCatalogReferenceChecker{}, &fakeCatalogDeactivator{}, &fakeCatalogReactivator{}, deleter,
+		domain.NewCatalogRegistry())
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	response, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordDeleteActionID})
+	if err != nil {
+		t.Fatalf("Respond(delete) error = %v", err)
+	}
+	if len(deleter.calls) != 0 {
+		t.Fatalf("deleter.calls = %v, want none — delete must be blocked before ever calling the deleter", deleter.calls)
+	}
+	message, ok := response.Messages[0].(ErrorMessage)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want ErrorMessage", response.Messages[0])
+	}
+	if !containsAll(message.Text, "3", "familias") {
+		t.Fatalf("message = %q, want it to name the blocking count and kind", message.Text)
+	}
+	actions, ok := response.Pending.(ActionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want the SAME action menu re-offered (Desactivar available)", response.Pending)
+	}
+	found := false
+	for _, action := range actions.Actions {
+		if action.ID == catalogRecordDeactivateActionID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("actions = %#v, want Desactivar offered as the alternative", actions.Actions)
+	}
+}
+
+// TestCatalogAdminDeleteAllowedWhenNoDependentsAsksConfirmation proves a
+// record with zero blocking dependents and no real-resource reference is NOT
+// rejected outright — it shows a real delete confirmation instead (mirrors
+// resources_workspace_dispatch.go's startDeleteConfirmation precedent).
+func TestCatalogAdminDeleteAllowedWhenNoDependentsAsksConfirmation(t *testing.T) {
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, &fakeCatalogDeactivator{}, &fakeCatalogReactivator{}, &fakeCatalogDeleter{},
+		domain.NewCatalogRegistry())
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	response, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordDeleteActionID})
+	if err != nil {
+		t.Fatalf("Respond(delete) error = %v", err)
+	}
+	confirmation, ok := response.Pending.(ConfirmationRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
+	}
+	if confirmation.Key != catalogDeleteConfirmKey {
+		t.Fatalf("confirmation.Key = %q, want %q", confirmation.Key, catalogDeleteConfirmKey)
+	}
+}
+
+// TestCatalogAdminDeleteConfirmedCallsDeleter proves confirming a real
+// delete calls the deleter with the record's kind+ID.
+func TestCatalogAdminDeleteConfirmedCallsDeleter(t *testing.T) {
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	deleter := &fakeCatalogDeleter{}
+	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, &fakeCatalogDeactivator{}, &fakeCatalogReactivator{}, deleter,
+		domain.NewCatalogRegistry())
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordDeleteActionID}); err != nil {
+		t.Fatalf("Respond(delete) error = %v", err)
+	}
+	response, err := adapter.Respond(ctx, InteractionInput{Kind: InputSelection, Key: catalogDeleteConfirmKey, Value: "yes"})
+	if err != nil {
+		t.Fatalf("Respond(confirm) error = %v", err)
+	}
+	if len(deleter.calls) != 1 || deleter.calls[0] != 1 {
+		t.Fatalf("deleter.calls = %v, want [1]", deleter.calls)
+	}
+	if _, ok := response.Messages[0].(TextMessage); !ok {
+		t.Fatalf("Messages[0] = %T, want a confirmation TextMessage", response.Messages[0])
+	}
+}
+
+// TestCatalogAdminDeactivateCallsDeactivator proves the Desactivar action
+// calls the deactivator and refreshes the detail view.
+func TestCatalogAdminDeactivateCallsDeactivator(t *testing.T) {
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	deactivator := &fakeCatalogDeactivator{}
+	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, deactivator, &fakeCatalogReactivator{}, &fakeCatalogDeleter{},
+		domain.NewCatalogRegistry())
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	response, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordDeactivateActionID})
+	if err != nil {
+		t.Fatalf("Respond(deactivate) error = %v", err)
+	}
+	if len(deactivator.calls) != 1 || deactivator.calls[0] != 1 {
+		t.Fatalf("deactivator.calls = %v, want [1]", deactivator.calls)
+	}
+	if adapter.activeRecord.Active {
+		t.Fatal("adapter.activeRecord.Active = true, want false after Desactivar")
+	}
+	actions, ok := response.Pending.(ActionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want the refreshed action menu", response.Pending)
+	}
+	var gotReactivate bool
+	for _, action := range actions.Actions {
+		if action.ID == catalogRecordReactivateActionID {
+			gotReactivate = true
+		}
+	}
+	if !gotReactivate {
+		t.Fatalf("actions = %#v, want Reactivar offered after Desactivar", actions.Actions)
+	}
+}
+
+// TestCatalogAdminReactivateCallsReactivator mirrors the Deactivate test for
+// Reactivar.
+func TestCatalogAdminReactivateCallsReactivator(t *testing.T) {
+	rec := classRecord(1, "MATERIAL", "Materiales")
+	rec.Active = false
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: rec}}
+	reactivator := &fakeCatalogReactivator{}
+	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, &fakeCatalogDeactivator{}, reactivator, &fakeCatalogDeleter{},
+		domain.NewCatalogRegistry())
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordReactivateActionID}); err != nil {
+		t.Fatalf("Respond(reactivate) error = %v", err)
+	}
+	if len(reactivator.calls) != 1 || reactivator.calls[0] != 1 {
+		t.Fatalf("reactivator.calls = %v, want [1]", reactivator.calls)
+	}
+	if !adapter.activeRecord.Active {
+		t.Fatal("adapter.activeRecord.Active = false, want true after Reactivar")
+	}
+}
+
+// TestCatalogAdminDeactivateNotOfferedForNonSoftDeleteKind proves the
+// action menu never offers Desactivar/Reactivar for a kind whose
+// CatalogKind.SoftDelete is false (e.g. Aplicabilidad) — Service.Deactivate
+// would just fail with ErrSoftDeleteUnsupported for those, so the UI never
+// exposes an action guaranteed to fail (Generic Descriptor-Driven Engine).
+func TestCatalogAdminDeactivateNotOfferedForNonSoftDeleteKind(t *testing.T) {
+	rec := attributeBindingRecord(1, "MATERIAL", "CONDUCTORES", "CABLE", "COLOR", false)
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: rec}}
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindAttributeBinding, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	actions := adapter.recordDetailResponse().Pending.(ActionRequest)
+	for _, action := range actions.Actions {
+		if action.ID == catalogRecordDeactivateActionID || action.ID == catalogRecordReactivateActionID {
+			t.Fatalf("actions = %#v, must not offer Desactivar/Reactivar for a non-SoftDelete kind", actions.Actions)
+		}
+	}
+}
+
+// TestCatalogAdminCodeFieldSkippedWhenReferenced proves task 7.2: once a
+// record's Código is referenced by real resources, editing it never asks the
+// Código question — it is kept at its current value automatically and the
+// flow advances straight past it, with an informational note explaining why.
+// Table-driven per kind that carries a real "código" field
+// (Clase/Familia/Tipo/Característica, the task's own scoping).
+func TestCatalogAdminCodeFieldSkippedWhenReferenced(t *testing.T) {
+	tests := []struct {
+		name       string
+		kind       domain.CatalogKindCode
+		rec        domain.CatalogRecord
+		refAnswers []string
+		nextPrompt string
+	}{
+		{"Clase", domain.KindClass, classRecord(1, "MATERIAL", "Materiales"), nil, "Nombre"},
+		{"Familia", domain.KindFamily, familyRecord(2, "MATERIAL", "CONDUCTORES", "Conductores"), []string{"MATERIAL"}, "Nombre"},
+		{"Tipo", domain.KindType, typeRecord(3, "MATERIAL", "CONDUCTORES", "CABLE", "Cable"), []string{"MATERIAL", "CONDUCTORES"}, "Nombre"},
+		{"Característica", domain.KindAttributeDefinition, definitionRecord(4, "COLOR", "Color"), nil, "Nombre"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lister := &fakeCatalogLister{records: map[domain.CatalogKindCode][]domain.CatalogRecord{
+				domain.KindClass:  {classRecord(1, "MATERIAL", "Materiales")},
+				domain.KindFamily: {familyRecord(2, "MATERIAL", "CONDUCTORES", "Conductores")},
+			}}
+			getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{tc.rec.ID: tc.rec}}
+			adapter := NewCatalogAdminAdapter(lister, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+				&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{referenced: true},
+				&fakeCatalogDeactivator{}, &fakeCatalogReactivator{}, &fakeCatalogDeleter{}, domain.NewCatalogRegistry())
+			ctx := context.Background()
+			response, err := adapter.startEditFlow(ctx, tc.kind, tc.rec)
+			if err != nil {
+				t.Fatalf("startEditFlow() error = %v", err)
+			}
+			for _, answer := range tc.refAnswers {
+				response, err = adapter.answerField(ctx, answer)
+				if err != nil {
+					t.Fatalf("answerField(%q) error = %v", answer, err)
+				}
+			}
+			question, ok := response.Pending.(QuestionRequest)
+			if !ok {
+				t.Fatalf("Pending = %T, want QuestionRequest", response.Pending)
+			}
+			if question.Prompt != tc.nextPrompt {
+				t.Fatalf("Prompt = %q, want %q (Código must be skipped once referenced)", question.Prompt, tc.nextPrompt)
+			}
+			foundNote := false
+			for _, msg := range response.Messages {
+				if text, ok := msg.(TextMessage); ok && containsAll(text.Text, "Código") {
+					foundNote = true
+				}
+			}
+			if !foundNote {
+				t.Fatalf("Messages = %#v, want a note mentioning Código is locked", response.Messages)
+			}
+		})
+	}
+}
+
+// TestCatalogAdminCodeFieldAskedWhenNotReferenced is
+// TestCatalogAdminCodeFieldSkippedWhenReferenced's contrast: an
+// unreferenced record's Código question is asked normally.
+func TestCatalogAdminCodeFieldAskedWhenNotReferenced(t *testing.T) {
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	response, err := adapter.startEditFlow(context.Background(), domain.KindClass, classRecord(1, "MATERIAL", "Materiales"))
+	if err != nil {
+		t.Fatalf("startEditFlow() error = %v", err)
+	}
+	question, ok := response.Pending.(QuestionRequest)
+	if !ok || question.Prompt != "Código" {
+		t.Fatalf("Pending = %#v, want the Código question asked normally", response.Pending)
+	}
+}
+
+// TestCatalogAdminIdentidadChangeShowsWarning proves task 7.4 (the spec gap
+// task): saving an Aplicabilidad edit that changes identityParticipates
+// shows a Spanish warning that existing resources keep their current
+// IdentityKey, and only new resources use the updated rule.
+func TestCatalogAdminIdentidadChangeShowsWarning(t *testing.T) {
+	rec := attributeBindingRecord(9, "MATERIAL", "CONDUCTORES", "CABLE", "COLOR", false)
+	lister := &fakeCatalogLister{records: map[domain.CatalogKindCode][]domain.CatalogRecord{
+		domain.KindClass:               {classRecord(1, "MATERIAL", "Materiales")},
+		domain.KindFamily:              {familyRecord(2, "MATERIAL", "CONDUCTORES", "Conductores")},
+		domain.KindType:                {typeRecord(3, "MATERIAL", "CONDUCTORES", "CABLE", "Cable")},
+		domain.KindAttributeDefinition: {definitionRecord(4, "COLOR", "Color")},
+	}}
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{9: rec}}
+	adapter := newCatalogAdminAdapter(lister, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	response, err := adapter.startEditFlow(ctx, domain.KindAttributeBinding, rec)
+	if err != nil {
+		t.Fatalf("startEditFlow() error = %v", err)
+	}
+	// Field order: class, family, type, characteristic, optionSet, mode,
+	// identityParticipates (catalog_kind.go). Flip identityParticipates
+	// false -> true.
+	answers := []string{"MATERIAL", "CONDUCTORES", "CABLE", "COLOR", "", "REQUIRED", "true"}
+	for _, answer := range answers {
+		response, err = adapter.answerField(ctx, answer)
+		if err != nil {
+			t.Fatalf("answerField(%q) error = %v", answer, err)
+		}
+	}
+	found := false
+	for _, msg := range response.Messages {
+		if text, ok := msg.(TextMessage); ok && containsAll(text.Text, "Identidad") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Messages = %#v, want the Identidad-change warning", response.Messages)
+	}
+}
+
+// TestCatalogAdminIdentidadUnchangedShowsNoWarning is the contrast: saving
+// an Aplicabilidad edit that does NOT change identityParticipates shows no
+// warning.
+func TestCatalogAdminIdentidadUnchangedShowsNoWarning(t *testing.T) {
+	rec := attributeBindingRecord(9, "MATERIAL", "CONDUCTORES", "CABLE", "COLOR", true)
+	lister := &fakeCatalogLister{records: map[domain.CatalogKindCode][]domain.CatalogRecord{
+		domain.KindClass:               {classRecord(1, "MATERIAL", "Materiales")},
+		domain.KindFamily:              {familyRecord(2, "MATERIAL", "CONDUCTORES", "Conductores")},
+		domain.KindType:                {typeRecord(3, "MATERIAL", "CONDUCTORES", "CABLE", "Cable")},
+		domain.KindAttributeDefinition: {definitionRecord(4, "COLOR", "Color")},
+	}}
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{9: rec}}
+	adapter := newCatalogAdminAdapter(lister, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	response, err := adapter.startEditFlow(ctx, domain.KindAttributeBinding, rec)
+	if err != nil {
+		t.Fatalf("startEditFlow() error = %v", err)
+	}
+	answers := []string{"MATERIAL", "CONDUCTORES", "CABLE", "COLOR", "", "REQUIRED", "true"}
+	for _, answer := range answers {
+		response, err = adapter.answerField(ctx, answer)
+		if err != nil {
+			t.Fatalf("answerField(%q) error = %v", answer, err)
+		}
+	}
+	for _, msg := range response.Messages {
+		if text, ok := msg.(TextMessage); ok && containsAll(text.Text, "Identidad") {
+			t.Fatalf("Messages = %#v, want no Identidad warning (identityParticipates unchanged)", response.Messages)
+		}
 	}
 }
 

@@ -165,6 +165,99 @@ func openDuplicateFor(t *testing.T, adapter *ResourcesWorkspaceAdapter, resource
 	return response
 }
 
+// inactiveClassCatalog is domain.SeedResourceCatalog() with MATERIAL marked
+// inactive — task 7.3's fixture for the "resource under an inactive Clase"
+// blocking tests below. The existing resources still readable/searchable
+// under it are untouched (spec: "existing resources remain
+// readable/searchable"), only the Clase's own Active flag flips.
+func inactiveClassCatalog() domain.ResourceCatalog {
+	catalog := domain.SeedResourceCatalog()
+	for i := range catalog.Classes {
+		if catalog.Classes[i].Code == "MATERIAL" {
+			catalog.Classes[i].Active = false
+		}
+	}
+	return catalog
+}
+
+// TestResourcePresentationMarksInactiveClass proves task 7.3: a resource
+// belonging to an inactive Clase is clearly marked "(Clase inactiva)" in its
+// presentation title — the shared renderer both search results and the
+// detail view use (resourcePresentation), so marking it here covers both
+// surfaces at once.
+func TestResourcePresentationMarksInactiveClass(t *testing.T) {
+	adapter := NewResourcesWorkspaceAdapter(nil, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, nil, inactiveClassCatalog(), "")
+	resource := domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", Attributes: cableAttributeValues(), NaturalUnit: "m"}
+	title, _ := adapter.resourcePresentation(resource)
+	if !containsAll(title, "Clase inactiva") {
+		t.Fatalf("title = %q, want it to mark the inactive Clase", title)
+	}
+}
+
+// TestResourcePresentationDoesNotMarkActiveClass is the contrast: an active
+// Clase's resource title is never marked.
+func TestResourcePresentationDoesNotMarkActiveClass(t *testing.T) {
+	adapter := newTestAdapter(&fakeResourceGetter{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, "")
+	resource := domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", Attributes: cableAttributeValues(), NaturalUnit: "m"}
+	title, _ := adapter.resourcePresentation(resource)
+	if containsAll(title, "Clase inactiva") {
+		t.Fatalf("title = %q, must not mark an active Clase's resource", title)
+	}
+}
+
+// TestStartEditEditorBlockedForInactiveClass proves task 7.3: "Editar" is
+// blocked for a resource whose Clase is inactive — no editor starts, and a
+// Spanish message explains why.
+func TestStartEditEditorBlockedForInactiveClass(t *testing.T) {
+	adapter := NewResourcesWorkspaceAdapter(nil, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, nil, inactiveClassCatalog(), "")
+	resource := domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", Attributes: cableAttributeValues(), NaturalUnit: "m"}
+	response := openEditFor(t, adapter, resource)
+	if adapter.editor != nil {
+		t.Fatal("adapter.editor != nil, want Editar blocked for an inactive Clase")
+	}
+	message, ok := response.Messages[0].(ErrorMessage)
+	if !ok || !containsAll(message.Text, "inactiva") {
+		t.Fatalf("Messages[0] = %#v, want an ErrorMessage mentioning the inactive Clase", response.Messages[0])
+	}
+}
+
+// TestStartDuplicateEditorBlockedForInactiveClass mirrors the Editar test
+// for "Duplicar" — duplicating a resource functionally creates a new one, so
+// it is blocked by the same rule as Crear.
+func TestStartDuplicateEditorBlockedForInactiveClass(t *testing.T) {
+	adapter := NewResourcesWorkspaceAdapter(nil, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, nil, inactiveClassCatalog(), "")
+	resource := domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", Attributes: cableAttributeValues(), NaturalUnit: "m"}
+	response := openDuplicateFor(t, adapter, resource)
+	if adapter.editor != nil {
+		t.Fatal("adapter.editor != nil, want Duplicar blocked for an inactive Clase")
+	}
+	message, ok := response.Messages[0].(ErrorMessage)
+	if !ok || !containsAll(message.Text, "inactiva") {
+		t.Fatalf("Messages[0] = %#v, want an ErrorMessage mentioning the inactive Clase", response.Messages[0])
+	}
+}
+
+// TestStartCreateEditorBlockedForFilteredInactiveClass proves task 7.3's
+// defensive case: a FILTERED workspace (e.g. "/materiales") already scoped
+// to a class that has since become inactive (within the same running
+// process — buildWorkspaceDescriptors excludes it at build time, but that
+// build only happens once) must still refuse Crear, not silently proceed
+// past the (skipped, pre-seeded) Clase question.
+func TestStartCreateEditorBlockedForFilteredInactiveClass(t *testing.T) {
+	adapter := NewResourcesWorkspaceAdapter(nil, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, nil, inactiveClassCatalog(), "MATERIAL")
+	response, err := adapter.startCreateEditor()
+	if err != nil {
+		t.Fatalf("startCreateEditor() error = %v, want nil", err)
+	}
+	if adapter.editor != nil {
+		t.Fatal("adapter.editor != nil, want Crear blocked for a filtered inactive Clase")
+	}
+	message, ok := response.Messages[0].(ErrorMessage)
+	if !ok || !containsAll(message.Text, "inactiva") {
+		t.Fatalf("Messages[0] = %#v, want an ErrorMessage mentioning the inactive Clase", response.Messages[0])
+	}
+}
+
 // TestResourceEditorUnfilteredCreateFlowAsksClaseFamiliaTipoAttributesUnit
 // covers the required unfiltered-entry sequence assertion (recursos-maestro
 // tasks 6.1): a create flow started with no classFilter must begin at

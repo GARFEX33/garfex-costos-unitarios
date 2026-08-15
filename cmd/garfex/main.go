@@ -94,7 +94,8 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 		assistantAgent := tui.NewAssistantShellAgent()
 		registry := domain.NewCatalogRegistry()
 		catalogService := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), registry, catalog)
-		catalogAgent := tui.NewCatalogAdminAdapter(catalogService, catalogService, catalogService, catalogService, registry)
+		catalogAgent := tui.NewCatalogAdminAdapter(catalogService, catalogService, catalogService, catalogService,
+			catalogService, catalogService, catalogService, catalogService, catalogService, registry)
 		model := tui.NewWithCatalog(tui.Handlers{
 			Version: tui.Version(version),
 			Config:  tui.Config(look),
