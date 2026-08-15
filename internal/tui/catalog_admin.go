@@ -121,6 +121,16 @@ type catalogEditorState struct {
 	// into parent.values once the nested flow completes. Empty when parent is
 	// nil.
 	resumeField string
+	// wizardStep marks this editor as the SYNTHETIC "elegir existente o crear
+	// nueva/o" step the guided wizard (task 9.1/9.2, catalog_wizard.go) builds
+	// for ONE CatalogKind in its sequence — never a real per-kind create/edit
+	// flow on its own (def always holds exactly one synthetic FieldRef field,
+	// see catalogWizardStepField). finishEditor and respondToEditor's
+	// InputCancel branch both special-case it: finishing merges the answered
+	// field into the wizard's inherited context instead of ever calling
+	// creator.Create/updater.Update, and cancelling a TOP-LEVEL wizard step
+	// (parent == nil) aborts the whole wizard rather than just this step.
+	wizardStep bool
 }
 
 // startCreateFlow begins the "crear" flow for kind — the generic entry point
@@ -201,6 +211,17 @@ func (a *CatalogAdminAdapter) respondToEditor(ctx context.Context, input Interac
 				TextMessage{Text: "Se canceló la creación del registro nuevo. Segui con la pregunta anterior."},
 			}, response.Messages...)
 			return response, true
+		}
+		// Cancelling a TOP-LEVEL wizard step (task 9.2) aborts the WHOLE
+		// wizard, not just the current step — mirrors resource_editor.go's
+		// own top-level cancel precedent (nothing "local" is left in
+		// progress once the very first question of a flow is cancelled).
+		if a.editor.wizardStep {
+			a.editor = nil
+			a.wizard = nil
+			return InteractionResponse{Messages: []InteractionMessage{
+				TextMessage{Text: "Se canceló la creación de la estructura."},
+			}}, true
 		}
 		a.editor = nil
 		return InteractionResponse{Messages: []InteractionMessage{
@@ -421,6 +442,16 @@ func (a *CatalogAdminAdapter) fieldIsLocked(ctx context.Context, field domain.Fi
 // flow over a nested duplicate-código or validation error.
 func (a *CatalogAdminAdapter) finishEditor(ctx context.Context) (InteractionResponse, error) {
 	state := a.editor
+	// A wizard step (task 9.1/9.2, catalog_wizard.go) never persists anything
+	// of its own here — the record it resolves either already existed (an
+	// "elegir existente" answer) or was already persisted by a nested create
+	// sub-flow that already ran through THIS SAME finishEditor once, as a
+	// normal (non-wizardStep) editor, and resumed the wizard step via the
+	// parent-binding branch below. finishWizardStep only merges the result
+	// into the wizard's inherited context and advances to the next step.
+	if state.wizardStep {
+		return a.finishWizardStep(ctx)
+	}
 	rec := domain.CatalogRecord{Kind: state.def.Code, Values: state.values, Active: true}
 
 	var result domain.CatalogRecord

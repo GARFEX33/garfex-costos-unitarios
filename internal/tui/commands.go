@@ -193,8 +193,14 @@ func buildCatalogAdminActions(kinds []domain.CatalogKind) assistantAction {
 		{id: catalogIdentityActionID, label: "Identidad"},
 		catalogKindLeaf(byCode, domain.KindPresentationField),
 	}}
+	// crearEstructura is the guided wizard's own entry point (task 9.1/9.2,
+	// catalog_wizard.go) — a leaf, not a group, since it starts a sequence
+	// rather than opening a per-kind menu; not backed by any single
+	// CatalogKind (like catalogIdentityActionID), so it stays a static label
+	// regardless of what kinds are registered.
+	crearEstructura := assistantAction{id: catalogWizardActionID, label: "Crear estructura de recursos"}
 	return assistantAction{id: "catalog-menu-root", label: "Catálogo de recursos", children: []assistantAction{
-		estructura, caracteristicas, unidades, tipoConfig,
+		crearEstructura, estructura, caracteristicas, unidades, tipoConfig,
 	}}
 }
 

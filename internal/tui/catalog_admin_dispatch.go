@@ -92,6 +92,9 @@ type CatalogAdminAdapter struct {
 	// editor holds the in-progress create/edit flow, if any; nil means none
 	// is in progress. See catalog_admin.go.
 	editor *catalogEditorState
+	// wizard holds the in-progress guided-wizard sequence (task 9.1/9.2), if
+	// any; nil means none is in progress. See catalog_wizard.go.
+	wizard *catalogWizardState
 }
 
 // NewCatalogAdminAdapter returns a CatalogAdminAdapter backed by lister/
@@ -140,6 +143,8 @@ func (a *CatalogAdminAdapter) Respond(ctx context.Context, input InteractionInpu
 		}
 	}
 	switch {
+	case input.Kind == InputAction && input.ActionID == catalogWizardActionID:
+		return a.startWizard(ctx, nil)
 	case input.Kind == InputAction && input.ActionID == catalogIdentityActionID:
 		return a.startKindMenu(ctx, domain.KindAttributeBinding)
 	case input.Kind == InputAction && strings.HasPrefix(input.ActionID, catalogOpenActionPrefix):

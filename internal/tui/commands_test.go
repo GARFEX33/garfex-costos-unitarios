@@ -118,16 +118,16 @@ func TestBuildCatalogAdminActionsGroupsKindsIntoBusinessAskSubtree(t *testing.T)
 	if root.label != "Catálogo de recursos" {
 		t.Fatalf("root.label = %q, want %q", root.label, "Catálogo de recursos")
 	}
-	if len(root.children) != 4 {
-		t.Fatalf("len(root.children) = %d, want 4 (Estructura/Características/Unidades/Configuración de tipos)", len(root.children))
+	if len(root.children) != 5 {
+		t.Fatalf("len(root.children) = %d, want 5 (Crear estructura de recursos/Estructura/Características/Unidades/Configuración de tipos)", len(root.children))
 	}
-	wantLabels := []string{"Estructura", "Características", "Unidades", "Configuración de tipos"}
+	wantLabels := []string{"Crear estructura de recursos", "Estructura", "Características", "Unidades", "Configuración de tipos"}
 	for i, want := range wantLabels {
 		if root.children[i].label != want {
 			t.Fatalf("root.children[%d].label = %q, want %q", i, root.children[i].label, want)
 		}
 	}
-	estructura := root.children[0]
+	estructura := root.children[1]
 	wantEstructura := []string{"Clases", "Familias", "Tipos"}
 	if len(estructura.children) != len(wantEstructura) {
 		t.Fatalf("len(estructura.children) = %d, want %d", len(estructura.children), len(wantEstructura))
