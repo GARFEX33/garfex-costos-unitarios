@@ -45,6 +45,37 @@ type catalogRecordUpdater interface {
 	Update(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
 }
 
+// catalogDependencyChecker is the minimal surface the guarded-delete flow
+// (task 7.1) needs: which OTHER catalog-structure kinds still reference a
+// record — the data a "está siendo utilizada por N ..." message renders.
+type catalogDependencyChecker interface {
+	Dependencies(ctx context.Context, kind domain.CatalogKindCode, id int64) ([]domain.CatalogDependency, error)
+}
+
+// catalogReferenceChecker is the minimal surface the Código-immutability UI
+// (task 7.2) and the guarded-delete flow (task 7.1) need: whether a record
+// is referenced by at least one REAL resource instance (as opposed to
+// another catalog-structure record, which catalogDependencyChecker covers).
+type catalogReferenceChecker interface {
+	ReferencedByResources(ctx context.Context, kind domain.CatalogKindCode, id int64) (bool, error)
+}
+
+// catalogDeactivator/catalogReactivator/catalogDeleter are the minimal
+// surfaces the Desactivar/Reactivar/Eliminar lifecycle actions (task 7.1)
+// need — each a narrow, single-method interface following this file's own
+// established convention (catalogLister/catalogGetter/...).
+type catalogDeactivator interface {
+	Deactivate(ctx context.Context, kind domain.CatalogKindCode, id int64) error
+}
+
+type catalogReactivator interface {
+	Reactivate(ctx context.Context, kind domain.CatalogKindCode, id int64) error
+}
+
+type catalogDeleter interface {
+	Delete(ctx context.Context, kind domain.CatalogKindCode, id int64) error
+}
+
 // catalogEditorState is the in-progress create/edit flow for ONE record of
 // ONE CatalogKind — the catalog-structure-admin counterpart to
 // resourceEditorState (design D15: a PARALLEL state machine sharing zero
@@ -66,6 +97,12 @@ type catalogEditorState struct {
 	// FieldDescriptor.Name. Seeded from the existing record's Values for
 	// catalogEditorEdit, empty for catalogEditorCreate.
 	values map[string]domain.CatalogValue
+	// original is a frozen copy of the record's Values as they were BEFORE
+	// this edit session touched anything — nil for catalogEditorCreate. Used
+	// solely by finishEditor (task 7.4) to detect whether
+	// identityParticipates actually changed, since `values` above is the
+	// mutable, live-edited copy.
+	original map[string]domain.CatalogValue
 	// id is the repository-assigned CatalogRecord.ID — 0 for create, the
 	// existing record's ID for edit (finishEditor's Update target).
 	id int64
@@ -85,7 +122,7 @@ func (a *CatalogAdminAdapter) startCreateFlow(ctx context.Context, kind domain.C
 		}}, nil
 	}
 	a.editor = &catalogEditorState{mode: catalogEditorCreate, def: def, values: map[string]domain.CatalogValue{}}
-	response, err := a.fieldQuestion(ctx, def.Fields[a.editor.step])
+	response, err := a.nextFieldQuestion(ctx)
 	if err != nil {
 		a.editor = nil
 		return InteractionResponse{Messages: []InteractionMessage{
@@ -106,8 +143,13 @@ func (a *CatalogAdminAdapter) startEditFlow(ctx context.Context, kind domain.Cat
 			ErrorMessage{Text: "No reconozco ese tipo de catálogo."},
 		}}, nil
 	}
-	a.editor = &catalogEditorState{mode: catalogEditorEdit, def: def, values: cloneCatalogEditorValues(rec.Values), id: rec.ID}
-	response, err := a.fieldQuestion(ctx, def.Fields[a.editor.step])
+	a.editor = &catalogEditorState{
+		mode: catalogEditorEdit, def: def,
+		values:   cloneCatalogEditorValues(rec.Values),
+		original: cloneCatalogEditorValues(rec.Values),
+		id:       rec.ID,
+	}
+	response, err := a.nextFieldQuestion(ctx)
 	if err != nil {
 		a.editor = nil
 		return InteractionResponse{Messages: []InteractionMessage{
@@ -243,10 +285,65 @@ func (a *CatalogAdminAdapter) answerField(ctx context.Context, value string) (In
 	}
 	state.values[field.Name] = newValue
 	state.step++
-	if state.step >= len(state.def.Fields) {
-		return a.finishEditor(ctx)
+	return a.nextFieldQuestion(ctx)
+}
+
+// nextFieldQuestion advances state.step past any field that is currently
+// LOCKED (task 7.2: a "código" field, Immutable == ImmutableOnceReferenced,
+// during catalogEditorEdit, once referenceChecker reports the record is
+// already referenced by real resources) — auto-keeping each skipped field's
+// existing value untouched — then returns either the next actually-askable
+// field's question or, once every field has been resolved, finishEditor's
+// result. Every skipped field's Label is collected into a single Spanish
+// informational note prepended to whatever InteractionResponse is ultimately
+// returned, so the operator understands why that question never appeared.
+// catalogEditorCreate never locks anything (fieldIsLocked's own mode check),
+// so this is a pure passthrough for CREATE — startCreateFlow/answerField
+// share it with startEditFlow/answerField rather than duplicating the
+// "advance, then ask" loop per mode.
+func (a *CatalogAdminAdapter) nextFieldQuestion(ctx context.Context) (InteractionResponse, error) {
+	state := a.editor
+	var lockedLabels []string
+	for state.step < len(state.def.Fields) {
+		field := state.def.Fields[state.step]
+		locked, err := a.fieldIsLocked(ctx, field)
+		if err != nil {
+			return InteractionResponse{}, err
+		}
+		if !locked {
+			break
+		}
+		lockedLabels = append(lockedLabels, field.Label)
+		state.step++
 	}
-	return a.fieldQuestion(ctx, state.def.Fields[state.step])
+
+	var response InteractionResponse
+	var err error
+	if state.step >= len(state.def.Fields) {
+		response, err = a.finishEditor(ctx)
+	} else {
+		response, err = a.fieldQuestion(ctx, state.def.Fields[state.step])
+	}
+	if err != nil {
+		return InteractionResponse{}, err
+	}
+	if len(lockedLabels) > 0 {
+		note := fmt.Sprintf("%s no se puede modificar porque ya está en uso por recursos existentes.", strings.Join(lockedLabels, ", "))
+		response.Messages = append([]InteractionMessage{TextMessage{Text: note}}, response.Messages...)
+	}
+	return response, nil
+}
+
+// fieldIsLocked reports whether field must be silently skipped for the
+// in-progress editor — see nextFieldQuestion's doc comment. Only
+// catalogEditorEdit ever locks anything; CREATE and every Mutable/non-código
+// field return false without ever calling the repository (task 7.2/D11).
+func (a *CatalogAdminAdapter) fieldIsLocked(ctx context.Context, field domain.FieldDescriptor) (bool, error) {
+	state := a.editor
+	if state.mode != catalogEditorEdit || field.Immutable != domain.ImmutableOnceReferenced {
+		return false, nil
+	}
+	return a.referenceChecker.ReferencedByResources(ctx, state.def.Code, state.id)
 }
 
 // finishEditor builds the CatalogRecord from the fully-answered editor state
@@ -267,7 +364,7 @@ func (a *CatalogAdminAdapter) finishEditor(ctx context.Context) (InteractionResp
 		result, err = a.creator.Create(ctx, state.def.Code, rec)
 	}
 
-	mode, def := state.mode, state.def
+	mode, def, original, newValues := state.mode, state.def, state.original, state.values
 	a.editor = nil
 	if err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
@@ -280,9 +377,39 @@ func (a *CatalogAdminAdapter) finishEditor(ctx context.Context) (InteractionResp
 		verb = "actualizado"
 	}
 	title := fmt.Sprintf("%s %s", def.Singular, verb)
-	return InteractionResponse{Messages: []InteractionMessage{
-		StructuredResult{Title: title, Fields: catalogRecordFields(def, result)},
-	}}, nil
+	messages := []InteractionMessage{StructuredResult{Title: title, Fields: catalogRecordFields(def, result)}}
+	if identityParticipatesChanged(mode, def, original, newValues) {
+		messages = append([]InteractionMessage{TextMessage{Text: identidadChangeWarning}}, messages...)
+	}
+	return InteractionResponse{Messages: messages}, nil
+}
+
+// identidadChangeWarning is task 7.4's Spanish warning (spec gap: "Warning
+// shown on Identidad save") — shown at save time, never blocking the save
+// itself. It is purely informational: domain.NewResource computes a
+// Resource's IdentityKey once, at creation, and recursos-maestro has no
+// recompute/migration path for an already-persisted resource (verified
+// against internal/domain/resource_canonical.go and resource_editor.go's
+// finishEditor, which only ever calls NewResource for a brand-new candidate
+// — Update never recomputes IdentityKey for the resource being edited's
+// UNCHANGED identity fields). Without this warning an operator could
+// reasonably assume changing which Características participate in identity
+// retroactively "fixes" existing resources, which it deliberately does not.
+const identidadChangeWarning = "Aviso: los recursos existentes conservan su Identidad actual sin cambios. Solo los recursos que se creen a partir de ahora usarán esta nueva configuración de Identidad."
+
+// identityParticipatesChanged reports whether finishEditor just persisted an
+// Aplicabilidad (KindAttributeBinding) edit that flipped
+// identityParticipates — the ONLY case identidadChangeWarning applies to
+// (task 7.4 is scoped to Identidad configuration specifically, not every
+// Aplicabilidad field). original is nil for catalogEditorCreate (see
+// catalogEditorState's doc comment), which this correctly treats as "never
+// changed" via mode != catalogEditorEdit — a brand-new binding has no prior
+// rule to warn about.
+func identityParticipatesChanged(mode catalogEditorMode, def domain.CatalogKind, original, values map[string]domain.CatalogValue) bool {
+	if mode != catalogEditorEdit || def.Code != domain.KindAttributeBinding {
+		return false
+	}
+	return original["identityParticipates"].Bool != values["identityParticipates"].Bool
 }
 
 // refOptions lists field.RefKind's existing records, narrowed by
@@ -533,12 +660,32 @@ func catalogErrorMessage(mode catalogEditorMode, def domain.CatalogKind, err err
 		return fmt.Sprintf("Ya existe un registro de %s con ese código.", def.Singular)
 	case errors.Is(err, domain.ErrCatalogReference):
 		return "Una de las referencias seleccionadas no es válida."
+	case errors.Is(err, domain.ErrCatalogInUse):
+		return "No pude completar la operación: el registro sigue en uso. Podés desactivarlo en su lugar."
 	case errors.Is(err, domain.ErrResourceValidation):
 		reason := strings.TrimPrefix(err.Error(), domain.ErrResourceValidation.Error()+": ")
 		return fmt.Sprintf("No pude %s %s: %s.", verb, strings.ToLower(def.Singular), reason)
 	case errors.Is(err, domain.ErrResourceReference):
 		reason := strings.TrimPrefix(err.Error(), domain.ErrResourceReference.Error()+": ")
 		return fmt.Sprintf("No pude %s %s: %s.", verb, strings.ToLower(def.Singular), reason)
+	default:
+		return fmt.Sprintf("No pude %s %s. Probá de nuevo en un momento.", verb, strings.ToLower(def.Singular))
+	}
+}
+
+// catalogLifecycleErrorMessage maps a Desactivar/Reactivar/Eliminar error
+// (task 7.1) into a Spanish message — the lifecycle-action counterpart of
+// catalogErrorMessage, kept separate since these actions have no "mode"
+// (Create/Edit) of their own and their own distinct verb ("desactivar",
+// "reactivar", "eliminar").
+func catalogLifecycleErrorMessage(def domain.CatalogKind, verb string, err error) string {
+	switch {
+	case errors.Is(err, domain.ErrSoftDeleteUnsupported):
+		return fmt.Sprintf("%s no admite desactivar/reactivar todavía.", def.Plural)
+	case errors.Is(err, domain.ErrCatalogInUse):
+		return fmt.Sprintf("No pude %s: el registro sigue en uso. Podés desactivarlo en su lugar.", verb)
+	case errors.Is(err, domain.ErrCatalogRecordNotFound):
+		return "No encontré ese registro. Puede que ya haya sido eliminado."
 	default:
 		return fmt.Sprintf("No pude %s %s. Probá de nuevo en un momento.", verb, strings.ToLower(def.Singular))
 	}

@@ -240,6 +240,29 @@ func TestServiceDependenciesReadsFromRepository(t *testing.T) {
 	}
 }
 
+// TestServiceReferencedByResourcesReadsFromRepository proves
+// ReferencedByResources (task 7.2/7.1's TUI-facing referencedness signal) is
+// a direct passthrough to the repository probe of the same name.
+func TestServiceReferencedByResourcesReadsFromRepository(t *testing.T) {
+	repo := &fakeCatalogAdminRepository{
+		referencedByResourcesFn: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (bool, error) {
+			return true, nil
+		},
+	}
+	svc := newTestService(repo)
+
+	got, err := svc.ReferencedByResources(context.Background(), domain.KindClass, 1)
+	if err != nil {
+		t.Fatalf("ReferencedByResources returned error: %v", err)
+	}
+	if !got {
+		t.Fatal("ReferencedByResources = false, want true")
+	}
+	if repo.referencedByResourcesCalls != 1 {
+		t.Fatalf("repo.ReferencedByResources called %d times, want 1", repo.referencedByResourcesCalls)
+	}
+}
+
 // --- Create: validate-before-persist (design D9) ---------------------------
 
 // TestServiceCreateRejectsInvalidMutationWithoutPersisting is the single
