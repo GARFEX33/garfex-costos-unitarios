@@ -58,6 +58,8 @@ type UnitDefinition struct {
 	Code      string
 	Symbol    string
 	Dimension string
+	// Active — see ResourceFamily.Active (resource_catalog_validate.go).
+	Active bool
 }
 
 type AttributeDefinition struct {
@@ -88,6 +90,8 @@ type AttributeOption struct {
 	AttributeCode string
 	Code          string
 	Label         string
+	// Active — see ResourceFamily.Active (resource_catalog_validate.go).
+	Active bool
 }
 
 type Quantity struct {

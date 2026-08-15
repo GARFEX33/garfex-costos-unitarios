@@ -20,12 +20,12 @@ func SeedResourceCatalog() ResourceCatalog {
 			{Code: "EQUIPO_HERRAMIENTA", Name: "Equipo/Herramienta", Plural: "Equipo/Herramienta", Slug: "equipo-herramienta", Order: 3, Active: true},
 		},
 		Families: []ResourceFamily{
-			{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductores"},
-			{ClassCode: "MATERIAL", Code: "CANALIZACIONES", Name: "Canalizaciones"},
+			{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductores", Active: true},
+			{ClassCode: "MATERIAL", Code: "CANALIZACIONES", Name: "Canalizaciones", Active: true},
 		},
 		Types: []ResourceType{
-			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", Code: "CABLE", Name: "Cable"},
-			{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", Code: "TUBERIA", Name: "Tubería"},
+			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", Code: "CABLE", Name: "Cable", Active: true},
+			{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", Code: "TUBERIA", Name: "Tubería", Active: true},
 		},
 		PresentationFields: []PresentationField{
 			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", AttributeCode: "insulation", Position: 1},
@@ -35,8 +35,8 @@ func SeedResourceCatalog() ResourceCatalog {
 			{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA", AttributeCode: "diameter_inch", Position: 2},
 		},
 		Units: []UnitDefinition{
-			{Code: "M", Symbol: "M", Dimension: "LENGTH"},
-			{Code: "PZA", Symbol: "PZA", Dimension: "PIECE"},
+			{Code: "M", Symbol: "M", Dimension: "LENGTH", Active: true},
+			{Code: "PZA", Symbol: "PZA", Dimension: "PIECE", Active: true},
 		},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", UnitCode: "M", Allowed: true, Suggested: true},
@@ -84,7 +84,7 @@ func conductorOptions() []AttributeOption {
 	options := []AttributeOption{}
 	add := func(attribute string, values ...string) {
 		for _, value := range values {
-			options = append(options, AttributeOption{AttributeCode: attribute, Code: value, Label: value})
+			options = append(options, AttributeOption{AttributeCode: attribute, Code: value, Label: value, Active: true})
 		}
 	}
 	add("conductor_material", "COBRE", "ALUMINIO")
@@ -99,7 +99,7 @@ func tuberiasOptions() []AttributeOption {
 	options := []AttributeOption{}
 	add := func(attribute string, values ...string) {
 		for _, value := range values {
-			options = append(options, AttributeOption{AttributeCode: attribute, Code: value, Label: value})
+			options = append(options, AttributeOption{AttributeCode: attribute, Code: value, Label: value, Active: true})
 		}
 	}
 	add("tipo", "CONDUIT PARED DELGADA", "CONDUIT PARED GRUESA", "PVC CONDUIT")

@@ -175,3 +175,87 @@ func TestResourceCatalog_Validate_DefectCases(t *testing.T) {
 		})
 	}
 }
+
+// --- Task 3.6 (R1 carve-out): validateAttributeRules() (design D4's
+// Mode==CONDITIONAL ⟺ len(Rules)>0 invariant, now that rules live in a Go
+// slice instead of an inline condition column) + the no-active-child-under-
+// inactive-parent structural check (design Risk#3's soft-delete gap).
+
+func TestResourceCatalog_Validate_ConditionalModeWithoutRulesIsRejected(t *testing.T) {
+	catalog := validResourceCatalog()
+	catalog.Attributes = append(catalog.Attributes, ResourceAttribute{
+		ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE",
+		Definition: AttributeDefinition{Code: "voltage"}, Mode: ModeConditional,
+	})
+	err := catalog.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error (CONDITIONAL attribute with zero Rules)")
+	}
+	if !strings.Contains(err.Error(), "conditional") {
+		t.Fatalf("Validate() = %q, want an error mentioning the conditional-without-rules defect", err.Error())
+	}
+}
+
+// TestResourceCatalog_Validate_NonConditionalModeWithRulesIsRejected
+// triangulates the inverse direction of the same D4 invariant: a rule list
+// on a REQUIRED/OPTIONAL/FORBIDDEN attribute is equally invalid.
+func TestResourceCatalog_Validate_NonConditionalModeWithRulesIsRejected(t *testing.T) {
+	catalog := validResourceCatalog()
+	catalog.Attributes = append(catalog.Attributes, ResourceAttribute{
+		ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE",
+		Definition: AttributeDefinition{Code: "voltage"}, Mode: ModeRequired,
+		Rules: []AttributeRule{{When: AttributeCondition{AttributeCode: "insulation", Equals: "DESNUDO"}, Mode: ModeForbidden}},
+	})
+	err := catalog.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error (non-CONDITIONAL attribute carrying Rules)")
+	}
+	if !strings.Contains(err.Error(), "conditional") {
+		t.Fatalf("Validate() = %q, want an error mentioning the conditional-without-rules defect", err.Error())
+	}
+}
+
+func TestResourceCatalog_Validate_ActiveTypeUnderInactiveFamilyIsRejected(t *testing.T) {
+	catalog := ResourceCatalog{
+		Classes:  []ResourceClass{{Code: "MATERIAL", Name: "Material", Plural: "Materiales", Slug: "materiales", Active: true}},
+		Families: []ResourceFamily{{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductores", Active: false}},
+		Types:    []ResourceType{{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", Code: "CABLE", Name: "Cable", Active: true}},
+	}
+	err := catalog.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error (an active Tipo under an inactive Familia)")
+	}
+	if !strings.Contains(err.Error(), "inactive") {
+		t.Fatalf("Validate() = %q, want an error mentioning the inactive-parent defect", err.Error())
+	}
+}
+
+// TestResourceCatalog_Validate_ActiveFamilyUnderInactiveClassIsRejected
+// triangulates the same rule one level up the hierarchy.
+func TestResourceCatalog_Validate_ActiveFamilyUnderInactiveClassIsRejected(t *testing.T) {
+	catalog := ResourceCatalog{
+		Classes:  []ResourceClass{{Code: "MATERIAL", Name: "Material", Plural: "Materiales", Slug: "materiales", Active: false}},
+		Families: []ResourceFamily{{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductores", Active: true}},
+	}
+	err := catalog.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error (an active Familia under an inactive Clase)")
+	}
+	if !strings.Contains(err.Error(), "inactive") {
+		t.Fatalf("Validate() = %q, want an error mentioning the inactive-parent defect", err.Error())
+	}
+}
+
+// TestResourceCatalog_Validate_InactiveChildUnderActiveParentIsValid
+// triangulates the negative space: an inactive Tipo under an active Familia
+// is normal (that IS the soft-delete feature working), not a defect.
+func TestResourceCatalog_Validate_InactiveChildUnderActiveParentIsValid(t *testing.T) {
+	catalog := ResourceCatalog{
+		Classes:  []ResourceClass{{Code: "MATERIAL", Name: "Material", Plural: "Materiales", Slug: "materiales", Active: true}},
+		Families: []ResourceFamily{{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductores", Active: true}},
+		Types:    []ResourceType{{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", Code: "CABLE", Name: "Cable", Active: false}},
+	}
+	if err := catalog.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil (an inactive child under an active parent is exactly what Desactivar produces)", err)
+	}
+}

@@ -40,8 +40,8 @@ func TestResourceCatalog_OptionsFor_NarrowsByNamedOptionSet(t *testing.T) {
 			{ClassCode: "EQUIPO_HERRAMIENTA", FamilyCode: "HERRAMIENTA_MANUAL", Definition: AttributeDefinition{Code: "color"}, OptionSet: "COLORES_EQUIPO"},
 		},
 		Options: []AttributeOption{
-			{OptionSet: "COLORES_CONDUCTOR", AttributeCode: "color", Code: "NEGRO", Label: "Negro"},
-			{OptionSet: "COLORES_EQUIPO", AttributeCode: "color", Code: "AMARILLO", Label: "Amarillo"},
+			{OptionSet: "COLORES_CONDUCTOR", AttributeCode: "color", Code: "NEGRO", Label: "Negro", Active: true},
+			{OptionSet: "COLORES_EQUIPO", AttributeCode: "color", Code: "AMARILLO", Label: "Amarillo", Active: true},
 		},
 	}
 	materialColor, equipoColor := catalog.Attributes[0], catalog.Attributes[1]
@@ -64,8 +64,8 @@ func TestResourceCatalog_OptionsFor_ExplicitSharedOptionSet(t *testing.T) {
 			{ClassCode: "EQUIPO_HERRAMIENTA", FamilyCode: "HERRAMIENTA_MANUAL", Definition: AttributeDefinition{Code: "color"}, OptionSet: "COLORES_BASICOS"},
 		},
 		Options: []AttributeOption{
-			{OptionSet: "COLORES_BASICOS", AttributeCode: "color", Code: "NEGRO", Label: "Negro"},
-			{OptionSet: "COLORES_BASICOS", AttributeCode: "color", Code: "ROJO", Label: "Rojo"},
+			{OptionSet: "COLORES_BASICOS", AttributeCode: "color", Code: "NEGRO", Label: "Negro", Active: true},
+			{OptionSet: "COLORES_BASICOS", AttributeCode: "color", Code: "ROJO", Label: "Rojo", Active: true},
 		},
 	}
 	a := catalog.OptionsFor(catalog.Attributes[0])
@@ -167,8 +167,8 @@ func TestNaturalUnitsForRealCatalogReturnsSingleSuggestedUnit(t *testing.T) {
 func TestNaturalUnitsForOrdersSuggestedFirstRegardlessOfDeclarationOrder(t *testing.T) {
 	catalog := ResourceCatalog{
 		Units: []UnitDefinition{
-			{Code: "PZA", Symbol: "PZA", Dimension: "PIECE"},
-			{Code: "M", Symbol: "M", Dimension: "LENGTH"},
+			{Code: "PZA", Symbol: "PZA", Dimension: "PIECE", Active: true},
+			{Code: "M", Symbol: "M", Dimension: "LENGTH", Active: true},
 		},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "MATERIAL", FamilyCode: "WIDGETS", UnitCode: "PZA", Allowed: true, Suggested: false},
@@ -311,5 +311,66 @@ func TestResourceAttributeEffectiveFallsBackToRequiredWhenNoRuleMatches(t *testi
 	}
 	if !participates {
 		t.Fatalf("Effective(insulation=THW) identityParticipates = false, want true")
+	}
+}
+
+// --- Task 3.5 (R1 carve-out): FamiliesFor/TypesFor/OptionsFor/
+// NaturalUnitsFor keep their exact signatures but now filter out inactive
+// rows (design Risk#3) — a compiler-invisible behavior change, so each gets
+// its own dedicated RED test with one inactive row.
+
+func TestFamiliesForExcludesInactiveFamily(t *testing.T) {
+	catalog := ResourceCatalog{
+		Families: []ResourceFamily{
+			{ClassCode: "MATERIAL", Code: "ACTIVA", Name: "Activa", Active: true},
+			{ClassCode: "MATERIAL", Code: "INACTIVA", Name: "Inactiva", Active: false},
+		},
+	}
+	families := catalog.FamiliesFor("MATERIAL")
+	if len(families) != 1 || families[0].Code != "ACTIVA" {
+		t.Fatalf("FamiliesFor(MATERIAL) = %+v, want only the active family ACTIVA", families)
+	}
+}
+
+func TestTypesForExcludesInactiveType(t *testing.T) {
+	catalog := ResourceCatalog{
+		Types: []ResourceType{
+			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", Code: "ACTIVO", Name: "Activo", Active: true},
+			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", Code: "INACTIVO", Name: "Inactivo", Active: false},
+		},
+	}
+	types := catalog.TypesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES"})
+	if len(types) != 1 || types[0].Code != "ACTIVO" {
+		t.Fatalf("TypesFor(MATERIAL/CONDUCTORES) = %+v, want only the active type ACTIVO", types)
+	}
+}
+
+func TestOptionsForExcludesInactiveOption(t *testing.T) {
+	catalog := ResourceCatalog{
+		Options: []AttributeOption{
+			{AttributeCode: "color", Code: "ACTIVA", Label: "Activa", Active: true},
+			{AttributeCode: "color", Code: "INACTIVA", Label: "Inactiva", Active: false},
+		},
+	}
+	options := catalog.OptionsFor(ResourceAttribute{Definition: AttributeDefinition{Code: "color"}})
+	if len(options) != 1 || options[0].Code != "ACTIVA" {
+		t.Fatalf("OptionsFor(color) = %+v, want only the active option ACTIVA", options)
+	}
+}
+
+func TestNaturalUnitsForExcludesInactiveUnit(t *testing.T) {
+	catalog := ResourceCatalog{
+		Units: []UnitDefinition{
+			{Code: "ACTIVA", Symbol: "ACTIVA", Dimension: "PIECE", Active: true},
+			{Code: "INACTIVA", Symbol: "INACTIVA", Dimension: "PIECE", Active: false},
+		},
+		UnitPolicies: []ResourceUnitPolicy{
+			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", UnitCode: "ACTIVA", Allowed: true, Suggested: true},
+			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", UnitCode: "INACTIVA", Allowed: true, Suggested: false},
+		},
+	}
+	units := catalog.NaturalUnitsFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES"})
+	if len(units) != 1 || units[0].Code != "ACTIVA" {
+		t.Fatalf("NaturalUnitsFor(MATERIAL/CONDUCTORES) = %+v, want only the active unit ACTIVA", units)
 	}
 }
