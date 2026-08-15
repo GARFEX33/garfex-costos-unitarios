@@ -977,6 +977,249 @@ func TestCatalogAdminIdentidadUnchangedShowsNoWarning(t *testing.T) {
 	}
 }
 
+// TestCatalogAdminCustomAnswerOnAllowCreateFieldStartsNestedCreateFlow proves
+// task 8.1: answering an AllowCreate FieldRef field with text that matches NO
+// existing field.RefKind record pushes a NESTED create sub-flow for that
+// RefKind, pausing (not discarding) the parent flow. KindOption's "optionSet"
+// field (AllowCreate=true, RefKind=KindOptionSet) is the target — no
+// Conjuntos de Opciones exist yet, so any typed text is genuinely custom.
+func TestCatalogAdminCustomAnswerOnAllowCreateFieldStartsNestedCreateFlow(t *testing.T) {
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, &fakeCatalogGetter{}, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.startCreateFlow(ctx, domain.KindOption); err != nil {
+		t.Fatalf("startCreateFlow(KindOption) error = %v", err)
+	}
+	response, err := adapter.answerField(ctx, "Calibre AWG")
+	if err != nil {
+		t.Fatalf("answerField(%q) error = %v", "Calibre AWG", err)
+	}
+	if adapter.editor == nil || adapter.editor.def.Code != domain.KindOptionSet {
+		t.Fatalf("adapter.editor = %#v, want an in-progress KindOptionSet nested flow", adapter.editor)
+	}
+	if adapter.editor.parent == nil || adapter.editor.parent.def.Code != domain.KindOption {
+		t.Fatalf("adapter.editor.parent = %#v, want the paused KindOption parent flow", adapter.editor.parent)
+	}
+	if adapter.editor.resumeField != "optionSet" {
+		t.Fatalf("adapter.editor.resumeField = %q, want %q", adapter.editor.resumeField, "optionSet")
+	}
+	question, ok := response.Pending.(QuestionRequest)
+	if !ok || question.Prompt != "Código" {
+		t.Fatalf("Pending = %#v, want KindOptionSet's own first (Código) question", response.Pending)
+	}
+	foundNote := false
+	for _, msg := range response.Messages {
+		if text, ok := msg.(TextMessage); ok && containsAll(text.Text, "Calibre AWG") {
+			foundNote = true
+		}
+	}
+	if !foundNote {
+		t.Fatalf("Messages = %#v, want a note explaining the nested creation started", response.Messages)
+	}
+}
+
+// TestCatalogAdminNestedCreateHintsDisplayFieldAsSuggestedOption proves the
+// typed text that started the nested flow pre-seeds the nested kind's own
+// display field (name/label/symbol priority) as a suggested — not forced —
+// default: KindOptionSet's "name" field must offer it as a selectable Option,
+// not skip straight past it.
+func TestCatalogAdminNestedCreateHintsDisplayFieldAsSuggestedOption(t *testing.T) {
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, &fakeCatalogGetter{}, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.startCreateFlow(ctx, domain.KindOption); err != nil {
+		t.Fatalf("startCreateFlow(KindOption) error = %v", err)
+	}
+	if _, err := adapter.answerField(ctx, "Calibre AWG"); err != nil {
+		t.Fatalf("answerField(%q) error = %v", "Calibre AWG", err)
+	}
+	// Nested KindOptionSet's first field is Código — answer it to reach the
+	// hinted "name" field.
+	response, err := adapter.answerField(ctx, "CALIBRE_AWG")
+	if err != nil {
+		t.Fatalf("answerField(código) error = %v", err)
+	}
+	question, ok := response.Pending.(QuestionRequest)
+	if !ok || question.Prompt != "Nombre" {
+		t.Fatalf("Pending = %#v, want the Nombre question next", response.Pending)
+	}
+	if len(question.Options) != 1 || question.Options[0].Value != "Calibre AWG" {
+		t.Fatalf("Nombre question options = %#v, want one suggested option carrying %q", question.Options, "Calibre AWG")
+	}
+}
+
+// TestCatalogAdminNestedCreateSuccessResumesParentWithNewRef proves task 8.1's
+// core contract end-to-end: completing the nested create sub-flow calls
+// Create for the nested kind, binds the new record's Código into the PARENT
+// flow's triggering field, and resumes the parent's NEXT question — never
+// restarting the parent flow.
+func TestCatalogAdminNestedCreateSuccessResumesParentWithNewRef(t *testing.T) {
+	creator := &fakeCatalogCreator{nextID: 50}
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, &fakeCatalogGetter{}, creator, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.startCreateFlow(ctx, domain.KindOption); err != nil {
+		t.Fatalf("startCreateFlow(KindOption) error = %v", err)
+	}
+	// optionSet (nested trigger) -> nested: code, name.
+	response, err := adapter.answerField(ctx, "Calibre AWG")
+	if err != nil {
+		t.Fatalf("answerField(optionSet) error = %v", err)
+	}
+	response, err = adapter.answerField(ctx, "CALIBRE_AWG")
+	if err != nil {
+		t.Fatalf("answerField(código) error = %v", err)
+	}
+	response, err = adapter.answerField(ctx, "Calibre AWG")
+	if err != nil {
+		t.Fatalf("answerField(nombre) error = %v", err)
+	}
+	// The nested KindOptionSet create must have run exactly once, and the
+	// parent editor must be resumed (not nil, not still the nested KindOptionSet).
+	if len(creator.calls) != 1 || creator.kinds[0] != domain.KindOptionSet {
+		t.Fatalf("creator.calls = %#v kinds=%v, want exactly one KindOptionSet Create", creator.calls, creator.kinds)
+	}
+	if adapter.editor == nil || adapter.editor.def.Code != domain.KindOption {
+		t.Fatalf("adapter.editor = %#v, want the resumed KindOption parent flow", adapter.editor)
+	}
+	if adapter.editor.parent != nil {
+		t.Fatalf("adapter.editor.parent = %#v, want nil (parent itself has no parent)", adapter.editor.parent)
+	}
+	if adapter.editor.values["optionSet"].Ref != (domain.CatalogRef{Kind: domain.KindOptionSet, Code: "CALIBRE_AWG"}) {
+		t.Fatalf("parent's optionSet value = %#v, want a Ref to the newly-created CALIBRE_AWG record", adapter.editor.values["optionSet"])
+	}
+	// Parent resumes at its NEXT question: KindOption's second field is
+	// "characteristic" (also AllowCreate — a custom answer would nest again,
+	// but here we only assert the parent moved on to it).
+	question, ok := response.Pending.(QuestionRequest)
+	if !ok || question.Prompt != "Característica" {
+		t.Fatalf("Pending = %#v, want the parent's NEXT question (Característica)", response.Pending)
+	}
+	foundNote := false
+	for _, msg := range response.Messages {
+		if text, ok := msg.(TextMessage); ok && containsAll(text.Text, "creado") {
+			foundNote = true
+		}
+	}
+	if !foundNote {
+		t.Fatalf("Messages = %#v, want a confirmation note that the nested record was created", response.Messages)
+	}
+}
+
+// TestCatalogAdminNestedCreateCancelReturnsToParentSameField proves
+// cancelling the nested sub-flow does NOT abort the parent flow — it returns
+// to the parent's SAME field/question, unchanged.
+func TestCatalogAdminNestedCreateCancelReturnsToParentSameField(t *testing.T) {
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, &fakeCatalogGetter{}, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.startCreateFlow(ctx, domain.KindOption); err != nil {
+		t.Fatalf("startCreateFlow(KindOption) error = %v", err)
+	}
+	if _, err := adapter.answerField(ctx, "Calibre AWG"); err != nil {
+		t.Fatalf("answerField(optionSet) error = %v", err)
+	}
+	if adapter.editor.def.Code != domain.KindOptionSet {
+		t.Fatalf("adapter.editor.def.Code = %v, want KindOptionSet before cancelling", adapter.editor.def.Code)
+	}
+	response, err := adapter.Respond(ctx, InteractionInput{Kind: InputCancel})
+	if err != nil {
+		t.Fatalf("Respond(InputCancel) error = %v", err)
+	}
+	if adapter.editor == nil || adapter.editor.def.Code != domain.KindOption {
+		t.Fatalf("adapter.editor = %#v, want the parent KindOption flow resumed, not aborted", adapter.editor)
+	}
+	question, ok := response.Pending.(QuestionRequest)
+	if !ok || question.Prompt != "Conjunto de Opciones" {
+		t.Fatalf("Pending = %#v, want the parent's SAME optionSet question re-asked", response.Pending)
+	}
+	if !containsAll(response.Messages[0].(TextMessage).Text, "canceló") {
+		t.Fatalf("Messages[0] = %#v, want a cancellation note", response.Messages[0])
+	}
+}
+
+// TestCatalogAdminAnswerMatchingExistingRefOptionNeverNests proves an
+// AllowCreate field answer that matches an existing record's Código is
+// treated as ordinary reuse — never starts a nested create sub-flow (task
+// 8.2's own flip side: search-before-create only creates for a GENUINE
+// non-match).
+func TestCatalogAdminAnswerMatchingExistingRefOptionNeverNests(t *testing.T) {
+	lister := &fakeCatalogLister{records: map[domain.CatalogKindCode][]domain.CatalogRecord{
+		domain.KindOptionSet: {{Kind: domain.KindOptionSet, ID: 1, Active: true, Values: map[string]domain.CatalogValue{
+			"code": {Text: "CALIBRE_AWG"}, "name": {Text: "Calibre AWG"},
+		}}},
+	}}
+	creator := &fakeCatalogCreator{}
+	adapter := newCatalogAdminAdapter(lister, &fakeCatalogGetter{}, creator, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.startCreateFlow(ctx, domain.KindOption); err != nil {
+		t.Fatalf("startCreateFlow(KindOption) error = %v", err)
+	}
+	response, err := adapter.answerField(ctx, "CALIBRE_AWG")
+	if err != nil {
+		t.Fatalf("answerField(optionSet) error = %v", err)
+	}
+	if adapter.editor == nil || adapter.editor.def.Code != domain.KindOption || adapter.editor.parent != nil {
+		t.Fatalf("adapter.editor = %#v, want the SAME top-level KindOption flow, no nesting", adapter.editor)
+	}
+	if adapter.editor.values["optionSet"].Ref != (domain.CatalogRef{Kind: domain.KindOptionSet, Code: "CALIBRE_AWG"}) {
+		t.Fatalf("optionSet value = %#v, want a Ref to the existing CALIBRE_AWG record", adapter.editor.values["optionSet"])
+	}
+	if len(creator.calls) != 0 {
+		t.Fatalf("creator.calls = %#v, want none — matching an existing record must never call Create", creator.calls)
+	}
+	question, ok := response.Pending.(QuestionRequest)
+	if !ok || question.Prompt != "Característica" {
+		t.Fatalf("Pending = %#v, want the parent's NEXT question, advanced normally", response.Pending)
+	}
+}
+
+// TestCatalogAdminAllowCreateFieldListsExistingBeforeCustomCreate proves task
+// 8.2: existing matching records for an AllowCreate field are offered in the
+// question's Options list, and NO separate "create new" Option is mixed into
+// that list — custom creation is reachable only by typing a genuinely
+// non-matching value (answerField's own branch), never as a selectable Option
+// alongside the real records.
+func TestCatalogAdminAllowCreateFieldListsExistingBeforeCustomCreate(t *testing.T) {
+	lister := &fakeCatalogLister{records: map[domain.CatalogKindCode][]domain.CatalogRecord{
+		domain.KindAttributeDefinition: {
+			definitionRecord(1, "COLOR", "Color"),
+			definitionRecord(2, "CALIBRE", "Calibre"),
+		},
+	}}
+	adapter := newCatalogAdminAdapter(lister, &fakeCatalogGetter{}, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.startCreateFlow(ctx, domain.KindOption); err != nil {
+		t.Fatalf("startCreateFlow(KindOption) error = %v", err)
+	}
+	// KindOption's second field, "characteristic", is the AllowCreate field
+	// under test here (RefKind KindAttributeDefinition) — fieldQuestion
+	// renders any field's question directly off the descriptor, independent
+	// of state.step, so it can be inspected in isolation without first
+	// resolving "optionSet".
+	characteristicField := adapter.editor.def.Fields[1]
+	if characteristicField.Name != "characteristic" {
+		t.Fatalf("Fields[1].Name = %q, want characteristic", characteristicField.Name)
+	}
+	question, err := adapter.fieldQuestion(ctx, characteristicField)
+	if err != nil {
+		t.Fatalf("fieldQuestion(characteristic) error = %v", err)
+	}
+	pending, ok := question.Pending.(QuestionRequest)
+	if !ok {
+		t.Fatalf("Pending = %T, want QuestionRequest", question.Pending)
+	}
+	if len(pending.Options) != 2 {
+		t.Fatalf("Options = %#v, want exactly the 2 existing Características, no extra create-affordance entry", pending.Options)
+	}
+	gotCodes := map[string]bool{}
+	for _, opt := range pending.Options {
+		gotCodes[opt.Value] = true
+		if opt.Value == catalogCreateNewOptionID {
+			t.Fatalf("Options contains the kind-menu create-new sentinel %q — custom creation must only be reachable by typing, not as a menu Option", catalogCreateNewOptionID)
+		}
+	}
+	if !gotCodes["COLOR"] || !gotCodes["CALIBRE"] {
+		t.Fatalf("Options = %#v, want both existing Características COLOR and CALIBRE listed", pending.Options)
+	}
+}
+
 // TestCatalogAdminIdentityLeafOpensAttributeBindingKind proves the
 // TUI-layer-only "Identidad" routing sentinel opens the exact same
 // KindAttributeBinding flow as the "Aplicabilidad" leaf.
