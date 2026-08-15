@@ -248,6 +248,17 @@ func NewResourcesWorkspaceAdapter(searcher resourceSearcher, getter resourceGett
 // to skip Clase/Familia/Tipo entirely for an existing resource. An
 // unfiltered workspace starts at editorStepClase instead.
 func (a *ResourcesWorkspaceAdapter) startCreateEditor() (InteractionResponse, error) {
+	// task 7.3: a filtered workspace already knows its class and never asks
+	// classQuestion (which is what filters inactive classes for the
+	// unfiltered path below) — so it must check activeness itself. This
+	// mostly guards against a workspace that stayed alive after its class
+	// was deactivated mid-session (buildWorkspaceDescriptors only excludes
+	// it at boot-time build, not on every Crear).
+	if a.classFilter != "" && !a.classIsActive(a.classFilter) {
+		return InteractionResponse{Messages: []InteractionMessage{
+			ErrorMessage{Text: "No se puede crear un recurso: la Clase está inactiva."},
+		}}, nil
+	}
 	a.editor = &resourceEditorState{mode: editorModeCreate}
 	if a.classFilter != "" {
 		a.editor.class = a.classFilter
@@ -255,6 +266,20 @@ func (a *ResourcesWorkspaceAdapter) startCreateEditor() (InteractionResponse, er
 	}
 	a.editor.step = editorStepClase
 	return a.classQuestion(), nil
+}
+
+// classIsActive reports whether code is a KNOWN, currently-active
+// ResourceClass in a.catalog (task 7.3). An unrecognized code returns true
+// (fail open) — this check exists solely to block Crear/Editar/Duplicar for
+// a Clase the catalog explicitly marks inactive, not to police malformed
+// data that a.catalog.Validate() would already have rejected at boot.
+func (a *ResourcesWorkspaceAdapter) classIsActive(code string) bool {
+	for _, class := range a.catalog.Classes {
+		if class.Code == code {
+			return class.Active
+		}
+	}
+	return true
 }
 
 // startEditEditor begins the "Editar" flow for the resource currently shown
@@ -271,6 +296,14 @@ func (a *ResourcesWorkspaceAdapter) startCreateEditor() (InteractionResponse, er
 // every field.
 func (a *ResourcesWorkspaceAdapter) startEditEditor() (InteractionResponse, error) {
 	resource := a.lastDetail
+	// task 7.3: an existing resource under an inactive Clase stays readable/
+	// searchable (spec), but editing it is blocked — same rule as Crear.
+	if !a.classIsActive(resource.ClassCode) {
+		return InteractionResponse{
+			Messages: []InteractionMessage{ErrorMessage{Text: "No se puede editar este recurso: su Clase está inactiva."}},
+			Pending:  detailActionsRequest(),
+		}, nil
+	}
 	scope := domain.ResourceScope{ClassCode: resource.ClassCode, FamilyCode: resource.FamilyCode, TypeCode: resource.TypeCode}
 	a.editor = &resourceEditorState{
 		mode:           editorModeEdit,
@@ -297,6 +330,14 @@ func (a *ResourcesWorkspaceAdapter) startEditEditor() (InteractionResponse, erro
 // — reclassifying via Duplicar is out of scope here.
 func (a *ResourcesWorkspaceAdapter) startDuplicateEditor() (InteractionResponse, error) {
 	resource := a.lastDetail
+	// task 7.3: Duplicar functionally creates a new resource, so it is
+	// blocked by the same inactive-Clase rule as Crear/Editar.
+	if !a.classIsActive(resource.ClassCode) {
+		return InteractionResponse{
+			Messages: []InteractionMessage{ErrorMessage{Text: "No se puede duplicar este recurso: su Clase está inactiva."}},
+			Pending:  detailActionsRequest(),
+		}, nil
+	}
 	scope := domain.ResourceScope{ClassCode: resource.ClassCode, FamilyCode: resource.FamilyCode, TypeCode: resource.TypeCode}
 	a.editor = &resourceEditorState{
 		mode:           editorModeDuplicate,
@@ -1025,6 +1066,13 @@ func (a *ResourcesWorkspaceAdapter) resourcePresentation(resource domain.Resourc
 	title = resource.FamilyCode
 	if presentation := a.describer.Describe(resource); presentation != "" {
 		title += " — " + presentation
+	}
+	// task 7.3: mark a resource whose Clase is inactive wherever this shared
+	// title renders — search results (searchResponse's Option.Label) and the
+	// detail view (detailResponse's StructuredResult.Title) both go through
+	// this one function, so marking it here covers both surfaces at once.
+	if !a.classIsActive(resource.ClassCode) {
+		title += " (Clase inactiva)"
 	}
 	return title, fields
 }
