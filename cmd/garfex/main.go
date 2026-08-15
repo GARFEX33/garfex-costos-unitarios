@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,53 +24,66 @@ type program interface {
 
 type programLauncher func(tea.Model) program
 
-// repositoryBuilder builds the real Resources repository from a DSN. It is
-// injected so run() is unit-testable without a real Postgres instance.
-type repositoryBuilder func(ctx context.Context, dsn string) (domain.ResourceRepository, error)
+// infraBuilder connects to Postgres and returns both the shared pool (which
+// catalogLoader hydrates the catalog from) and the Resources repository
+// built over it. It is injected so run() is unit-testable without a real
+// Postgres instance — the retyped successor to the recursos-maestro PR9
+// repositoryBuilder seam: LoadResourceCatalog needs the same pool the
+// repository uses, so both come from one connect (design §2).
+type infraBuilder func(ctx context.Context, dsn string) (*pgxpool.Pool, domain.ResourceRepository, error)
 
-// catalogBuilder builds the domain.ResourceCatalog run() validates and wires
-// through the rest of the composition. It is injected (defaulting to
-// domain.NewResourceCatalog in main()) so a deliberately-broken catalog can
-// drive the Validate() fail-fast path in a test without touching the real
-// seed data (recursos-maestro design §8's structural guard).
-type catalogBuilder func() domain.ResourceCatalog
+// catalogLoader hydrates the domain.ResourceCatalog run() validates and
+// wires through the rest of the composition. It is injected (defaulting to
+// postgres.LoadResourceCatalog in main()) so a stub can drive the empty-
+// and invalid-catalog fail-fast paths in a test without a real Postgres
+// instance (design §2; supersedes the retired catalogBuilder Go-literal
+// seam now that Postgres is canonical for catalog structure).
+type catalogLoader func(ctx context.Context, pool *pgxpool.Pool) (domain.ResourceCatalog, error)
 
 func main() {
-	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram, newPostgresRepository, domain.NewResourceCatalog))
+	os.Exit(run(os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, newProgram, newPostgresInfra, postgres.LoadResourceCatalog))
 }
 
 func newProgram(model tea.Model) program { return tea.NewProgram(model) }
 
-func newPostgresRepository(ctx context.Context, dsn string) (domain.ResourceRepository, error) {
+func newPostgresInfra(ctx context.Context, dsn string) (*pgxpool.Pool, domain.ResourceRepository, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("connect to database: %w", err)
+		return nil, nil, fmt.Errorf("connect to database: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+		return nil, nil, fmt.Errorf("ping database: %w", err)
 	}
-	return postgres.NewResourceRepository(pool), nil
+	return pool, postgres.NewResourceRepository(pool), nil
 }
 
-func run(args []string, look func(string) (string, bool), out, errw io.Writer, launch programLauncher, buildRepository repositoryBuilder, buildCatalog catalogBuilder) int {
+func run(args []string, look func(string) (string, bool), out, errw io.Writer, launch programLauncher, buildInfra infraBuilder, loadCatalog catalogLoader) int {
 	if len(args) == 0 {
 		cfg, err := config.Load(look)
 		if err != nil {
 			fmt.Fprintf(errw, "configuration is invalid: %v\n", err)
 			return 1
 		}
+		pool, repo, err := buildInfra(context.Background(), cfg.DSN())
+		if err != nil {
+			fmt.Fprintf(errw, "base de datos no disponible: %v\n", err)
+			return 1
+		}
+		catalog, err := loadCatalog(context.Background(), pool)
+		if err != nil {
+			if errors.Is(err, postgres.ErrCatalogEmpty) {
+				fmt.Fprintf(errw, "catálogo de recursos vacío: ejecuta las migraciones (scripts/db/migrate.sh up)\n")
+			} else {
+				fmt.Fprintf(errw, "no se pudo cargar el catálogo de recursos: %v\n", err)
+			}
+			return 1
+		}
 		// Fail fast: a structurally malformed catalog (e.g. a future data-only
 		// class addition with a dangling reference) must never reach the TUI
 		// silently misbehaving — it aborts the launch instead (design §8).
-		catalog := buildCatalog()
 		if err := catalog.Validate(); err != nil {
 			fmt.Fprintf(errw, "catálogo de recursos inválido: %v\n", err)
-			return 1
-		}
-		repo, err := buildRepository(context.Background(), cfg.DSN())
-		if err != nil {
-			fmt.Fprintf(errw, "database unavailable: %v\n", err)
 			return 1
 		}
 		service := recursos.NewService(repo, catalog)

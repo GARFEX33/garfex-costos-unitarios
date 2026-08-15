@@ -4,14 +4,14 @@ import "testing"
 
 // RED (task 2a.1): ResourceScope-based lookups must reject cross-class
 // family/type reuse. Both cases fail to compile until 2a.2's GREEN lands
-// NewResourceCatalog()/hasFamily(ResourceScope)/hasType(ResourceScope) —
+// SeedResourceCatalog()/hasFamily(ResourceScope)/hasType(ResourceScope) —
 // the mechanical-rename-slice exception to RED-via-compiler (design
 // Testing Strategy). PR2b later extends this same file with the full
 // adapted table-case coverage from material_catalog_query_test.go.
 
 // Spec scenario "Family valid only within its class".
 func TestResourceCatalog_hasFamily_ScopedByClass(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	if !catalog.hasFamily(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES"}) {
 		t.Fatalf("hasFamily(MATERIAL/CONDUCTORES) = false, want true")
 	}
@@ -22,7 +22,7 @@ func TestResourceCatalog_hasFamily_ScopedByClass(t *testing.T) {
 
 // Spec scenario "Type valid only within its family+class".
 func TestResourceCatalog_hasType_ScopedByFamily(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	if !catalog.hasType(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}) {
 		t.Fatalf("hasType(MATERIAL/CONDUCTORES/CABLE) = false, want true")
 	}
@@ -95,9 +95,9 @@ func findResourceAttribute(t *testing.T, attributes []ResourceAttribute, code st
 
 // TestAttributesForReturnsCatalogDeclarationOrder covers AttributesFor's
 // core contract: CONDUCTORES/CABLE's attributes come back in exactly the
-// order NewResourceCatalog() declares them.
+// order SeedResourceCatalog() declares them.
 func TestAttributesForReturnsCatalogDeclarationOrder(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	attributes := catalog.AttributesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"})
 	want := []string{"conductor_material", "gauge", "insulation", "color", "voltage"}
 	if len(attributes) != len(want) {
@@ -114,7 +114,7 @@ func TestAttributesForReturnsCatalogDeclarationOrder(t *testing.T) {
 // read-query contract: an unknown family/type yields an empty result, not
 // an error — validation is NewResource's job.
 func TestAttributesForUnknownFamilyOrTypeReturnsEmpty(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	if got := catalog.AttributesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "NOPE", TypeCode: "CABLE"}); len(got) != 0 {
 		t.Fatalf("AttributesFor(unknown family) = %v, want empty", got)
 	}
@@ -126,7 +126,7 @@ func TestAttributesForUnknownFamilyOrTypeReturnsEmpty(t *testing.T) {
 // TestOptionsForReturnsColorOptions covers OptionsFor's core contract: the
 // real catalog's 5 color options come back in catalog declaration order.
 func TestOptionsForReturnsColorOptions(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	color := findResourceAttribute(t, catalog.AttributesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}), "color")
 	options := catalog.OptionsFor(color)
 	want := []string{"NEGRO", "BLANCO", "ROJO", "AZUL", "VERDE"}
@@ -143,7 +143,7 @@ func TestOptionsForReturnsColorOptions(t *testing.T) {
 // TestOptionsForAttributeWithNoOptionsReturnsEmpty covers OptionsFor for an
 // unknown attribute code, which has no AttributeOption entries at all.
 func TestOptionsForAttributeWithNoOptionsReturnsEmpty(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	if got := catalog.OptionsFor(ResourceAttribute{Definition: AttributeDefinition{Code: "nope"}}); len(got) != 0 {
 		t.Fatalf("OptionsFor(unknown attribute) = %v, want empty", got)
 	}
@@ -153,7 +153,7 @@ func TestOptionsForAttributeWithNoOptionsReturnsEmpty(t *testing.T) {
 // NaturalUnitsFor against the real catalog: CONDUCTORES allows exactly one
 // unit (M), which is also its suggested unit.
 func TestNaturalUnitsForRealCatalogReturnsSingleSuggestedUnit(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	units := catalog.NaturalUnitsFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES"})
 	if len(units) != 1 || units[0].Code != "M" {
 		t.Fatalf("NaturalUnitsFor(CONDUCTORES) = %v, want [M]", units)
@@ -192,7 +192,7 @@ func TestNaturalUnitsForOrdersSuggestedFirstRegardlessOfDeclarationOrder(t *test
 // to exactly its related option (13 mm), using the real tuberiasRelations()
 // pairing.
 func TestValidOptionsNarrowsDiameterMmByChosenDiameterInch(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	scope := ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA"}
 	diameterMM := findResourceAttribute(t, catalog.AttributesFor(scope), "diameter_mm")
 	current := []ResourceAttributeValue{OptionValue("diameter_inch", `1/2"`)}
@@ -206,7 +206,7 @@ func TestValidOptionsNarrowsDiameterMmByChosenDiameterInch(t *testing.T) {
 // direction: AttributeOptionRelation is stored directionally
 // (diameter_inch -> diameter_mm) but ValidOptions must narrow both ways.
 func TestValidOptionsNarrowsDiameterInchByChosenDiameterMm(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	scope := ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA"}
 	diameterInch := findResourceAttribute(t, catalog.AttributesFor(scope), "diameter_inch")
 	current := []ResourceAttributeValue{OptionValue("diameter_mm", "13 mm")}
@@ -220,7 +220,7 @@ func TestValidOptionsNarrowsDiameterInchByChosenDiameterMm(t *testing.T) {
 // ValidOptions when current is nil: no relation can be satisfied, so every
 // real catalog diameter_mm option (9 total) comes back unconstrained.
 func TestValidOptionsWithNothingChosenReturnsAllUnconstrained(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	scope := ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA"}
 	diameterMM := findResourceAttribute(t, catalog.AttributesFor(scope), "diameter_mm")
 	options := catalog.ValidOptions(diameterMM, nil)
@@ -243,7 +243,7 @@ func TestValidOptionsWithNothingChosenReturnsAllUnconstrained(t *testing.T) {
 // all (color): it always returns its full unconstrained option list, no
 // matter what current holds.
 func TestValidOptionsWithNoRelationsReturnsFullListRegardlessOfCurrent(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	color := findResourceAttribute(t, catalog.AttributesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}), "color")
 	want := catalog.OptionsFor(color)
 	current := []ResourceAttributeValue{
@@ -265,7 +265,7 @@ func TestValidOptionsWithNoRelationsReturnsFullListRegardlessOfCurrent(t *testin
 // contract against the real catalog: each family has exactly one type
 // today.
 func TestTypesForReturnsCatalogDeclarationOrder(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	if got := catalog.TypesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES"}); len(got) != 1 || got[0].Code != "CABLE" {
 		t.Fatalf("TypesFor(CONDUCTORES) = %v, want [CABLE]", got)
 	}
@@ -277,7 +277,7 @@ func TestTypesForReturnsCatalogDeclarationOrder(t *testing.T) {
 // TestTypesForUnknownFamilyReturnsEmpty covers TypesFor's read-query
 // contract: an unknown family yields an empty result, not an error.
 func TestTypesForUnknownFamilyReturnsEmpty(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	if got := catalog.TypesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "NOPE"}); len(got) != 0 {
 		t.Fatalf("TypesFor(unknown family) = %v, want empty", got)
 	}
@@ -289,7 +289,7 @@ func TestTypesForUnknownFamilyReturnsEmpty(t *testing.T) {
 // resolves to ModeForbidden/notApplicable=true — mirroring what NewResource
 // already enforces internally.
 func TestResourceAttributeEffectiveAppliesConditionalRule(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	color := findResourceAttribute(t, catalog.AttributesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}), "color")
 	mode, _, notApplicable := color.Effective([]ResourceAttributeValue{OptionValue("insulation", "DESNUDO")})
 	if mode != ModeForbidden || !notApplicable {
@@ -303,7 +303,7 @@ func TestResourceAttributeEffectiveAppliesConditionalRule(t *testing.T) {
 // ModeRequired (mirroring the existing private effective()'s
 // unmatched-rule fallback).
 func TestResourceAttributeEffectiveFallsBackToRequiredWhenNoRuleMatches(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	color := findResourceAttribute(t, catalog.AttributesFor(ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}), "color")
 	mode, participates, notApplicable := color.Effective([]ResourceAttributeValue{OptionValue("insulation", "THW")})
 	if mode != ModeRequired || notApplicable {

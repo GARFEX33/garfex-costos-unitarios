@@ -41,12 +41,12 @@ func (f *fakeResourceDeleter) Delete(_ context.Context, id int64) error {
 }
 
 // newDispatchAdapter builds a ResourcesWorkspaceAdapter against the real
-// production catalog (domain.NewResourceCatalog()) for the workspace
+// production catalog (domain.SeedResourceCatalog()) for the workspace
 // dispatch tests below — mirrors resource_editor_test.go's newTestAdapter
 // but wires every dependency (search/delete included), since Respond's full
 // dispatch (unlike the editor-only tests) exercises all of them.
 func newDispatchAdapter(searcher resourceSearcher, getter resourceGetter, describer resourceDescriber, creator resourceCreator, updater resourceUpdater, deleter resourceDeleter, classFilter string) *ResourcesWorkspaceAdapter {
-	return NewResourcesWorkspaceAdapter(searcher, getter, describer, creator, updater, deleter, domain.NewResourceCatalog(), classFilter)
+	return NewResourcesWorkspaceAdapter(searcher, getter, describer, creator, updater, deleter, domain.SeedResourceCatalog(), classFilter)
 }
 
 func TestResourcesWorkspaceAdapterGreeting(t *testing.T) {

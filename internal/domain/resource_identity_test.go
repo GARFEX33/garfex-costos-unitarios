@@ -16,7 +16,7 @@ import "testing"
 // Spec "New key format": class segment is present and first, exactly as
 // design specifies (class|family|type|sorted(code=canonicalValue...)).
 func TestIdentityKey_HasClassSegmentFirst(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	resource, err := NewResource(catalog, conductoresScope, "M", []ResourceAttributeValue{
 		OptionValue("conductor_material", "COBRE"),
 		OptionValue("gauge", "12 AWG"),

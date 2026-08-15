@@ -14,7 +14,7 @@ import (
 // unfiltered "/recursos" entry first, then one per active class in
 // ActiveClasses' own Order-then-Name order.
 func TestBuildWorkspaceDescriptorsWrapsCatalogActiveClasses(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	agentFor := func(string) InteractionAgent { return &fakeCatalogAgent{} }
 	descriptors := BuildWorkspaceDescriptors(catalog, agentFor)
 
@@ -35,11 +35,11 @@ func TestBuildWorkspaceDescriptorsWrapsCatalogActiveClasses(t *testing.T) {
 
 // TestNewWithCatalogGlobalPaletteIsCatalogDriven closes PR8's second flagged
 // gap: the real running app's global (non-workspace) "/" palette must be
-// catalog-driven, not the flat legacy literal. Real domain.NewResourceCatalog()
+// catalog-driven, not the flat legacy literal. Real domain.SeedResourceCatalog()
 // seed data drives this end to end through NewWithCatalog, the constructor
 // cmd/garfex/main.go uses.
 func TestNewWithCatalogGlobalPaletteIsCatalogDriven(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	agentFor := func(string) InteractionAgent { return &fakeCatalogAgent{} }
 	m := NewWithCatalog(Handlers{}, NewFakeAgent(), catalog, agentFor)
 
@@ -67,7 +67,7 @@ func TestNewWithCatalogGlobalPaletteIsCatalogDriven(t *testing.T) {
 // registry exactly like any other registered workspace, closing the loop
 // from real catalog data to a real per-class InteractionAgent.
 func TestNewWithCatalogClassWorkspaceReachesItsOwnAgent(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	materials := &fakeCatalogAgent{}
 	agentFor := func(classCode string) InteractionAgent {
 		if classCode == "MATERIAL" {
@@ -90,7 +90,7 @@ func TestNewWithCatalogClassWorkspaceReachesItsOwnAgent(t *testing.T) {
 // unfiltered "/recursos" workspace calls agentFor with an empty classCode,
 // matching BuildWorkspaceDescriptors' own contract.
 func TestNewWithCatalogUnfilteredWorkspaceUsesEmptyClassCode(t *testing.T) {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 	var gotClassCodes []string
 	agentFor := func(classCode string) InteractionAgent {
 		gotClassCodes = append(gotClassCodes, classCode)

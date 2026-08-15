@@ -9,7 +9,7 @@ import (
 )
 
 // syntheticServiceClassCatalog returns the REAL production catalog
-// (domain.NewResourceCatalog(), the 3-class MATERIAL/MANO_DE_OBRA/
+// (domain.SeedResourceCatalog(), the 3-class MATERIAL/MANO_DE_OBRA/
 // EQUIPO_HERRAMIENTA seed) with a 4th class — SERVICIO_ESPECIALIZADO —
 // appended as PURE DATA: one family, one type, one controlled-option
 // attribute with two real option values, and a unit policy reusing the
@@ -21,7 +21,7 @@ import (
 // injecting the catalog into ResourcesWorkspaceAdapter instead of resolving
 // it via a package-level constructor call.
 func syntheticServiceClassCatalog() domain.ResourceCatalog {
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 
 	catalog.Classes = append(catalog.Classes, domain.ResourceClass{
 		Code: "SERVICIO_ESPECIALIZADO", Name: "Servicio especializado", Plural: "Servicios especializados",

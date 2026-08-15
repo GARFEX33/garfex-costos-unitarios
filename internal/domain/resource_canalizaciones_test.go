@@ -11,7 +11,7 @@ import "testing"
 var canalizacionesScope = ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA"}
 
 func TestCanalizacionesCatalogCreatesValidResources(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	tests := []struct {
 		name, tipo, diameterInch, diameterMM, wantIdentity string
 	}{{"conduit pared delgada 1/2", "CONDUIT PARED DELGADA", `1/2"`, "13 mm", `MATERIAL|CANALIZACIONES|TUBERIA|diameter_inch=1/2"|tipo=CONDUIT PARED DELGADA`}, {"conduit pared gruesa 3/4", "CONDUIT PARED GRUESA", `3/4"`, "19 mm", `MATERIAL|CANALIZACIONES|TUBERIA|diameter_inch=3/4"|tipo=CONDUIT PARED GRUESA`}, {"pvc conduit 1", "PVC CONDUIT", `1"`, "25 mm", `MATERIAL|CANALIZACIONES|TUBERIA|diameter_inch=1"|tipo=PVC CONDUIT`}, {"conduit pared delgada 4", "CONDUIT PARED DELGADA", `4"`, "100 mm", `MATERIAL|CANALIZACIONES|TUBERIA|diameter_inch=4"|tipo=CONDUIT PARED DELGADA`}}
@@ -32,7 +32,7 @@ func TestCanalizacionesCatalogCreatesValidResources(t *testing.T) {
 }
 
 func TestCanalizacionesValidationRejectsInvalidTypeDiameterAndPair(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	valid := []ResourceAttributeValue{OptionValue("tipo", "CONDUIT PARED DELGADA"), OptionValue("diameter_inch", `1/2"`), OptionValue("diameter_mm", "13 mm")}
 	tests := []struct {
 		name   string
@@ -50,7 +50,7 @@ func TestCanalizacionesValidationRejectsInvalidTypeDiameterAndPair(t *testing.T)
 }
 
 func TestCanalizacionesNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	values := []ResourceAttributeValue{OptionValue("tipo", "CONDUIT PARED DELGADA"), OptionValue("diameter_inch", `1/2"`), OptionValue("diameter_mm", "13 mm")}
 	a, err := NewResource(catalog, canalizacionesScope, "PZA", values)
 	if err != nil {
@@ -67,7 +67,7 @@ func TestCanalizacionesNaturalUnitDoesNotParticipateInIdentity(t *testing.T) {
 }
 
 func TestCanalizacionesDuplicateIdentity(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	values := []ResourceAttributeValue{OptionValue("tipo", "CONDUIT PARED DELGADA"), OptionValue("diameter_inch", `1/2"`), OptionValue("diameter_mm", "13 mm")}
 	a, err := NewResource(catalog, canalizacionesScope, "PZA", values)
 	if err != nil {
@@ -83,7 +83,7 @@ func TestCanalizacionesDuplicateIdentity(t *testing.T) {
 }
 
 func TestCanalizacionesDistinctIdentitiesForTechnicalDifferences(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	makeResource := func(tipo, diameterInch, diameterMM string) Resource {
 		r, err := NewResource(catalog, canalizacionesScope, "PZA", []ResourceAttributeValue{OptionValue("tipo", tipo), OptionValue("diameter_inch", diameterInch), OptionValue("diameter_mm", diameterMM)})
 		if err != nil {
@@ -101,7 +101,7 @@ func TestCanalizacionesDistinctIdentitiesForTechnicalDifferences(t *testing.T) {
 }
 
 func TestCanalizacionesOldAttributesAndOptionsRemoved(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	for _, code := range []string{"conduit_type", "material", "nominal_diameter"} {
 		for _, def := range catalog.Definitions {
 			if def.Code == code {
@@ -122,7 +122,7 @@ func TestCanalizacionesOldAttributesAndOptionsRemoved(t *testing.T) {
 }
 
 func TestCanalizacionesOnlyApprovedAttributesAndOptions(t *testing.T) {
-	catalog := NewResourceCatalog()
+	catalog := SeedResourceCatalog()
 	approvedAttributes := map[string]bool{"tipo": true, "diameter_inch": true, "diameter_mm": true}
 	for _, attribute := range catalog.Attributes {
 		if attribute.FamilyCode != "CANALIZACIONES" {

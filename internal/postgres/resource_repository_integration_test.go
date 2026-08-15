@@ -27,7 +27,7 @@ func TestResourceRepositoryIntegration(t *testing.T) {
 	defer pool.Close()
 
 	repo := NewResourceRepository(pool)
-	catalog := domain.NewResourceCatalog()
+	catalog := domain.SeedResourceCatalog()
 
 	t.Run("insulated and desnudo round trip", func(t *testing.T) {
 		cleanupResources(ctx, t, pool)

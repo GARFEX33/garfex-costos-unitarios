@@ -90,7 +90,7 @@ func TestServiceGetScopesByClassCode(t *testing.T) {
 		{"MATERIAL", sharedIdentity}:    underMaterial,
 		{"CONDUCTORES", sharedIdentity}: underFamilyCodeMisusedAsClass,
 	}}
-	svc := NewService(repo, domain.NewResourceCatalog())
+	svc := NewService(repo, domain.SeedResourceCatalog())
 
 	got, err := svc.Get(context.Background(), "MATERIAL", sharedIdentity)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestServiceGet(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{resource: tt.resource, err: tt.repoErr}
-			got, err := NewService(repo, domain.NewResourceCatalog()).Get(context.Background(), tt.class, tt.identity)
+			got, err := NewService(repo, domain.SeedResourceCatalog()).Get(context.Background(), tt.class, tt.identity)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
 			}
@@ -171,7 +171,7 @@ func TestServiceSearch(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{resources: tt.resources, searchErr: tt.repoErr}
-			got, err := NewService(repo, domain.NewResourceCatalog()).Search(context.Background(), tt.criteria)
+			got, err := NewService(repo, domain.SeedResourceCatalog()).Search(context.Background(), tt.criteria)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Search() error = %v, want %v", err, tt.wantErr)
 			}
@@ -208,7 +208,7 @@ func TestServiceUpdate(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{updateErr: tt.repoErr}
-			err := NewService(repo, domain.NewResourceCatalog()).Update(context.Background(), tt.resource)
+			err := NewService(repo, domain.SeedResourceCatalog()).Update(context.Background(), tt.resource)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Update() error = %v, want %v", err, tt.wantErr)
 			}
@@ -242,7 +242,7 @@ func TestServiceCreate(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{createErr: tt.repoErr}
-			err := NewService(repo, domain.NewResourceCatalog()).Create(context.Background(), resource)
+			err := NewService(repo, domain.SeedResourceCatalog()).Create(context.Background(), resource)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Create() error = %v, want %v", err, tt.wantErr)
 			}
@@ -274,7 +274,7 @@ func TestServiceDelete(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{setActiveErr: tt.repoErr}
-			err := NewService(repo, domain.NewResourceCatalog()).Delete(context.Background(), tt.id)
+			err := NewService(repo, domain.SeedResourceCatalog()).Delete(context.Background(), tt.id)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Delete() error = %v, want %v", err, tt.wantErr)
 			}
