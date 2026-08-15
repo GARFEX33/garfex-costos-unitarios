@@ -70,7 +70,7 @@ func TestSyntheticFourthClassIsStructurallyValid(t *testing.T) {
 // Aliases/Keywords.
 func TestSyntheticFourthClassAppearsInAssistantActions(t *testing.T) {
 	catalog := syntheticServiceClassCatalog()
-	actions := buildAssistantActions(catalog.ActiveClasses())
+	actions := buildAssistantActions(catalog.ActiveClasses(), domain.NewCatalogRegistry().Kinds())
 	resourceTree := actions[0]
 	var found *assistantAction
 	for i := range resourceTree.children {

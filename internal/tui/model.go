@@ -160,6 +160,12 @@ type WorkspaceDescriptor struct {
 	// Agent is this workspace's own InteractionAgent, set once at
 	// construction (see NewWithWorkspaces) and never touched again.
 	Agent InteractionAgent
+	// PaletteActions is this workspace's own scoped "/" palette tree
+	// (design D13). nil (every pre-existing descriptor, Resources included)
+	// falls back to workspaceActions' original single "Crear ..." leaf built
+	// from CreateLabel — this field is purely additive and never breaks an
+	// existing WorkspaceDescriptor literal that omits it.
+	PaletteActions []assistantAction
 }
 
 // workspaceSlot is one live registry entry: the static descriptor it was
@@ -357,18 +363,31 @@ func NewWithWorkspaces(handlers Handlers, assistant InteractionAgent, descriptor
 }
 
 // NewWithCatalog wires the Assistant's own agent, every registered workspace
-// descriptor built from catalog's active classes, AND the catalog-driven
-// global "/" palette tree (recursos-maestro design §6/§7/§8) — the real
-// production wiring cmd/garfex/main.go uses. It resolves PR8's second
-// flagged gap (the global, non-workspace assistantActions var was left as
-// the flat legacy literal) without touching NewWithWorkspaces' existing
-// signature or any of its 160+ pre-existing callers: agentFor is the same
-// per-class InteractionAgent factory BuildWorkspaceDescriptors already
-// takes, called exactly once per registered workspace.
-func NewWithCatalog(handlers Handlers, assistant InteractionAgent, catalog domain.ResourceCatalog, agentFor func(classCode string) InteractionAgent) Model {
+// descriptor built from catalog's active classes, the "Configuración"
+// catalog-structure-admin workspace (design D13/§8, this PR), AND the
+// catalog-driven global "/" palette tree (recursos-maestro design §6/§7/§8)
+// — the real production wiring cmd/garfex/main.go uses. It resolves PR8's
+// second flagged gap (the global, non-workspace assistantActions var was
+// left as the flat legacy literal) without touching NewWithWorkspaces'
+// existing signature or any of its 160+ pre-existing callers: agentFor is
+// the same per-class InteractionAgent factory BuildWorkspaceDescriptors
+// already takes, called exactly once per registered resources workspace.
+//
+// registry and catalogAgent are this PR's own addition (tasks #1017's own
+// explicit note flags the registry parameter specifically as the real
+// signature ripple; catalogAgent is the accompanying, structurally
+// necessary counterpart — without it the "Configuración" workspace this same
+// registry drives the palette labels for would have nowhere to route real
+// InteractionAgent calls, since internal/tui cannot construct
+// internal/app/catalogo.Service itself — see this PR's apply-progress for
+// the full reasoning, flagged there as a deviation from the tasks artifact's
+// literal wording).
+func NewWithCatalog(handlers Handlers, assistant InteractionAgent, catalog domain.ResourceCatalog, agentFor func(classCode string) InteractionAgent, registry domain.CatalogRegistry, catalogAgent InteractionAgent) Model {
+	kinds := registry.Kinds()
 	descriptors := BuildWorkspaceDescriptors(catalog, agentFor)
+	descriptors = append(descriptors, buildCatalogAdminWorkspace(kinds, catalogAgent))
 	m := NewWithWorkspaces(handlers, assistant, descriptors)
-	m.assistantActions = buildAssistantActions(catalog.ActiveClasses())
+	m.assistantActions = buildAssistantActions(catalog.ActiveClasses(), kinds)
 	return m
 }
 
