@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -18,8 +19,8 @@ import (
 // the AC #21 proof (design §7, task 10.1) — the single most load-bearing
 // scenario of this whole change: a complete Clase→...→Presentación catalog
 // structure is authored ENTIRELY through internal/app/catalogo.Service
-// (never a Go literal, never raw SQL) against a real PostgreSQL instance, a
-// FRESH postgres.LoadResourceCatalog call proves restart persistence
+// (never a Go literal, never raw SQL) against a real PostgreSQL instance, two
+// ordered FRESH postgres.LoadResourceCatalog calls prove restart persistence
 // (co-satisfying catalog-structure-persistence/Restart Persistence's
 // two-load proof), and the UNMODIFIED internal/tui/resource_editor.go create
 // flow — driven with the same synthetic keypress pattern as
@@ -78,7 +79,8 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 		optionSetCode  = "TEST_E2E_NIVELES"
 		option1Code    = "TEST_E2E_OPCION_UNO"
 		option2Code    = "TEST_E2E_OPCION_DOS"
-		unitCode       = "PZA" // reuses the existing seeded unit (design §7)
+		unitCode       = "TEST_E2E_PZA"
+		unitSymbol     = "TEST_E2E_PZA"
 	)
 
 	// 1. Clase.
@@ -159,8 +161,18 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	must("create option 2", err)
 	t.Cleanup(func() { must("cleanup option 2", svc.Delete(ctx, domain.KindOption, option2Rec.ID)) })
 
-	// 8. Política de Unidad — reuses the existing "PZA" unit (design §7);
-	// no new Unidad kind record is created.
+	// 8. Unidad.
+	unitRec, err := svc.Create(ctx, domain.KindUnit, domain.CatalogRecord{
+		Active: true,
+		Values: map[string]domain.CatalogValue{
+			"code": {Text: unitCode}, "symbol": {Text: unitSymbol}, "dimension": {Text: "PIECE"},
+		},
+	})
+	must("create unit", err)
+	t.Cleanup(func() { must("cleanup unit", svc.Delete(ctx, domain.KindUnit, unitRec.ID)) })
+
+	// 9. Política de Unidad — references the Unidad created above, not the
+	// migration's seeded PZA row.
 	unitPolicyRec, err := svc.Create(ctx, domain.KindUnitPolicy, domain.CatalogRecord{
 		Active: true,
 		Values: map[string]domain.CatalogValue{
@@ -174,7 +186,7 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	must("create unit policy", err)
 	t.Cleanup(func() { must("cleanup unit policy", svc.Delete(ctx, domain.KindUnitPolicy, unitPolicyRec.ID)) })
 
-	// 9. Aplicabilidad — binds the característica to the Tipo (not just the
+	// 10. Aplicabilidad — binds the característica to the Tipo (not just the
 	// Familia), required, participating in Identidad.
 	bindingRec, err := svc.Create(ctx, domain.KindAttributeBinding, domain.CatalogRecord{
 		Active: true,
@@ -191,7 +203,7 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	must("create attribute binding", err)
 	t.Cleanup(func() { must("cleanup attribute binding", svc.Delete(ctx, domain.KindAttributeBinding, bindingRec.ID)) })
 
-	// 10. Presentación.
+	// 11. Presentación.
 	presentationRec, err := svc.Create(ctx, domain.KindPresentationField, domain.CatalogRecord{
 		Active: true,
 		Values: map[string]domain.CatalogValue{
@@ -208,10 +220,20 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	})
 
 	// Restart-persistence proof (co-satisfies catalog-structure-persistence/
-	// Restart Persistence's two-load requirement): a genuinely FRESH load,
-	// never a reuse of `boot`'s in-memory state.
-	catalog, err := postgres.LoadResourceCatalog(ctx, pool)
-	must("LoadResourceCatalog (fresh, post-write)", err)
+	// Restart Persistence's two-load requirement): exactly two genuinely FRESH
+	// loads, in order, never a reuse of `boot`'s in-memory state. Each loader
+	// call opens its own transaction; the second call is the simulated restart
+	// process and is the catalog consumed by the resource flow below.
+	postWriteCatalog, err := postgres.LoadResourceCatalog(ctx, pool)
+	must("LoadResourceCatalog (post-write load 1)", err)
+	restartedCatalog, err := postgres.LoadResourceCatalog(ctx, pool)
+	must("LoadResourceCatalog (post-write load 2)", err)
+	if !reflect.DeepEqual(postWriteCatalog, restartedCatalog) {
+		t.Fatalf("post-write catalog loads differ: first=%#v second=%#v", postWriteCatalog, restartedCatalog)
+	}
+	assertAdminAuthoredStructure(t, postWriteCatalog, classCode, familyCode, typeCode, definitionCode, optionSetCode, option1Code, option2Code, unitCode, unitSymbol)
+	assertAdminAuthoredStructure(t, restartedCatalog, classCode, familyCode, typeCode, definitionCode, optionSetCode, option1Code, option2Code, unitCode, unitSymbol)
+	catalog := restartedCatalog
 
 	// Drive the UNMODIFIED resource_editor.go create flow against the
 	// admin-authored structure, exactly like synthetic_class_test.go's own
@@ -298,5 +320,116 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	}
 	if !strings.Contains(description, option1Code) {
 		t.Fatalf("Describe() = %q, want the admin-configured Presentación field to render the chosen option's code %q", description, option1Code)
+	}
+}
+
+func assertAdminAuthoredStructure(t *testing.T, catalog domain.ResourceCatalog, classCode, familyCode, typeCode, definitionCode, optionSetCode, option1Code, option2Code, unitCode, unitSymbol string) {
+	t.Helper()
+
+	var class domain.ResourceClass
+	for _, candidate := range catalog.Classes {
+		if candidate.Code == classCode {
+			class = candidate
+			break
+		}
+	}
+	if class.Code != classCode || class.Name != "Test E2E Servicio" || !class.Active {
+		t.Fatalf("loaded class = %#v, want TEST_ class authored by catalogo.Service", class)
+	}
+
+	var family domain.ResourceFamily
+	for _, candidate := range catalog.Families {
+		if candidate.ClassCode == classCode && candidate.Code == familyCode {
+			family = candidate
+			break
+		}
+	}
+	if family.Code != familyCode || family.Name != "Test E2E Instalación" || !family.Active {
+		t.Fatalf("loaded family = %#v, want TEST_ family authored by catalogo.Service", family)
+	}
+
+	var resourceType domain.ResourceType
+	for _, candidate := range catalog.Types {
+		if candidate.ClassCode == classCode && candidate.FamilyCode == familyCode && candidate.Code == typeCode {
+			resourceType = candidate
+			break
+		}
+	}
+	if resourceType.Code != typeCode || resourceType.Name != "Test E2E Puesta en marcha" || !resourceType.Active {
+		t.Fatalf("loaded type = %#v, want TEST_ type authored by catalogo.Service", resourceType)
+	}
+
+	var definition domain.AttributeDefinition
+	for _, candidate := range catalog.Definitions {
+		if candidate.Code == definitionCode {
+			definition = candidate
+			break
+		}
+	}
+	if definition.Code != definitionCode || definition.Name != "Nivel de Servicio Test E2E" {
+		t.Fatalf("loaded characteristic = %#v, want TEST_ characteristic authored by catalogo.Service", definition)
+	}
+
+	var optionSetFound bool
+	for _, candidate := range catalog.Options {
+		if candidate.OptionSet == optionSetCode && candidate.AttributeCode == definitionCode && candidate.Code == option1Code {
+			optionSetFound = true
+		}
+	}
+	if !optionSetFound {
+		t.Fatalf("loaded options missing %q/%q in option set %q", option1Code, option2Code, optionSetCode)
+	}
+	var option2Found bool
+	for _, candidate := range catalog.Options {
+		if candidate.OptionSet == optionSetCode && candidate.AttributeCode == definitionCode && candidate.Code == option2Code {
+			option2Found = true
+		}
+	}
+	if !option2Found {
+		t.Fatalf("loaded options missing %q in option set %q", option2Code, optionSetCode)
+	}
+
+	var unit domain.UnitDefinition
+	for _, candidate := range catalog.Units {
+		if candidate.Code == unitCode {
+			unit = candidate
+			break
+		}
+	}
+	if unit.Code != unitCode || unit.Symbol != unitSymbol || !unit.Active {
+		t.Fatalf("loaded unit = %#v, want TEST_ unit authored by catalogo.Service", unit)
+	}
+
+	bindingFound := false
+	for _, candidate := range catalog.Attributes {
+		if candidate.ClassCode == classCode && candidate.FamilyCode == familyCode && candidate.TypeCode == typeCode && candidate.Definition.Code == definitionCode && candidate.Mode == domain.ModeRequired && candidate.IdentityParticipates {
+			bindingFound = true
+			break
+		}
+	}
+	if !bindingFound {
+		t.Fatalf("loaded applicability missing required identity binding for %q", definitionCode)
+	}
+
+	presentationFound := false
+	for _, candidate := range catalog.PresentationFields {
+		if candidate.ClassCode == classCode && candidate.FamilyCode == familyCode && candidate.TypeCode == typeCode && candidate.AttributeCode == definitionCode && candidate.Position == 1 {
+			presentationFound = true
+			break
+		}
+	}
+	if !presentationFound {
+		t.Fatalf("loaded presentation missing field for %q", definitionCode)
+	}
+
+	policyFound := false
+	for _, candidate := range catalog.UnitPolicies {
+		if candidate.ClassCode == classCode && candidate.FamilyCode == familyCode && candidate.UnitCode == unitCode && candidate.Allowed && candidate.Suggested {
+			policyFound = true
+			break
+		}
+	}
+	if !policyFound {
+		t.Fatalf("loaded unit policy missing allowed/suggested unit %q", unitCode)
 	}
 }
