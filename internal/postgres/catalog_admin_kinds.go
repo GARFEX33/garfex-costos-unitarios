@@ -1,0 +1,1428 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// kindTables is the one Go map catalog_admin_repository.go dispatches
+// through — design §3's explicit "kindTables map[CatalogKindCode]
+// tableMapping (table name, column names, parent join, dependency-probe
+// SQL, resource-reference-probe SQL). No table introspection — only
+// registered kinds are administrable." Four kinds have no BIGSERIAL id
+// column in their underlying table (OptionSet: resource_option_sets PK is
+// code; Option: attribute_options composite PK; UnitPolicy:
+// resource_unit_policies composite PK; PresentationField:
+// resource_type_presentation_fields composite PK) — CatalogRecord.ID for
+// those is a stable Postgres-computed hashtextextended() of the row's own
+// natural key, resolved back to the real row via the same expression in
+// every read/write WHERE clause (no application-side table scan). This is a
+// deliberate resolution of a real schema/port mismatch design left open
+// (CatalogAdminRepository is keyed by int64 id for every kind; 4 of the 11
+// underlying tables were never given a serial id) — flagged for
+// sdd-verify/reviewer confirmation same as PR3's own documented gap-fills.
+var kindTables = map[domain.CatalogKindCode]kindHandlers{
+	domain.KindClass: {
+		list: listClasses, get: getClass, insert: insertClass, update: updateClass,
+		setActive: simpleSetActive("public.resource_classes", "id"),
+		del:       simpleDelete("public.resource_classes", "id"),
+		dependents: []dependencyProbe{
+			{kind: domain.KindFamily, blocking: true, query: `SELECT count(*) FROM public.resource_families WHERE class_id=$1`},
+		},
+		referencedByResources: classReferencedByResources,
+	},
+	domain.KindFamily: {
+		list: listFamilies, get: getFamily, insert: insertFamily, update: updateFamily,
+		setActive: simpleSetActive("public.resource_families", "id"),
+		del:       simpleDelete("public.resource_families", "id"),
+		dependents: []dependencyProbe{
+			{kind: domain.KindType, blocking: true, query: `SELECT count(*) FROM public.resource_types WHERE family_id=$1`},
+			{kind: domain.KindAttributeBinding, blocking: true, query: `SELECT count(*) FROM public.resource_attributes WHERE family_id=$1`},
+			{kind: domain.KindUnitPolicy, blocking: true, query: `SELECT count(*) FROM public.resource_unit_policies WHERE family_id=$1`},
+		},
+		referencedByResources: familyReferencedByResources,
+	},
+	domain.KindType: {
+		list: listTypes, get: getType, insert: insertType, update: updateType,
+		setActive: simpleSetActive("public.resource_types", "id"),
+		del:       simpleDelete("public.resource_types", "id"),
+		dependents: []dependencyProbe{
+			{kind: domain.KindAttributeBinding, blocking: true, query: `SELECT count(*) FROM public.resource_attributes WHERE type_id=$1`},
+			{kind: domain.KindPresentationField, blocking: false, query: `SELECT count(*) FROM public.resource_type_presentation_fields WHERE type_id=$1`},
+		},
+		referencedByResources: typeReferencedByResources,
+	},
+	domain.KindAttributeDefinition: {
+		list: listDefinitions, get: getDefinition, insert: insertDefinition, update: updateDefinition,
+		setActive: simpleSetActive("public.attribute_definitions", "id"),
+		del:       simpleDelete("public.attribute_definitions", "id"),
+		dependents: []dependencyProbe{
+			{kind: domain.KindAttributeBinding, blocking: true, query: `SELECT count(*) FROM public.resource_attributes WHERE definition_id=$1`},
+			{kind: domain.KindOption, blocking: true, query: `SELECT count(*) FROM public.attribute_options WHERE attribute_definition_id=$1`},
+		},
+		referencedByResources: definitionReferencedByResources,
+	},
+	domain.KindOptionSet: {
+		list: listOptionSets, get: getOptionSet, insert: insertOptionSet, update: updateOptionSet,
+		setActive: setActiveOptionSet, del: deleteOptionSet,
+		dependents: []dependencyProbe{
+			{kind: domain.KindOption, blocking: true, query: `
+				SELECT count(*) FROM public.attribute_options ao
+				JOIN public.resource_option_sets os ON os.code = ao.option_set
+				WHERE hashtextextended(os.code, 0) = $1`},
+			{kind: domain.KindOptionRelation, blocking: true, query: `
+				SELECT count(*) FROM public.attribute_option_relations ar
+				JOIN public.resource_option_sets os ON os.code = ar.option_set
+				WHERE hashtextextended(os.code, 0) = $1`},
+		},
+		referencedByResources: optionSetReferencedByResources,
+	},
+	domain.KindOption: {
+		list: listOptions, get: getOption, insert: insertOption, update: updateOption,
+		setActive: setActiveOption, del: deleteOption,
+		dependents: []dependencyProbe{
+			{kind: domain.KindOptionRelation, blocking: true, query: `
+				WITH target AS (
+					SELECT ao.option_set, ao.attribute_definition_id, ao.code
+					FROM public.attribute_options ao
+					JOIN public.attribute_definitions d ON d.id = ao.attribute_definition_id
+					WHERE hashtextextended(ao.option_set || '|' || d.code || '|' || ao.code, 0) = $1
+				)
+				SELECT count(*) FROM public.attribute_option_relations ar, target t
+				WHERE (ar.option_set = t.option_set AND ar.from_attribute_definition_id = t.attribute_definition_id AND ar.from_option_code = t.code)
+				   OR (ar.option_set = t.option_set AND ar.to_attribute_definition_id = t.attribute_definition_id AND ar.to_option_code = t.code)`},
+		},
+		referencedByResources: optionReferencedByResources,
+	},
+	domain.KindOptionRelation: {
+		list: listOptionRelations, get: getOptionRelation, insert: insertOptionRelation, update: updateOptionRelation,
+		setActive: simpleSetActive("public.attribute_option_relations", "id"),
+		del:       simpleDelete("public.attribute_option_relations", "id"),
+		// No Children registered for OptionRelation (catalog_kind.go) and no
+		// código field (junction-kind exemption) — dependents/reference
+		// probe both stay empty/nil.
+	},
+	domain.KindUnit: {
+		list: listUnits, get: getUnit, insert: insertUnit, update: updateUnit,
+		setActive: simpleSetActive("public.unit_definitions", "id"),
+		del:       simpleDelete("public.unit_definitions", "id"),
+		dependents: []dependencyProbe{
+			{kind: domain.KindUnitPolicy, blocking: true, query: `SELECT count(*) FROM public.resource_unit_policies WHERE unit_id=$1`},
+		},
+		referencedByResources: unitReferencedByResources,
+	},
+	domain.KindUnitPolicy: {
+		list: listUnitPolicies, get: getUnitPolicy, insert: insertUnitPolicy, update: updateUnitPolicy,
+		setActive: setActiveUnitPolicy, del: deleteUnitPolicy,
+	},
+	domain.KindAttributeBinding: {
+		list: listAttributeBindings, get: getAttributeBinding, insert: insertAttributeBinding, update: updateAttributeBinding,
+		setActive: simpleSetActive("public.resource_attributes", "id"),
+		del:       simpleDelete("public.resource_attributes", "id"),
+	},
+	domain.KindPresentationField: {
+		list: listPresentationFields, get: getPresentationField, insert: insertPresentationField, update: updatePresentationField,
+		setActive: setActivePresentationField, del: deletePresentationField,
+	},
+}
+
+// --- shared FK-resolution helpers (ref code -> internal row id) -----------
+
+func resolveClassID(ctx context.Context, q querier, code string) (int64, error) {
+	var id int64
+	err := q.QueryRow(ctx, `SELECT id FROM public.resource_classes WHERE code=$1`, code).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf("%w: class %q", domain.ErrCatalogReference, code)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("resolve class %q: %w", code, err)
+	}
+	return id, nil
+}
+
+func resolveFamilyID(ctx context.Context, q querier, classCode, familyCode string) (familyID, classID int64, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT f.id, f.class_id FROM public.resource_families f
+		JOIN public.resource_classes cl ON cl.id = f.class_id
+		WHERE cl.code=$1 AND f.code=$2`, classCode, familyCode).Scan(&familyID, &classID)
+	if isNoRows(err) {
+		return 0, 0, fmt.Errorf("%w: class %q, family %q", domain.ErrCatalogReference, classCode, familyCode)
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("resolve family %q/%q: %w", classCode, familyCode, err)
+	}
+	return familyID, classID, nil
+}
+
+func resolveTypeID(ctx context.Context, q querier, classCode, familyCode, typeCode string) (typeID, familyID int64, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT t.id, t.family_id FROM public.resource_types t
+		JOIN public.resource_families f ON f.id = t.family_id
+		JOIN public.resource_classes cl ON cl.id = t.class_id
+		WHERE cl.code=$1 AND f.code=$2 AND t.code=$3`, classCode, familyCode, typeCode).Scan(&typeID, &familyID)
+	if isNoRows(err) {
+		return 0, 0, fmt.Errorf("%w: class %q, family %q, type %q", domain.ErrCatalogReference, classCode, familyCode, typeCode)
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("resolve type %q/%q/%q: %w", classCode, familyCode, typeCode, err)
+	}
+	return typeID, familyID, nil
+}
+
+func resolveDefinitionID(ctx context.Context, q querier, code string) (int64, error) {
+	var id int64
+	err := q.QueryRow(ctx, `SELECT id FROM public.attribute_definitions WHERE code=$1`, code).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf("%w: characteristic %q", domain.ErrCatalogReference, code)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("resolve attribute definition %q: %w", code, err)
+	}
+	return id, nil
+}
+
+// --- KindClass --------------------------------------------------------
+
+func listClasses(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name")
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	sql := finalizeQuery(`SELECT id, code, name, plural, slug, display_order, aliases, keywords, active FROM public.resource_classes`, conditions, "display_order, code", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_classes: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var code, name, plural, slug string
+		var order int
+		var aliases, keywords []string
+		var active bool
+		if err := rows.Scan(&id, &code, &name, &plural, &slug, &order, &aliases, &keywords, &active); err != nil {
+			return nil, fmt.Errorf("scan resource_classes: %w", err)
+		}
+		out = append(out, classRecord(id, code, name, plural, slug, order, aliases, keywords, active))
+	}
+	return out, rows.Err()
+}
+
+func getClass(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var code, name, plural, slug string
+	var order int
+	var aliases, keywords []string
+	var active bool
+	err := q.QueryRow(ctx, `SELECT code, name, plural, slug, display_order, aliases, keywords, active FROM public.resource_classes WHERE id=$1`, id).
+		Scan(&code, &name, &plural, &slug, &order, &aliases, &keywords, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get resource_classes: %w", err)
+	}
+	return classRecord(id, code, name, plural, slug, order, aliases, keywords, active), nil
+}
+
+func classRecord(id int64, code, name, plural, slug string, order int, aliases, keywords []string, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindClass, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"code": textValue(code), "name": textValue(name), "plural": textValue(plural), "slug": textValue(slug),
+		"order": intValue(order), "aliases": listValue(aliases), "keywords": listValue(keywords),
+	}}
+}
+
+func insertClass(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.resource_classes (code, name, plural, slug, display_order, aliases, keywords, active)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		fieldText(rec, "code"), fieldText(rec, "name"), fieldText(rec, "plural"), fieldText(rec, "slug"),
+		fieldInt(rec, "order"), fieldList(rec, "aliases"), fieldList(rec, "keywords"), rec.Active).Scan(&id)
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert resource_classes: %w", err))
+	}
+	return id, nil
+}
+
+func updateClass(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	referenced, err := classReferencedByResources(ctx, tx, rec.ID)
+	if err != nil {
+		return err
+	}
+	var tag pgconn.CommandTag
+	if referenced {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_classes SET name=$1, plural=$2, slug=$3, display_order=$4, aliases=$5, keywords=$6, active=$7 WHERE id=$8`,
+			fieldText(rec, "name"), fieldText(rec, "plural"), fieldText(rec, "slug"), fieldInt(rec, "order"), fieldList(rec, "aliases"), fieldList(rec, "keywords"), rec.Active, rec.ID)
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_classes SET code=$1, name=$2, plural=$3, slug=$4, display_order=$5, aliases=$6, keywords=$7, active=$8 WHERE id=$9`,
+			fieldText(rec, "code"), fieldText(rec, "name"), fieldText(rec, "plural"), fieldText(rec, "slug"), fieldInt(rec, "order"), fieldList(rec, "aliases"), fieldList(rec, "keywords"), rec.Active, rec.ID)
+	}
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update resource_classes: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func classReferencedByResources(ctx context.Context, q querier, id int64) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.recursos WHERE class_id=$1)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check class referenced by resources: %w", err)
+	}
+	return exists, nil
+}
+
+// --- KindFamily -------------------------------------------------------
+
+func listFamilies(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions, args = appendTextFilter(conditions, args, f.Text, "f.code", "f.name")
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "f.active")
+	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
+	sql := finalizeQuery(`
+		SELECT f.id, cl.code, f.code, f.name, f.active
+		FROM public.resource_families f
+		JOIN public.resource_classes cl ON cl.id = f.class_id`, conditions, "cl.id, f.id", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_families: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var classCode, code, name string
+		var active bool
+		if err := rows.Scan(&id, &classCode, &code, &name, &active); err != nil {
+			return nil, fmt.Errorf("scan resource_families: %w", err)
+		}
+		out = append(out, familyRecord(id, classCode, code, name, active))
+	}
+	return out, rows.Err()
+}
+
+func getFamily(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var classCode, code, name string
+	var active bool
+	err := q.QueryRow(ctx, `
+		SELECT cl.code, f.code, f.name, f.active
+		FROM public.resource_families f JOIN public.resource_classes cl ON cl.id = f.class_id
+		WHERE f.id=$1`, id).Scan(&classCode, &code, &name, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get resource_families: %w", err)
+	}
+	return familyRecord(id, classCode, code, name, active), nil
+}
+
+func familyRecord(id int64, classCode, code, name string, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindFamily, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"class": refValue(domain.KindClass, classCode), "code": textValue(code), "name": textValue(name),
+	}}
+}
+
+func insertFamily(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.resource_families (class_id, code, name, active)
+		SELECT id, $2, $3, $4 FROM public.resource_classes WHERE code=$1
+		RETURNING id`, fieldRef(rec, "class"), fieldText(rec, "code"), fieldText(rec, "name"), rec.Active).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf("%w: class %q", domain.ErrCatalogReference, fieldRef(rec, "class"))
+	}
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert resource_families: %w", err))
+	}
+	return id, nil
+}
+
+func updateFamily(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	classID, err := resolveClassID(ctx, tx, fieldRef(rec, "class"))
+	if err != nil {
+		return err
+	}
+	referenced, err := familyReferencedByResources(ctx, tx, rec.ID)
+	if err != nil {
+		return err
+	}
+	var tag pgconn.CommandTag
+	if referenced {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_families SET class_id=$1, name=$2, active=$3 WHERE id=$4`, classID, fieldText(rec, "name"), rec.Active, rec.ID)
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_families SET class_id=$1, code=$2, name=$3, active=$4 WHERE id=$5`, classID, fieldText(rec, "code"), fieldText(rec, "name"), rec.Active, rec.ID)
+	}
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update resource_families: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func familyReferencedByResources(ctx context.Context, q querier, id int64) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.recursos WHERE family_id=$1)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check family referenced by resources: %w", err)
+	}
+	return exists, nil
+}
+
+// --- KindType -----------------------------------------------------------
+
+func listTypes(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions, args = appendTextFilter(conditions, args, f.Text, "t.code", "t.name")
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "t.active")
+	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
+	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
+	sql := finalizeQuery(`
+		SELECT t.id, cl.code, f.code, t.code, t.name, t.active
+		FROM public.resource_types t
+		JOIN public.resource_families f ON f.id = t.family_id
+		JOIN public.resource_classes cl ON cl.id = t.class_id`, conditions, "f.id, t.id", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_types: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var classCode, familyCode, code, name string
+		var active bool
+		if err := rows.Scan(&id, &classCode, &familyCode, &code, &name, &active); err != nil {
+			return nil, fmt.Errorf("scan resource_types: %w", err)
+		}
+		out = append(out, typeRecord(id, classCode, familyCode, code, name, active))
+	}
+	return out, rows.Err()
+}
+
+func getType(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var classCode, familyCode, code, name string
+	var active bool
+	err := q.QueryRow(ctx, `
+		SELECT cl.code, f.code, t.code, t.name, t.active
+		FROM public.resource_types t
+		JOIN public.resource_families f ON f.id = t.family_id
+		JOIN public.resource_classes cl ON cl.id = t.class_id
+		WHERE t.id=$1`, id).Scan(&classCode, &familyCode, &code, &name, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get resource_types: %w", err)
+	}
+	return typeRecord(id, classCode, familyCode, code, name, active), nil
+}
+
+func typeRecord(id int64, classCode, familyCode, code, name string, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindType, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"class": refValue(domain.KindClass, classCode), "family": refValue(domain.KindFamily, familyCode),
+		"code": textValue(code), "name": textValue(name),
+	}}
+}
+
+func insertType(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	familyID, classID, err := resolveFamilyID(ctx, tx, fieldRef(rec, "class"), fieldRef(rec, "family"))
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = tx.QueryRow(ctx, `INSERT INTO public.resource_types (class_id, family_id, code, name, active) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		classID, familyID, fieldText(rec, "code"), fieldText(rec, "name"), rec.Active).Scan(&id)
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert resource_types: %w", err))
+	}
+	return id, nil
+}
+
+func updateType(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	familyID, classID, err := resolveFamilyID(ctx, tx, fieldRef(rec, "class"), fieldRef(rec, "family"))
+	if err != nil {
+		return err
+	}
+	referenced, err := typeReferencedByResources(ctx, tx, rec.ID)
+	if err != nil {
+		return err
+	}
+	var tag pgconn.CommandTag
+	if referenced {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_types SET class_id=$1, family_id=$2, name=$3, active=$4 WHERE id=$5`, classID, familyID, fieldText(rec, "name"), rec.Active, rec.ID)
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_types SET class_id=$1, family_id=$2, code=$3, name=$4, active=$5 WHERE id=$6`, classID, familyID, fieldText(rec, "code"), fieldText(rec, "name"), rec.Active, rec.ID)
+	}
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update resource_types: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func typeReferencedByResources(ctx context.Context, q querier, id int64) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.recursos WHERE type_id=$1)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check type referenced by resources: %w", err)
+	}
+	return exists, nil
+}
+
+// --- KindAttributeDefinition ("Característica") ------------------------
+
+func listDefinitions(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name")
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	sql := finalizeQuery(`SELECT id, code, name, value_type, dimension, default_identity_participates, active FROM public.attribute_definitions`, conditions, "id", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query attribute_definitions: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var code, name, valueType string
+		var dimension *string
+		var defaultIdentity, active bool
+		if err := rows.Scan(&id, &code, &name, &valueType, &dimension, &defaultIdentity, &active); err != nil {
+			return nil, fmt.Errorf("scan attribute_definitions: %w", err)
+		}
+		out = append(out, definitionRecord(id, code, name, valueType, dereference(dimension), defaultIdentity, active))
+	}
+	return out, rows.Err()
+}
+
+func getDefinition(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var code, name, valueType string
+	var dimension *string
+	var defaultIdentity, active bool
+	err := q.QueryRow(ctx, `SELECT code, name, value_type, dimension, default_identity_participates, active FROM public.attribute_definitions WHERE id=$1`, id).
+		Scan(&code, &name, &valueType, &dimension, &defaultIdentity, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get attribute_definitions: %w", err)
+	}
+	return definitionRecord(id, code, name, valueType, dereference(dimension), defaultIdentity, active), nil
+}
+
+func definitionRecord(id int64, code, name, valueType, dimension string, defaultIdentity, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindAttributeDefinition, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"code": textValue(code), "name": textValue(name), "valueType": textValue(valueType),
+		"dimension": textValue(dimension), "defaultIdentityParticipates": boolValue(defaultIdentity),
+	}}
+}
+
+func insertDefinition(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.attribute_definitions (code, name, value_type, dimension, default_identity_participates, active)
+		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		fieldText(rec, "code"), fieldText(rec, "name"), fieldText(rec, "valueType"),
+		nullableString(fieldText(rec, "dimension")), fieldBool(rec, "defaultIdentityParticipates"), rec.Active).Scan(&id)
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert attribute_definitions: %w", err))
+	}
+	return id, nil
+}
+
+func updateDefinition(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	referenced, err := definitionReferencedByResources(ctx, tx, rec.ID)
+	if err != nil {
+		return err
+	}
+	var tag pgconn.CommandTag
+	if referenced {
+		tag, err = tx.Exec(ctx, `UPDATE public.attribute_definitions SET name=$1, value_type=$2, dimension=$3, default_identity_participates=$4, active=$5 WHERE id=$6`,
+			fieldText(rec, "name"), fieldText(rec, "valueType"), nullableString(fieldText(rec, "dimension")), fieldBool(rec, "defaultIdentityParticipates"), rec.Active, rec.ID)
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE public.attribute_definitions SET code=$1, name=$2, value_type=$3, dimension=$4, default_identity_participates=$5, active=$6 WHERE id=$7`,
+			fieldText(rec, "code"), fieldText(rec, "name"), fieldText(rec, "valueType"), nullableString(fieldText(rec, "dimension")), fieldBool(rec, "defaultIdentityParticipates"), rec.Active, rec.ID)
+	}
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update attribute_definitions: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func definitionReferencedByResources(ctx context.Context, q querier, id int64) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.resource_attribute_values WHERE attribute_definition_id=$1)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check characteristic referenced by resources: %w", err)
+	}
+	return exists, nil
+}
+
+// --- KindOptionSet ("Conjunto de Opciones") ------------------------------
+//
+// resource_option_sets has no BIGSERIAL id (PK is code itself) — see
+// kindTables' doc comment. hashtextextended(code, 0) is Postgres's own
+// deterministic 64-bit hash, used both to synthesize CatalogRecord.ID and to
+// resolve it straight back to the row in every subsequent query, with no
+// application-side scan.
+
+func listOptionSets(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name")
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	sql := finalizeQuery(`SELECT hashtextextended(code, 0), code, name, active FROM public.resource_option_sets`, conditions, "code", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_option_sets: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var code, name string
+		var active bool
+		if err := rows.Scan(&id, &code, &name, &active); err != nil {
+			return nil, fmt.Errorf("scan resource_option_sets: %w", err)
+		}
+		out = append(out, optionSetRecord(id, code, name, active))
+	}
+	return out, rows.Err()
+}
+
+func getOptionSet(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var code, name string
+	var active bool
+	err := q.QueryRow(ctx, `SELECT code, name, active FROM public.resource_option_sets WHERE hashtextextended(code, 0) = $1`, id).Scan(&code, &name, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get resource_option_sets: %w", err)
+	}
+	return optionSetRecord(id, code, name, active), nil
+}
+
+func optionSetRecord(id int64, code, name string, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindOptionSet, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"code": textValue(code), "name": textValue(name),
+	}}
+}
+
+func insertOptionSet(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.resource_option_sets (code, name, active) VALUES ($1,$2,$3)
+		RETURNING hashtextextended(code, 0)`, fieldText(rec, "code"), fieldText(rec, "name"), rec.Active).Scan(&id)
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert resource_option_sets: %w", err))
+	}
+	return id, nil
+}
+
+func updateOptionSet(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	var currentCode string
+	err := tx.QueryRow(ctx, `SELECT code FROM public.resource_option_sets WHERE hashtextextended(code, 0) = $1`, rec.ID).Scan(&currentCode)
+	if isNoRows(err) {
+		return domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("resolve resource_option_sets: %w", err)
+	}
+	referenced, err := optionSetReferencedByResources(ctx, tx, rec.ID)
+	if err != nil {
+		return err
+	}
+	var tag pgconn.CommandTag
+	if referenced {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_option_sets SET name=$1, active=$2 WHERE code=$3`, fieldText(rec, "name"), rec.Active, currentCode)
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE public.resource_option_sets SET code=$1, name=$2, active=$3 WHERE code=$4`, fieldText(rec, "code"), fieldText(rec, "name"), rec.Active, currentCode)
+	}
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update resource_option_sets: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func setActiveOptionSet(ctx context.Context, tx pgx.Tx, id int64, active bool) error {
+	tag, err := tx.Exec(ctx, `UPDATE public.resource_option_sets SET active=$1 WHERE hashtextextended(code, 0) = $2`, active, id)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("set active on resource_option_sets: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func deleteOptionSet(ctx context.Context, tx pgx.Tx, id int64) error {
+	tag, err := tx.Exec(ctx, `DELETE FROM public.resource_option_sets WHERE hashtextextended(code, 0) = $1`, id)
+	if err != nil {
+		return mapCatalogDeleteError(fmt.Errorf("delete from resource_option_sets: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+// optionSetReferencedByResources closes a real gap design §6's own probe
+// table left out: resource_attribute_values.option_set is a live FK to
+// resource_option_sets(code) (migration 000002), so an OptionSet's código
+// IS referenced by resource instances, exactly like the 6 kinds design's
+// table already lists — added here for the same Código-immutability
+// enforcement, flagged for sdd-verify same as PR3's own gap-fills.
+func optionSetReferencedByResources(ctx context.Context, q querier, id int64) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM public.resource_option_sets os
+			JOIN public.resource_attribute_values v ON v.option_set = os.code
+			WHERE hashtextextended(os.code, 0) = $1
+		)`, id).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check option set referenced by resources: %w", err)
+	}
+	return exists, nil
+}
+
+// --- KindOption -----------------------------------------------------------
+//
+// attribute_options' PK is (option_set, attribute_definition_id, code) — no
+// BIGSERIAL id either; same hashtextextended() convention as KindOptionSet,
+// this time over the 3-part natural key (option_set, characteristic código,
+// código).
+
+func listOptions(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions, args = appendTextFilter(conditions, args, f.Text, "ao.code", "ao.label")
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "ao.active")
+	conditions, args = appendEqualsFilter(conditions, args, "ao.option_set", parentRefCode(f, "optionSet"))
+	conditions, args = appendEqualsFilter(conditions, args, "d.code", parentRefCode(f, "characteristic"))
+	sql := finalizeQuery(`
+		SELECT hashtextextended(ao.option_set || '|' || d.code || '|' || ao.code, 0), ao.option_set, d.code, ao.code, ao.label, ao.active
+		FROM public.attribute_options ao
+		JOIN public.attribute_definitions d ON d.id = ao.attribute_definition_id`, conditions, "d.id, ao.display_order", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query attribute_options: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var optionSet, characteristic, code, label string
+		var active bool
+		if err := rows.Scan(&id, &optionSet, &characteristic, &code, &label, &active); err != nil {
+			return nil, fmt.Errorf("scan attribute_options: %w", err)
+		}
+		out = append(out, optionRecord(id, optionSet, characteristic, code, label, active))
+	}
+	return out, rows.Err()
+}
+
+func getOption(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var optionSet, characteristic, code, label string
+	var active bool
+	err := q.QueryRow(ctx, `
+		SELECT ao.option_set, d.code, ao.code, ao.label, ao.active
+		FROM public.attribute_options ao JOIN public.attribute_definitions d ON d.id = ao.attribute_definition_id
+		WHERE hashtextextended(ao.option_set || '|' || d.code || '|' || ao.code, 0) = $1`, id).
+		Scan(&optionSet, &characteristic, &code, &label, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get attribute_options: %w", err)
+	}
+	return optionRecord(id, optionSet, characteristic, code, label, active), nil
+}
+
+func optionRecord(id int64, optionSet, characteristic, code, label string, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindOption, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"optionSet": refValue(domain.KindOptionSet, optionSet), "characteristic": refValue(domain.KindAttributeDefinition, characteristic),
+		"code": textValue(code), "label": textValue(label),
+	}}
+}
+
+func insertOption(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.attribute_options (option_set, attribute_definition_id, code, label, active, display_order)
+		SELECT $1, d.id, $3, $4, $5,
+		       COALESCE((SELECT MAX(display_order)+1 FROM public.attribute_options WHERE option_set=$1 AND attribute_definition_id=d.id), 0)
+		FROM public.attribute_definitions d WHERE d.code=$2
+		RETURNING hashtextextended(option_set || '|' || $2::text || '|' || code, 0)`,
+		fieldRef(rec, "optionSet"), fieldRef(rec, "characteristic"), fieldText(rec, "code"), fieldText(rec, "label"), rec.Active).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf("%w: characteristic %q or option set %q", domain.ErrCatalogReference, fieldRef(rec, "characteristic"), fieldRef(rec, "optionSet"))
+	}
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert attribute_options: %w", err))
+	}
+	return id, nil
+}
+
+func updateOption(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	var optionSet, defCode, code string
+	err := tx.QueryRow(ctx, `
+		SELECT ao.option_set, d.code, ao.code
+		FROM public.attribute_options ao JOIN public.attribute_definitions d ON d.id = ao.attribute_definition_id
+		WHERE hashtextextended(ao.option_set || '|' || d.code || '|' || ao.code, 0) = $1`, rec.ID).Scan(&optionSet, &defCode, &code)
+	if isNoRows(err) {
+		return domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("resolve attribute_options: %w", err)
+	}
+	referenced, err := optionReferencedByResources(ctx, tx, rec.ID)
+	if err != nil {
+		return err
+	}
+	var tag pgconn.CommandTag
+	if referenced {
+		tag, err = tx.Exec(ctx, `
+			UPDATE public.attribute_options SET label=$1, active=$2
+			WHERE option_set=$3 AND attribute_definition_id=(SELECT id FROM public.attribute_definitions WHERE code=$4) AND code=$5`,
+			fieldText(rec, "label"), rec.Active, optionSet, defCode, code)
+	} else {
+		tag, err = tx.Exec(ctx, `
+			UPDATE public.attribute_options SET code=$1, label=$2, active=$3
+			WHERE option_set=$4 AND attribute_definition_id=(SELECT id FROM public.attribute_definitions WHERE code=$5) AND code=$6`,
+			fieldText(rec, "code"), fieldText(rec, "label"), rec.Active, optionSet, defCode, code)
+	}
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update attribute_options: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func setActiveOption(ctx context.Context, tx pgx.Tx, id int64, active bool) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE public.attribute_options ao SET active=$1
+		FROM public.attribute_definitions d
+		WHERE d.id = ao.attribute_definition_id AND hashtextextended(ao.option_set || '|' || d.code || '|' || ao.code, 0) = $2`, active, id)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("set active on attribute_options: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func deleteOption(ctx context.Context, tx pgx.Tx, id int64) error {
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM public.attribute_options ao USING public.attribute_definitions d
+		WHERE d.id = ao.attribute_definition_id AND hashtextextended(ao.option_set || '|' || d.code || '|' || ao.code, 0) = $1`, id)
+	if err != nil {
+		return mapCatalogDeleteError(fmt.Errorf("delete from attribute_options: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func optionReferencedByResources(ctx context.Context, q querier, id int64) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM public.attribute_options ao
+			JOIN public.attribute_definitions d ON d.id = ao.attribute_definition_id
+			JOIN public.resource_attribute_values v ON v.option_set = ao.option_set
+				AND v.attribute_definition_id = ao.attribute_definition_id AND v.option_code = ao.code
+			WHERE hashtextextended(ao.option_set || '|' || d.code || '|' || ao.code, 0) = $1
+		)`, id).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check option referenced by resources: %w", err)
+	}
+	return exists, nil
+}
+
+// --- KindOptionRelation ---------------------------------------------------
+
+func listOptionRelations(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "ar.active")
+	conditions, args = appendEqualsFilter(conditions, args, "ar.option_set", parentRefCode(f, "optionSet"))
+	sql := finalizeQuery(`
+		SELECT ar.id, ar.option_set, fd.code, ar.from_option_code, td.code, ar.to_option_code, ar.active
+		FROM public.attribute_option_relations ar
+		JOIN public.attribute_definitions fd ON fd.id = ar.from_attribute_definition_id
+		JOIN public.attribute_definitions td ON td.id = ar.to_attribute_definition_id`, conditions, "ar.id", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query attribute_option_relations: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var optionSet, fromCharacteristic, fromOption, toCharacteristic, toOption string
+		var active bool
+		if err := rows.Scan(&id, &optionSet, &fromCharacteristic, &fromOption, &toCharacteristic, &toOption, &active); err != nil {
+			return nil, fmt.Errorf("scan attribute_option_relations: %w", err)
+		}
+		out = append(out, optionRelationRecord(id, optionSet, fromCharacteristic, fromOption, toCharacteristic, toOption, active))
+	}
+	return out, rows.Err()
+}
+
+func getOptionRelation(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var optionSet, fromCharacteristic, fromOption, toCharacteristic, toOption string
+	var active bool
+	err := q.QueryRow(ctx, `
+		SELECT ar.option_set, fd.code, ar.from_option_code, td.code, ar.to_option_code, ar.active
+		FROM public.attribute_option_relations ar
+		JOIN public.attribute_definitions fd ON fd.id = ar.from_attribute_definition_id
+		JOIN public.attribute_definitions td ON td.id = ar.to_attribute_definition_id
+		WHERE ar.id=$1`, id).Scan(&optionSet, &fromCharacteristic, &fromOption, &toCharacteristic, &toOption, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get attribute_option_relations: %w", err)
+	}
+	return optionRelationRecord(id, optionSet, fromCharacteristic, fromOption, toCharacteristic, toOption, active), nil
+}
+
+func optionRelationRecord(id int64, optionSet, fromCharacteristic, fromOption, toCharacteristic, toOption string, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindOptionRelation, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"optionSet":          refValue(domain.KindOptionSet, optionSet),
+		"fromCharacteristic": refValue(domain.KindAttributeDefinition, fromCharacteristic),
+		"fromOption":         refValue(domain.KindOption, fromOption),
+		"toCharacteristic":   refValue(domain.KindAttributeDefinition, toCharacteristic),
+		"toOption":           refValue(domain.KindOption, toOption),
+	}}
+}
+
+func insertOptionRelation(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.attribute_option_relations (option_set, from_attribute_definition_id, from_option_code, to_attribute_definition_id, to_option_code, active)
+		SELECT $1, fd.id, $3, td.id, $5, $6
+		FROM public.attribute_definitions fd, public.attribute_definitions td
+		WHERE fd.code=$2 AND td.code=$4
+		RETURNING id`,
+		fieldRef(rec, "optionSet"), fieldRef(rec, "fromCharacteristic"), fieldRef(rec, "fromOption"),
+		fieldRef(rec, "toCharacteristic"), fieldRef(rec, "toOption"), rec.Active).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf("%w: characteristic %q or %q", domain.ErrCatalogReference, fieldRef(rec, "fromCharacteristic"), fieldRef(rec, "toCharacteristic"))
+	}
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert attribute_option_relations: %w", err))
+	}
+	return id, nil
+}
+
+func updateOptionRelation(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE public.attribute_option_relations
+		SET option_set=$1,
+		    from_attribute_definition_id=(SELECT id FROM public.attribute_definitions WHERE code=$2), from_option_code=$3,
+		    to_attribute_definition_id=(SELECT id FROM public.attribute_definitions WHERE code=$4), to_option_code=$5,
+		    active=$6
+		WHERE id=$7`,
+		fieldRef(rec, "optionSet"), fieldRef(rec, "fromCharacteristic"), fieldRef(rec, "fromOption"),
+		fieldRef(rec, "toCharacteristic"), fieldRef(rec, "toOption"), rec.Active, rec.ID)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update attribute_option_relations: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+// --- KindUnit ---------------------------------------------------------
+
+func listUnits(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions, args = appendTextFilter(conditions, args, f.Text, "code")
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	sql := finalizeQuery(`SELECT id, code, symbol, dimension, active FROM public.unit_definitions`, conditions, "id", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query unit_definitions: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var code, symbol, dimension string
+		var active bool
+		if err := rows.Scan(&id, &code, &symbol, &dimension, &active); err != nil {
+			return nil, fmt.Errorf("scan unit_definitions: %w", err)
+		}
+		out = append(out, unitRecord(id, code, symbol, dimension, active))
+	}
+	return out, rows.Err()
+}
+
+func getUnit(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var code, symbol, dimension string
+	var active bool
+	err := q.QueryRow(ctx, `SELECT code, symbol, dimension, active FROM public.unit_definitions WHERE id=$1`, id).Scan(&code, &symbol, &dimension, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get unit_definitions: %w", err)
+	}
+	return unitRecord(id, code, symbol, dimension, active), nil
+}
+
+func unitRecord(id int64, code, symbol, dimension string, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindUnit, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"code": textValue(code), "symbol": textValue(symbol), "dimension": textValue(dimension),
+	}}
+}
+
+func insertUnit(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `INSERT INTO public.unit_definitions (code, symbol, dimension, active) VALUES ($1,$2,$3,$4) RETURNING id`,
+		fieldText(rec, "code"), fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active).Scan(&id)
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert unit_definitions: %w", err))
+	}
+	return id, nil
+}
+
+func updateUnit(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	referenced, err := unitReferencedByResources(ctx, tx, rec.ID)
+	if err != nil {
+		return err
+	}
+	var tag pgconn.CommandTag
+	if referenced {
+		tag, err = tx.Exec(ctx, `UPDATE public.unit_definitions SET symbol=$1, dimension=$2, active=$3 WHERE id=$4`, fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active, rec.ID)
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE public.unit_definitions SET code=$1, symbol=$2, dimension=$3, active=$4 WHERE id=$5`, fieldText(rec, "code"), fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active, rec.ID)
+	}
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update unit_definitions: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func unitReferencedByResources(ctx context.Context, q querier, id int64) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM public.recursos WHERE natural_unit_id=$1)
+		    OR EXISTS(SELECT 1 FROM public.resource_attribute_values WHERE quantity_unit_id=$1)`, id).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check unit referenced by resources: %w", err)
+	}
+	return exists, nil
+}
+
+// --- KindUnitPolicy ("Política de Unidad") -------------------------------
+//
+// resource_unit_policies' PK is (family_id, unit_id) — no BIGSERIAL id;
+// same hashtextextended() convention, over (class código|family
+// código|unit código).
+
+func listUnitPolicies(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "p.active")
+	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
+	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
+	sql := finalizeQuery(`
+		SELECT hashtextextended(cl.code || '|' || f.code || '|' || u.code, 0), cl.code, f.code, u.code, p.allowed, p.suggested, p.active
+		FROM public.resource_unit_policies p
+		JOIN public.resource_families f ON f.id = p.family_id
+		JOIN public.resource_classes cl ON cl.id = f.class_id
+		JOIN public.unit_definitions u ON u.id = p.unit_id`, conditions, "f.id, u.id", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_unit_policies: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var classCode, familyCode, unitCode string
+		var allowed, suggested, active bool
+		if err := rows.Scan(&id, &classCode, &familyCode, &unitCode, &allowed, &suggested, &active); err != nil {
+			return nil, fmt.Errorf("scan resource_unit_policies: %w", err)
+		}
+		out = append(out, unitPolicyRecord(id, classCode, familyCode, unitCode, allowed, suggested, active))
+	}
+	return out, rows.Err()
+}
+
+func getUnitPolicy(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var classCode, familyCode, unitCode string
+	var allowed, suggested, active bool
+	err := q.QueryRow(ctx, `
+		SELECT cl.code, f.code, u.code, p.allowed, p.suggested, p.active
+		FROM public.resource_unit_policies p
+		JOIN public.resource_families f ON f.id = p.family_id
+		JOIN public.resource_classes cl ON cl.id = f.class_id
+		JOIN public.unit_definitions u ON u.id = p.unit_id
+		WHERE hashtextextended(cl.code || '|' || f.code || '|' || u.code, 0) = $1`, id).
+		Scan(&classCode, &familyCode, &unitCode, &allowed, &suggested, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get resource_unit_policies: %w", err)
+	}
+	return unitPolicyRecord(id, classCode, familyCode, unitCode, allowed, suggested, active), nil
+}
+
+func unitPolicyRecord(id int64, classCode, familyCode, unitCode string, allowed, suggested, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindUnitPolicy, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"class": refValue(domain.KindClass, classCode), "family": refValue(domain.KindFamily, familyCode), "unit": refValue(domain.KindUnit, unitCode),
+		"allowed": boolValue(allowed), "suggested": boolValue(suggested),
+	}}
+}
+
+func insertUnitPolicy(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.resource_unit_policies (family_id, unit_id, allowed, suggested, active)
+		SELECT f.id, u.id, $4, $5, $6
+		FROM public.resource_families f JOIN public.resource_classes cl ON cl.id = f.class_id, public.unit_definitions u
+		WHERE cl.code=$1 AND f.code=$2 AND u.code=$3
+		RETURNING hashtextextended($1::text || '|' || $2::text || '|' || $3::text, 0)`,
+		fieldRef(rec, "class"), fieldRef(rec, "family"), fieldRef(rec, "unit"), fieldBool(rec, "allowed"), fieldBool(rec, "suggested"), rec.Active).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf("%w: class %q, family %q, or unit %q", domain.ErrCatalogReference, fieldRef(rec, "class"), fieldRef(rec, "family"), fieldRef(rec, "unit"))
+	}
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert resource_unit_policies: %w", err))
+	}
+	return id, nil
+}
+
+// updateUnitPolicy only mutates allowed/suggested/active — class/family/unit
+// are this junction kind's composite PK, so re-scoping it is a
+// delete+insert, not an update (same rationale as Option/PresentationField).
+func updateUnitPolicy(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	var familyID, unitID int64
+	err := tx.QueryRow(ctx, `
+		SELECT p.family_id, p.unit_id FROM public.resource_unit_policies p
+		JOIN public.resource_families f ON f.id = p.family_id
+		JOIN public.resource_classes cl ON cl.id = f.class_id
+		JOIN public.unit_definitions u ON u.id = p.unit_id
+		WHERE hashtextextended(cl.code || '|' || f.code || '|' || u.code, 0) = $1`, rec.ID).Scan(&familyID, &unitID)
+	if isNoRows(err) {
+		return domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("resolve resource_unit_policies: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE public.resource_unit_policies SET allowed=$1, suggested=$2, active=$3 WHERE family_id=$4 AND unit_id=$5`,
+		fieldBool(rec, "allowed"), fieldBool(rec, "suggested"), rec.Active, familyID, unitID)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update resource_unit_policies: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func setActiveUnitPolicy(ctx context.Context, tx pgx.Tx, id int64, active bool) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE public.resource_unit_policies p SET active=$1
+		FROM public.resource_families f, public.resource_classes cl, public.unit_definitions u
+		WHERE f.id = p.family_id AND cl.id = f.class_id AND u.id = p.unit_id
+		  AND hashtextextended(cl.code || '|' || f.code || '|' || u.code, 0) = $2`, active, id)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("set active on resource_unit_policies: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func deleteUnitPolicy(ctx context.Context, tx pgx.Tx, id int64) error {
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM public.resource_unit_policies p
+		USING public.resource_families f, public.resource_classes cl, public.unit_definitions u
+		WHERE f.id = p.family_id AND cl.id = f.class_id AND u.id = p.unit_id
+		  AND hashtextextended(cl.code || '|' || f.code || '|' || u.code, 0) = $1`, id)
+	if err != nil {
+		return mapCatalogDeleteError(fmt.Errorf("delete from resource_unit_policies: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+// --- KindAttributeBinding ("Aplicabilidad") -------------------------------
+
+func listAttributeBindings(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "ra.active")
+	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
+	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
+	conditions, args = appendEqualsFilter(conditions, args, "d.code", parentRefCode(f, "characteristic"))
+	sql := finalizeQuery(`
+		SELECT ra.id, cl.code, f.code, COALESCE(t.code, ''), d.code, ra.option_set, ra.mode, ra.identity_participates, ra.active
+		FROM public.resource_attributes ra
+		JOIN public.resource_families f ON f.id = ra.family_id
+		JOIN public.resource_classes cl ON cl.id = ra.class_id
+		LEFT JOIN public.resource_types t ON t.id = ra.type_id
+		JOIN public.attribute_definitions d ON d.id = ra.definition_id`, conditions, "f.id, COALESCE(t.id, 0), ra.display_order", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_attributes: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var classCode, familyCode, typeCode, characteristic, optionSet, mode string
+		var identityParticipates, active bool
+		if err := rows.Scan(&id, &classCode, &familyCode, &typeCode, &characteristic, &optionSet, &mode, &identityParticipates, &active); err != nil {
+			return nil, fmt.Errorf("scan resource_attributes: %w", err)
+		}
+		out = append(out, attributeBindingRecord(id, classCode, familyCode, typeCode, characteristic, optionSet, mode, identityParticipates, active))
+	}
+	return out, rows.Err()
+}
+
+func getAttributeBinding(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var classCode, familyCode, typeCode, characteristic, optionSet, mode string
+	var identityParticipates, active bool
+	err := q.QueryRow(ctx, `
+		SELECT cl.code, f.code, COALESCE(t.code, ''), d.code, ra.option_set, ra.mode, ra.identity_participates, ra.active
+		FROM public.resource_attributes ra
+		JOIN public.resource_families f ON f.id = ra.family_id
+		JOIN public.resource_classes cl ON cl.id = ra.class_id
+		LEFT JOIN public.resource_types t ON t.id = ra.type_id
+		JOIN public.attribute_definitions d ON d.id = ra.definition_id
+		WHERE ra.id=$1`, id).Scan(&classCode, &familyCode, &typeCode, &characteristic, &optionSet, &mode, &identityParticipates, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get resource_attributes: %w", err)
+	}
+	return attributeBindingRecord(id, classCode, familyCode, typeCode, characteristic, optionSet, mode, identityParticipates, active), nil
+}
+
+func attributeBindingRecord(id int64, classCode, familyCode, typeCode, characteristic, optionSet, mode string, identityParticipates, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindAttributeBinding, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"class": refValue(domain.KindClass, classCode), "family": refValue(domain.KindFamily, familyCode), "type": refValue(domain.KindType, typeCode),
+		"characteristic": refValue(domain.KindAttributeDefinition, characteristic), "optionSet": refValue(domain.KindOptionSet, optionSet),
+		"mode": textValue(mode), "identityParticipates": boolValue(identityParticipates),
+	}}
+}
+
+// resolveOptionalTypeID resolves the AttributeBinding/PresentationField
+// "type" ref: "" means family-scoped (no type row), matching
+// domain.ResourceAttribute.TypeCode's existing "" == family-level
+// convention (catalog_loader.go's COALESCE(t.code, ”)).
+func resolveOptionalTypeID(ctx context.Context, q querier, classCode, familyCode, typeCode string, familyID int64) (*int64, error) {
+	if typeCode == "" {
+		return nil, nil
+	}
+	resolvedTypeID, resolvedFamilyID, err := resolveTypeID(ctx, q, classCode, familyCode, typeCode)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedFamilyID != familyID {
+		return nil, fmt.Errorf("%w: type %q does not belong to family %q", domain.ErrCatalogReference, typeCode, familyCode)
+	}
+	return &resolvedTypeID, nil
+}
+
+func insertAttributeBinding(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	familyID, classID, err := resolveFamilyID(ctx, tx, fieldRef(rec, "class"), fieldRef(rec, "family"))
+	if err != nil {
+		return 0, err
+	}
+	typeID, err := resolveOptionalTypeID(ctx, tx, fieldRef(rec, "class"), fieldRef(rec, "family"), fieldRef(rec, "type"), familyID)
+	if err != nil {
+		return 0, err
+	}
+	definitionID, err := resolveDefinitionID(ctx, tx, fieldRef(rec, "characteristic"))
+	if err != nil {
+		return 0, err
+	}
+	optionSet := fieldRef(rec, "optionSet")
+	if optionSet == "" {
+		optionSet = "DEFAULT"
+	}
+	var id int64
+	err = tx.QueryRow(ctx, `
+		INSERT INTO public.resource_attributes (class_id, family_id, type_id, definition_id, option_set, mode, identity_participates, active, display_order)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+		    COALESCE((SELECT MAX(display_order)+1 FROM public.resource_attributes WHERE family_id=$2 AND type_id IS NOT DISTINCT FROM $3), 0))
+		RETURNING id`,
+		classID, familyID, typeID, definitionID, optionSet, fieldText(rec, "mode"), fieldBool(rec, "identityParticipates"), rec.Active).Scan(&id)
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert resource_attributes: %w", err))
+	}
+	return id, nil
+}
+
+func updateAttributeBinding(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	familyID, classID, err := resolveFamilyID(ctx, tx, fieldRef(rec, "class"), fieldRef(rec, "family"))
+	if err != nil {
+		return err
+	}
+	typeID, err := resolveOptionalTypeID(ctx, tx, fieldRef(rec, "class"), fieldRef(rec, "family"), fieldRef(rec, "type"), familyID)
+	if err != nil {
+		return err
+	}
+	definitionID, err := resolveDefinitionID(ctx, tx, fieldRef(rec, "characteristic"))
+	if err != nil {
+		return err
+	}
+	optionSet := fieldRef(rec, "optionSet")
+	if optionSet == "" {
+		optionSet = "DEFAULT"
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE public.resource_attributes
+		SET class_id=$1, family_id=$2, type_id=$3, definition_id=$4, option_set=$5, mode=$6, identity_participates=$7, active=$8
+		WHERE id=$9`,
+		classID, familyID, typeID, definitionID, optionSet, fieldText(rec, "mode"), fieldBool(rec, "identityParticipates"), rec.Active, rec.ID)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update resource_attributes: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+// --- KindPresentationField ("Campo de Presentación") ---------------------
+//
+// resource_type_presentation_fields' PK is (type_id, attribute_definition_id)
+// — no BIGSERIAL id; same hashtextextended() convention, over (class
+// código|family código|type código|characteristic código).
+
+func listPresentationFields(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	var conditions []string
+	var args []any
+	conditions = appendActiveFilter(conditions, f.IncludeInactive, "pf.active")
+	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
+	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
+	conditions, args = appendEqualsFilter(conditions, args, "t.code", parentRefCode(f, "type"))
+	sql := finalizeQuery(`
+		SELECT hashtextextended(cl.code || '|' || f.code || '|' || t.code || '|' || d.code, 0), cl.code, f.code, t.code, d.code, pf.position, pf.active
+		FROM public.resource_type_presentation_fields pf
+		JOIN public.resource_types t ON t.id = pf.type_id
+		JOIN public.resource_families f ON f.id = t.family_id
+		JOIN public.resource_classes cl ON cl.id = t.class_id
+		JOIN public.attribute_definitions d ON d.id = pf.attribute_definition_id`, conditions, "t.id, pf.position", f)
+
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_type_presentation_fields: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.CatalogRecord
+	for rows.Next() {
+		var id int64
+		var classCode, familyCode, typeCode, characteristic string
+		var position int
+		var active bool
+		if err := rows.Scan(&id, &classCode, &familyCode, &typeCode, &characteristic, &position, &active); err != nil {
+			return nil, fmt.Errorf("scan resource_type_presentation_fields: %w", err)
+		}
+		out = append(out, presentationFieldRecord(id, classCode, familyCode, typeCode, characteristic, position, active))
+	}
+	return out, rows.Err()
+}
+
+func getPresentationField(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
+	var classCode, familyCode, typeCode, characteristic string
+	var position int
+	var active bool
+	err := q.QueryRow(ctx, `
+		SELECT cl.code, f.code, t.code, d.code, pf.position, pf.active
+		FROM public.resource_type_presentation_fields pf
+		JOIN public.resource_types t ON t.id = pf.type_id
+		JOIN public.resource_families f ON f.id = t.family_id
+		JOIN public.resource_classes cl ON cl.id = t.class_id
+		JOIN public.attribute_definitions d ON d.id = pf.attribute_definition_id
+		WHERE hashtextextended(cl.code || '|' || f.code || '|' || t.code || '|' || d.code, 0) = $1`, id).
+		Scan(&classCode, &familyCode, &typeCode, &characteristic, &position, &active)
+	if isNoRows(err) {
+		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return domain.CatalogRecord{}, fmt.Errorf("get resource_type_presentation_fields: %w", err)
+	}
+	return presentationFieldRecord(id, classCode, familyCode, typeCode, characteristic, position, active), nil
+}
+
+func presentationFieldRecord(id int64, classCode, familyCode, typeCode, characteristic string, position int, active bool) domain.CatalogRecord {
+	return domain.CatalogRecord{Kind: domain.KindPresentationField, ID: id, Active: active, Values: map[string]domain.CatalogValue{
+		"class": refValue(domain.KindClass, classCode), "family": refValue(domain.KindFamily, familyCode), "type": refValue(domain.KindType, typeCode),
+		"characteristic": refValue(domain.KindAttributeDefinition, characteristic), "position": intValue(position),
+	}}
+}
+
+func insertPresentationField(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO public.resource_type_presentation_fields (type_id, attribute_definition_id, position, active)
+		SELECT t.id, d.id, $5, $6
+		FROM public.resource_types t
+		JOIN public.resource_families f ON f.id = t.family_id
+		JOIN public.resource_classes cl ON cl.id = t.class_id, public.attribute_definitions d
+		WHERE cl.code=$1 AND f.code=$2 AND t.code=$3 AND d.code=$4
+		RETURNING hashtextextended($1::text || '|' || $2::text || '|' || $3::text || '|' || $4::text, 0)`,
+		fieldRef(rec, "class"), fieldRef(rec, "family"), fieldRef(rec, "type"), fieldRef(rec, "characteristic"), fieldInt(rec, "position"), rec.Active).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf("%w: type %q or characteristic %q", domain.ErrCatalogReference, fieldRef(rec, "type"), fieldRef(rec, "characteristic"))
+	}
+	if err != nil {
+		return 0, mapCatalogWriteError(fmt.Errorf("insert resource_type_presentation_fields: %w", err))
+	}
+	return id, nil
+}
+
+// updatePresentationField only mutates position/active — class/family/type/
+// characteristic are this junction kind's composite PK (same rationale as
+// updateUnitPolicy/updateOption).
+func updatePresentationField(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error {
+	var typeID, definitionID int64
+	err := tx.QueryRow(ctx, `
+		SELECT pf.type_id, pf.attribute_definition_id
+		FROM public.resource_type_presentation_fields pf
+		JOIN public.resource_types t ON t.id = pf.type_id
+		JOIN public.resource_families f ON f.id = t.family_id
+		JOIN public.resource_classes cl ON cl.id = t.class_id
+		JOIN public.attribute_definitions d ON d.id = pf.attribute_definition_id
+		WHERE hashtextextended(cl.code || '|' || f.code || '|' || t.code || '|' || d.code, 0) = $1`, rec.ID).Scan(&typeID, &definitionID)
+	if isNoRows(err) {
+		return domain.ErrCatalogRecordNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("resolve resource_type_presentation_fields: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE public.resource_type_presentation_fields SET position=$1, active=$2 WHERE type_id=$3 AND attribute_definition_id=$4`,
+		fieldInt(rec, "position"), rec.Active, typeID, definitionID)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("update resource_type_presentation_fields: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func setActivePresentationField(ctx context.Context, tx pgx.Tx, id int64, active bool) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE public.resource_type_presentation_fields pf SET active=$1
+		FROM public.resource_types t, public.resource_families f, public.resource_classes cl, public.attribute_definitions d
+		WHERE t.id = pf.type_id AND f.id = t.family_id AND cl.id = t.class_id AND d.id = pf.attribute_definition_id
+		  AND hashtextextended(cl.code || '|' || f.code || '|' || t.code || '|' || d.code, 0) = $2`, active, id)
+	if err != nil {
+		return mapCatalogWriteError(fmt.Errorf("set active on resource_type_presentation_fields: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
+
+func deletePresentationField(ctx context.Context, tx pgx.Tx, id int64) error {
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM public.resource_type_presentation_fields pf
+		USING public.resource_types t, public.resource_families f, public.resource_classes cl, public.attribute_definitions d
+		WHERE t.id = pf.type_id AND f.id = t.family_id AND cl.id = t.class_id AND d.id = pf.attribute_definition_id
+		  AND hashtextextended(cl.code || '|' || f.code || '|' || t.code || '|' || d.code, 0) = $1`, id)
+	if err != nil {
+		return mapCatalogDeleteError(fmt.Errorf("delete from resource_type_presentation_fields: %w", err))
+	}
+	return requireRow(tag.RowsAffected())
+}
