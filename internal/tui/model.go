@@ -85,6 +85,13 @@ const (
 	interactionModeMenu
 )
 
+type presentationPolicy uint8
+
+const (
+	presentationTranscript presentationPolicy = iota
+	presentationActiveFrame
+)
+
 type Model struct {
 	items                  []Item
 	cursor, workspaceItem  int
@@ -562,6 +569,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) respond(input InteractionInput) {
 	response := m.engine.Respond(context.Background(), input)
+	if m.presentationPolicy() == presentationActiveFrame {
+		m.history = nil
+	}
 	for _, message := range response.Messages {
 		if isActivePendingMessage(message, response.Pending) {
 			continue
@@ -585,6 +595,16 @@ func (m *Model) respond(input InteractionInput) {
 		m.openWorkspaceMenu()
 	}
 	m.refreshViewport()
+}
+
+// presentationPolicy keeps the Assistant conversational while every
+// registered operational workspace presents only its latest complete frame.
+// Future workspaces inherit the same behavior through the registry.
+func (m Model) presentationPolicy() presentationPolicy {
+	if m.activeWorkspace != "" {
+		return presentationActiveFrame
+	}
+	return presentationTranscript
 }
 
 func (m *Model) refreshCatalogIfChanged() bool {
