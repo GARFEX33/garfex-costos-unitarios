@@ -152,10 +152,9 @@ func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text str
 
 	options := make([]Option, len(visible))
 	for i, resource := range visible {
-		title, _ := a.resourcePresentation(resource)
 		options[i] = Option{
 			ID:    fmt.Sprintf("%d", i),
-			Label: title,
+			Label: a.describer.Describe(resource),
 			Value: resource.ClassCode + "|" + resource.IdentityKey,
 		}
 	}

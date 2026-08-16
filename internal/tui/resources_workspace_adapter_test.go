@@ -204,19 +204,16 @@ func TestResourcesWorkspaceAdapterRespondErrorNeverLeaksRawError(t *testing.T) {
 }
 
 // TestResourcesWorkspaceAdapterRespondOneResultReturnsSelectableQuestion
-// covers the same shape as the retired suite: a successful search with
-// results is a selectable QuestionRequest carried on Pending. The
-// Option.Value encoding is now ClassCode + "|" + IdentityKey (design R1:
-// Get's first argument is a class code, never a family code) instead of the
-// old FamilyCode + "|" + IdentityKey.
+// proves search-result labels use only the describer's canonical presentation,
+// while Option.Value preserves the resource's class-qualified identity.
 func TestResourcesWorkspaceAdapterRespondOneResultReturnsSelectableQuestion(t *testing.T) {
 	resource := domain.Resource{
-		ClassCode: "MATERIAL", FamilyCode: "CEMENT", NaturalUnit: "kg", IdentityKey: "CEMENT|kg|SECRET-42",
-		Attributes: []domain.ResourceAttributeValue{domain.OptionValue("color", "GRIS")},
+		ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", NaturalUnit: "M", IdentityKey: "CONDUCTORES|CABLE|M|SECRET-42",
+		Attributes: cableAttributeValues(),
 	}
 	fake := &fakeResourceSearcher{results: []domain.Resource{resource}}
-	adapter := newDispatchAdapter(fake, &fakeResourceGetter{}, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, "")
-	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"})
+	adapter := newDispatchAdapter(fake, &fakeResourceGetter{}, &fakeResourceDescriber{text: "Cable THW-LS 10 AWG NEGRO"}, &fakeResourceCreator{}, &fakeResourceUpdater{}, &fakeResourceDeleter{}, "")
+	response, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cable"})
 	if err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
 	}
@@ -237,15 +234,13 @@ func TestResourcesWorkspaceAdapterRespondOneResultReturnsSelectableQuestion(t *t
 		t.Fatalf("Pending.Options = %v, want exactly 1 option", request.Options)
 	}
 	option := request.Options[0]
-	wantValue := "MATERIAL|CEMENT|kg|SECRET-42"
+	wantLabel := "Cable THW-LS 10 AWG NEGRO"
+	if option.Label != wantLabel {
+		t.Fatalf("Options[0].Label = %q, want exactly %q", option.Label, wantLabel)
+	}
+	wantValue := "MATERIAL|CONDUCTORES|CABLE|M|SECRET-42"
 	if option.Value != wantValue {
 		t.Fatalf("Options[0].Value = %q, want %q", option.Value, wantValue)
-	}
-	if strings.Contains(option.Label, resource.IdentityKey) {
-		t.Fatalf("Options[0].Label = %q, must never contain IdentityKey %q", option.Label, resource.IdentityKey)
-	}
-	if !strings.HasPrefix(option.Label, resource.FamilyCode) {
-		t.Fatalf("Options[0].Label = %q, want it to start with %q", option.Label, resource.FamilyCode)
 	}
 }
 
@@ -271,9 +266,6 @@ func TestResourcesWorkspaceAdapterRespondMultipleResultsPreserveOrder(t *testing
 		t.Fatalf("Options = %d, want %d", len(request.Options), len(resources))
 	}
 	for i, resource := range resources {
-		if !strings.HasPrefix(request.Options[i].Label, resource.FamilyCode) {
-			t.Fatalf("Options[%d].Label = %q, want it to start with %q (order preserved)", i, request.Options[i].Label, resource.FamilyCode)
-		}
 		wantValue := resource.ClassCode + "|" + resource.IdentityKey
 		if request.Options[i].Value != wantValue {
 			t.Fatalf("Options[%d].Value = %q, want %q", i, request.Options[i].Value, wantValue)
