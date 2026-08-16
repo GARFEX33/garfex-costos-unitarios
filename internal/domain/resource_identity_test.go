@@ -47,7 +47,7 @@ func identicalAttributesTwoClassCatalog() ResourceCatalog {
 			{ClassCode: "CLASS_ONE", FamilyCode: "SAMPLE", Code: "ITEM", Name: "Item"},
 			{ClassCode: "CLASS_TWO", FamilyCode: "SAMPLE", Code: "ITEM", Name: "Item"},
 		},
-		Units: []UnitDefinition{{Code: "PZA", Symbol: "PZA", Dimension: "PIECE"}},
+		Units: []UnitDefinition{{Code: "PZA", Name: "Pieza", Symbol: "PZA", Dimension: "PIECE"}},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "CLASS_ONE", FamilyCode: "SAMPLE", UnitCode: "PZA", Allowed: true, Suggested: true},
 			{ClassCode: "CLASS_TWO", FamilyCode: "SAMPLE", UnitCode: "PZA", Allowed: true, Suggested: true},

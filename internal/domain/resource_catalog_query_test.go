@@ -167,8 +167,8 @@ func TestNaturalUnitsForRealCatalogReturnsSingleSuggestedUnit(t *testing.T) {
 func TestNaturalUnitsForOrdersSuggestedFirstRegardlessOfDeclarationOrder(t *testing.T) {
 	catalog := ResourceCatalog{
 		Units: []UnitDefinition{
-			{Code: "PZA", Symbol: "PZA", Dimension: "PIECE", Active: true},
-			{Code: "M", Symbol: "M", Dimension: "LENGTH", Active: true},
+			{Code: "PZA", Name: "Pieza", Symbol: "PZA", Dimension: "PIECE", Active: true},
+			{Code: "M", Name: "Metro", Symbol: "M", Dimension: "LENGTH", Active: true},
 		},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "MATERIAL", FamilyCode: "WIDGETS", UnitCode: "PZA", Allowed: true, Suggested: false},
@@ -361,8 +361,8 @@ func TestOptionsForExcludesInactiveOption(t *testing.T) {
 func TestNaturalUnitsForExcludesInactiveUnit(t *testing.T) {
 	catalog := ResourceCatalog{
 		Units: []UnitDefinition{
-			{Code: "ACTIVA", Symbol: "ACTIVA", Dimension: "PIECE", Active: true},
-			{Code: "INACTIVA", Symbol: "INACTIVA", Dimension: "PIECE", Active: false},
+			{Code: "ACTIVA", Name: "Activa", Symbol: "ACTIVA", Dimension: "PIECE", Active: true},
+			{Code: "INACTIVA", Name: "Inactiva", Symbol: "INACTIVA", Dimension: "PIECE", Active: false},
 		},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", UnitCode: "ACTIVA", Allowed: true, Suggested: true},

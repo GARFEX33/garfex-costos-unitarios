@@ -74,6 +74,7 @@ func (c ResourceCatalog) Validate() error {
 	errs = append(errs, c.validateTypes()...)
 	errs = append(errs, c.validateAttributes()...)
 	errs = append(errs, c.validateAttributeRules()...)
+	errs = append(errs, c.validateUnits()...)
 	errs = append(errs, c.validateUnitPolicies()...)
 	errs = append(errs, c.validateActiveHierarchy()...)
 	return errors.Join(errs...)
@@ -257,6 +258,38 @@ func (c ResourceCatalog) validateUnitPolicies() []error {
 		if !c.hasUnitCode(policy.UnitCode) {
 			errs = append(errs, fmt.Errorf("%w: unit policy for family %q references unknown unit %q", ErrResourceReference, policy.FamilyCode, policy.UnitCode))
 		}
+	}
+	return errs
+}
+
+func (c ResourceCatalog) validateUnits() []error {
+	var errs []error
+	seenCodes := map[string]bool{}
+	seenSymbols := map[string]bool{}
+	for _, unit := range c.Units {
+		fields := []struct {
+			name, value string
+		}{
+			{name: "code", value: unit.Code},
+			{name: "name", value: unit.Name},
+			{name: "symbol", value: unit.Symbol},
+			{name: "dimension", value: unit.Dimension},
+		}
+		for _, field := range fields {
+			if strings.TrimSpace(field.value) == "" {
+				errs = append(errs, fmt.Errorf("%w: unit %s is blank", ErrResourceValidation, field.name))
+			}
+		}
+		code := canonical(unit.Code)
+		if code != "" && seenCodes[code] {
+			errs = append(errs, fmt.Errorf("%w: duplicate unit code %q", ErrResourceValidation, unit.Code))
+		}
+		seenCodes[code] = true
+		symbol := canonical(unit.Symbol)
+		if symbol != "" && seenSymbols[symbol] {
+			errs = append(errs, fmt.Errorf("%w: duplicate unit symbol %q", ErrResourceValidation, unit.Symbol))
+		}
+		seenSymbols[symbol] = true
 	}
 	return errs
 }

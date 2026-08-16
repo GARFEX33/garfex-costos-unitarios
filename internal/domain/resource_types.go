@@ -56,6 +56,7 @@ const NotApplicableText = "NOT_APPLICABLE"
 
 type UnitDefinition struct {
 	Code      string
+	Name      string
 	Symbol    string
 	Dimension string
 	// Active — see ResourceFamily.Active (resource_catalog_validate.go).

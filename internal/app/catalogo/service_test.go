@@ -134,6 +134,9 @@ func baseSnapshot() domain.ResourceCatalog {
 		Families: []domain.ResourceFamily{
 			{ClassCode: "MATERIAL", Code: "CONDUCTORES", Name: "Conductores", Active: true},
 		},
+		Units: []domain.UnitDefinition{
+			{Code: "M", Name: "Metro", Symbol: "M", Dimension: "LENGTH", Active: true},
+		},
 	}
 }
 
@@ -680,4 +683,44 @@ func reflectEqualCatalog(a, b domain.ResourceCatalog) bool {
 		}
 	}
 	return true
+}
+
+func TestServiceUnitNameValidationAndDuplicateNames(t *testing.T) {
+	repo := &fakeCatalogAdminRepository{}
+	svc := newTestService(repo)
+	unit := func(code, name, symbol string) domain.CatalogRecord {
+		return domain.CatalogRecord{Active: true, Values: map[string]domain.CatalogValue{
+			"code": {Text: code}, "name": {Text: name}, "symbol": {Text: symbol}, "dimension": {Text: "LENGTH"},
+		}}
+	}
+	if _, err := svc.Create(context.Background(), domain.KindUnit, unit("TEST_BLANK_UNIT", "  ", "TBU")); !errors.Is(err, domain.ErrResourceValidation) {
+		t.Fatalf("blank unit name error = %v, want ErrResourceValidation", err)
+	}
+	if repo.insertCalls != 0 {
+		t.Fatalf("repo.Insert called %d times after invalid name, want 0", repo.insertCalls)
+	}
+	if _, err := svc.Create(context.Background(), domain.KindUnit, unit("TEST_UNIT_A", "Unidad repetida", "TUA")); err != nil {
+		t.Fatalf("first unit create error = %v", err)
+	}
+	if _, err := svc.Create(context.Background(), domain.KindUnit, unit("TEST_UNIT_B", "Unidad repetida", "TUB")); err != nil {
+		t.Fatalf("duplicate unit name create error = %v, want nil", err)
+	}
+}
+
+func TestServiceUnitNameUpdateRoundTrip(t *testing.T) {
+	current := domain.CatalogRecord{Kind: domain.KindUnit, ID: 7, Active: true, Values: map[string]domain.CatalogValue{
+		"code": {Text: "M"}, "name": {Text: "Metro"}, "symbol": {Text: "M"}, "dimension": {Text: "LENGTH"},
+	}}
+	repo := &fakeCatalogAdminRepository{getFn: func(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) {
+		return current, nil
+	}}
+	svc := newTestService(repo)
+	updated := current
+	updated.Values = map[string]domain.CatalogValue{
+		"code": {Text: "M"}, "name": {Text: "Metro lineal"}, "symbol": {Text: "M"}, "dimension": {Text: "LENGTH"},
+	}
+	got, err := svc.Update(context.Background(), domain.KindUnit, updated)
+	if err != nil || got.Values["name"].Text != "Metro lineal" {
+		t.Fatalf("unit update = %+v, err=%v, want persisted name", got, err)
+	}
 }

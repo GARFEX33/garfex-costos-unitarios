@@ -89,8 +89,8 @@ func TestCatalogAdminGrantsIntegration(t *testing.T) {
 	})
 
 	unitID, err := insertReturningID(
-		`INSERT INTO public.unit_definitions (code, symbol, dimension) VALUES ($1,$2,$3) RETURNING id`,
-		"TEST_CATALOG_ADMIN_UNIT", "TCU", "TEST_DIMENSION")
+		`INSERT INTO public.unit_definitions (code, name, symbol, dimension) VALUES ($1,$2,$3,$4) RETURNING id`,
+		"TEST_CATALOG_ADMIN_UNIT", "Test Unidad", "TCU", "TEST_DIMENSION")
 	must("insert unit_definitions", err)
 	t.Cleanup(func() {
 		if err := exec(`DELETE FROM public.unit_definitions WHERE id = $1`, unitID); err != nil {

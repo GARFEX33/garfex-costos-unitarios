@@ -292,3 +292,16 @@ func TestApplyCatalogMutation_OptionSetIsANoOpOnTheSnapshot(t *testing.T) {
 		t.Fatalf("ApplyCatalogMutation(OptionSet) changed unrelated slices, want the snapshot unchanged")
 	}
 }
+
+func TestApplyCatalogMutation_UnitNameRoundTrip(t *testing.T) {
+	catalog := validResourceCatalog()
+	next, err := ApplyCatalogMutation(catalog, NewCatalogRegistry(), CatalogMutation{Op: OpUpdate, Record: CatalogRecord{Kind: KindUnit, Values: map[string]CatalogValue{
+		"code": {Text: "M"}, "name": {Text: "Metro lineal"}, "symbol": {Text: "M"}, "dimension": {Text: "LENGTH"},
+	}}})
+	if err != nil {
+		t.Fatalf("ApplyCatalogMutation() error = %v, want nil", err)
+	}
+	if next.Units[0].Name != "Metro lineal" || next.Units[0].Code != "M" || next.Units[0].Symbol != "M" {
+		t.Fatalf("mutated unit = %+v, want name round-trip with stable code/symbol", next.Units[0])
+	}
+}

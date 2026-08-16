@@ -194,7 +194,7 @@ func loadPresentationFields(ctx context.Context, tx pgx.Tx) ([]domain.Presentati
 }
 
 func loadUnits(ctx context.Context, tx pgx.Tx) ([]domain.UnitDefinition, error) {
-	rows, err := tx.Query(ctx, `SELECT code, symbol, dimension, active FROM public.unit_definitions ORDER BY id`)
+	rows, err := tx.Query(ctx, `SELECT code, name, symbol, dimension, active FROM public.unit_definitions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("query unit_definitions: %w", err)
 	}
@@ -202,7 +202,7 @@ func loadUnits(ctx context.Context, tx pgx.Tx) ([]domain.UnitDefinition, error) 
 	var units []domain.UnitDefinition
 	for rows.Next() {
 		var u domain.UnitDefinition
-		if err := rows.Scan(&u.Code, &u.Symbol, &u.Dimension, &u.Active); err != nil {
+		if err := rows.Scan(&u.Code, &u.Name, &u.Symbol, &u.Dimension, &u.Active); err != nil {
 			return nil, fmt.Errorf("scan unit_definitions: %w", err)
 		}
 		units = append(units, u)

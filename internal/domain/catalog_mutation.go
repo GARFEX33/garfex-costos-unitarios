@@ -195,7 +195,7 @@ func definitionFromRecord(rec CatalogRecord) AttributeDefinition {
 }
 
 func unitFromRecord(rec CatalogRecord) UnitDefinition {
-	return UnitDefinition{Code: text(rec, "code"), Symbol: text(rec, "symbol"), Dimension: text(rec, "dimension"), Active: rec.Active}
+	return UnitDefinition{Code: text(rec, "code"), Name: text(rec, "name"), Symbol: text(rec, "symbol"), Dimension: text(rec, "dimension"), Active: rec.Active}
 }
 
 func optionFromRecord(rec CatalogRecord) AttributeOption {

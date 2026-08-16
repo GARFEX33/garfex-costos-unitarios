@@ -938,9 +938,9 @@ func updateOptionRelation(ctx context.Context, tx pgx.Tx, rec domain.CatalogReco
 func listUnits(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
 	var conditions []string
 	var args []any
-	conditions, args = appendTextFilter(conditions, args, f.Text, "code")
+	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name", "symbol", "dimension")
 	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
-	sql := finalizeQuery(`SELECT id, code, symbol, dimension, active FROM public.unit_definitions`, conditions, "id", f)
+	sql := finalizeQuery(`SELECT id, code, name, symbol, dimension, active FROM public.unit_definitions`, conditions, "id", f)
 
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -950,39 +950,39 @@ func listUnits(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain
 	var out []domain.CatalogRecord
 	for rows.Next() {
 		var id int64
-		var code, symbol, dimension string
+		var code, name, symbol, dimension string
 		var active bool
-		if err := rows.Scan(&id, &code, &symbol, &dimension, &active); err != nil {
+		if err := rows.Scan(&id, &code, &name, &symbol, &dimension, &active); err != nil {
 			return nil, fmt.Errorf("scan unit_definitions: %w", err)
 		}
-		out = append(out, unitRecord(id, code, symbol, dimension, active))
+		out = append(out, unitRecord(id, code, name, symbol, dimension, active))
 	}
 	return out, rows.Err()
 }
 
 func getUnit(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
-	var code, symbol, dimension string
+	var code, name, symbol, dimension string
 	var active bool
-	err := q.QueryRow(ctx, `SELECT code, symbol, dimension, active FROM public.unit_definitions WHERE id=$1`, id).Scan(&code, &symbol, &dimension, &active)
+	err := q.QueryRow(ctx, `SELECT code, name, symbol, dimension, active FROM public.unit_definitions WHERE id=$1`, id).Scan(&code, &name, &symbol, &dimension, &active)
 	if isNoRows(err) {
 		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
 	}
 	if err != nil {
 		return domain.CatalogRecord{}, fmt.Errorf("get unit_definitions: %w", err)
 	}
-	return unitRecord(id, code, symbol, dimension, active), nil
+	return unitRecord(id, code, name, symbol, dimension, active), nil
 }
 
-func unitRecord(id int64, code, symbol, dimension string, active bool) domain.CatalogRecord {
+func unitRecord(id int64, code, name, symbol, dimension string, active bool) domain.CatalogRecord {
 	return domain.CatalogRecord{Kind: domain.KindUnit, ID: id, Active: active, Values: map[string]domain.CatalogValue{
-		"code": textValue(code), "symbol": textValue(symbol), "dimension": textValue(dimension),
+		"code": textValue(code), "name": textValue(name), "symbol": textValue(symbol), "dimension": textValue(dimension),
 	}}
 }
 
 func insertUnit(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (int64, error) {
 	var id int64
-	err := tx.QueryRow(ctx, `INSERT INTO public.unit_definitions (code, symbol, dimension, active) VALUES ($1,$2,$3,$4) RETURNING id`,
-		fieldText(rec, "code"), fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active).Scan(&id)
+	err := tx.QueryRow(ctx, `INSERT INTO public.unit_definitions (code, name, symbol, dimension, active) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		fieldText(rec, "code"), fieldText(rec, "name"), fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active).Scan(&id)
 	if err != nil {
 		return 0, mapCatalogWriteError(fmt.Errorf("insert unit_definitions: %w", err))
 	}
@@ -996,9 +996,9 @@ func updateUnit(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) error 
 	}
 	var tag pgconn.CommandTag
 	if referenced {
-		tag, err = tx.Exec(ctx, `UPDATE public.unit_definitions SET symbol=$1, dimension=$2, active=$3 WHERE id=$4`, fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active, rec.ID)
+		tag, err = tx.Exec(ctx, `UPDATE public.unit_definitions SET name=$1, symbol=$2, dimension=$3, active=$4 WHERE id=$5`, fieldText(rec, "name"), fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active, rec.ID)
 	} else {
-		tag, err = tx.Exec(ctx, `UPDATE public.unit_definitions SET code=$1, symbol=$2, dimension=$3, active=$4 WHERE id=$5`, fieldText(rec, "code"), fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active, rec.ID)
+		tag, err = tx.Exec(ctx, `UPDATE public.unit_definitions SET code=$1, name=$2, symbol=$3, dimension=$4, active=$5 WHERE id=$6`, fieldText(rec, "code"), fieldText(rec, "name"), fieldText(rec, "symbol"), fieldText(rec, "dimension"), rec.Active, rec.ID)
 	}
 	if err != nil {
 		return mapCatalogWriteError(fmt.Errorf("update unit_definitions: %w", err))
