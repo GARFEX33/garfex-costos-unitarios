@@ -126,8 +126,8 @@ func TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits(t *testin
 		m, _ = update(t, m, key(char))
 	}
 	m, _ = update(t, m, enter())
-	if !historyContains(m.history, "materials draft") {
-		t.Fatalf("materials history = %#v, want it to contain the materials draft", m.history)
+	if len(m.history) != 1 || m.history[0].text != "materials: materials draft" {
+		t.Fatalf("materials frame = %#v, want only the current response", m.history)
 	}
 	materialsHistoryLen := len(m.history)
 
@@ -151,8 +151,8 @@ func TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits(t *testin
 	if m.activeWorkspace != "materials" {
 		t.Fatalf("activeWorkspace = %q, want %q on re-entry", m.activeWorkspace, "materials")
 	}
-	if len(m.history) != materialsHistoryLen || !historyContains(m.history, "materials draft") {
-		t.Fatalf("materials history on re-entry = %#v, want the persisted history from the first visit", m.history)
+	if len(m.history) != materialsHistoryLen || m.history[0].text != "materials: materials draft" {
+		t.Fatalf("materials frame on re-entry = %#v, want the persisted current frame from the first visit", m.history)
 	}
 }
 
@@ -238,8 +238,8 @@ func TestWorkspaceRegistrySeparatesStateAcrossTwoIndependentWorkspaces(t *testin
 	}
 	m, _ = update(t, m, key('b'))
 	m = submitText(t, m, "alpha draft")
-	if !historyContains(m.history, "alpha draft") {
-		t.Fatalf("alpha history = %#v, want it to contain the alpha draft", m.history)
+	if len(m.history) != 1 || m.history[0].text != "materials: alpha draft" {
+		t.Fatalf("alpha frame = %#v, want only the current response", m.history)
 	}
 	alphaHistoryLen := len(m.history)
 
@@ -257,8 +257,8 @@ func TestWorkspaceRegistrySeparatesStateAcrossTwoIndependentWorkspaces(t *testin
 		t.Fatalf("beta first-visit history = %#v, want empty (a fresh, independent workspace)", m.history)
 	}
 	m = submitText(t, m, "beta draft")
-	if !historyContains(m.history, "beta draft") {
-		t.Fatalf("beta history = %#v, want it to contain the beta draft", m.history)
+	if len(m.history) != 1 || m.history[0].text != "materials: beta draft" {
+		t.Fatalf("beta frame = %#v, want only the current response", m.history)
 	}
 	if historyContains(m.history, "alpha draft") {
 		t.Fatalf("beta history = %#v, must not contain the alpha draft (state separation)", m.history)
@@ -272,8 +272,8 @@ func TestWorkspaceRegistrySeparatesStateAcrossTwoIndependentWorkspaces(t *testin
 	if ok := m.enterWorkspace("alpha"); !ok {
 		t.Fatal("re-entering \"alpha\" = false, want true")
 	}
-	if len(m.history) != alphaHistoryLen || !historyContains(m.history, "alpha draft") {
-		t.Fatalf("alpha history on re-entry = %#v, want the persisted alpha history from the first visit", m.history)
+	if len(m.history) != alphaHistoryLen || m.history[0].text != "materials: alpha draft" {
+		t.Fatalf("alpha frame on re-entry = %#v, want the persisted current frame from the first visit", m.history)
 	}
 	if historyContains(m.history, "beta draft") {
 		t.Fatalf("alpha history on re-entry = %#v, must not contain the beta draft", m.history)
