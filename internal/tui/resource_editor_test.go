@@ -80,8 +80,7 @@ func newTestAdapter(getter resourceGetter, creator resourceCreator, updater reso
 
 // answerQuestion is a small test helper: it asserts response.Pending is a
 // QuestionRequest keyed resourceEditorKey and drives the next turn directly
-// through respondToEditor (the editor's own dispatch, in scope for this
-// PR) with that key and the given value.
+// through the adapter's public Respond dispatch with that key and value.
 func answerQuestion(t *testing.T, adapter *ResourcesWorkspaceAdapter, response InteractionResponse, value string) InteractionResponse {
 	t.Helper()
 	request, ok := response.Pending.(QuestionRequest)
@@ -91,9 +90,9 @@ func answerQuestion(t *testing.T, adapter *ResourcesWorkspaceAdapter, response I
 	if request.Key != resourceEditorKey {
 		t.Fatalf("Pending.Key = %q, want %q", request.Key, resourceEditorKey)
 	}
-	next, handled := adapter.respondToEditor(context.Background(), InteractionInput{Kind: InputSelection, Key: request.Key, Value: value})
-	if !handled {
-		t.Fatalf("respondToEditor did not claim input keyed %q", request.Key)
+	next, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: request.Key, Value: value})
+	if err != nil {
+		t.Fatalf("Respond() error = %v, want nil", err)
 	}
 	return next
 }
@@ -109,9 +108,9 @@ func answerConfirmation(t *testing.T, adapter *ResourcesWorkspaceAdapter, respon
 	if request.Key != resourceEditorKey {
 		t.Fatalf("Pending.Key = %q, want %q", request.Key, resourceEditorKey)
 	}
-	next, handled := adapter.respondToEditor(context.Background(), InteractionInput{Kind: InputSelection, Key: request.Key, Value: value})
-	if !handled {
-		t.Fatalf("respondToEditor did not claim input keyed %q", request.Key)
+	next, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: request.Key, Value: value})
+	if err != nil {
+		t.Fatalf("Respond() error = %v, want nil", err)
 	}
 	return next
 }
@@ -484,8 +483,8 @@ func TestResourceEditorCreateDuplicateIdentityLooksUpByClassCode(t *testing.T) {
 	if !found {
 		t.Fatalf("Messages = %v, want a StructuredResult showing the existing resource", response.Messages)
 	}
-	if response.Pending != nil {
-		t.Fatalf("Pending = %#v, want nil (editor reset after duplicate)", response.Pending)
+	if _, ok := response.Pending.(QuestionRequest); !ok || adapter.editor == nil {
+		t.Fatalf("duplicate recovery = (%T, %#v), want field picker and preserved editor", response.Pending, adapter.editor)
 	}
 }
 
@@ -819,8 +818,8 @@ func TestResourceEditorEditConfirmationDeclineDiscardsChanges(t *testing.T) {
 	if creator.callCount != 0 || updater.callCount != 0 {
 		t.Fatalf("creator/updater call counts = %d/%d, want 0/0 (declining must not persist anything)", creator.callCount, updater.callCount)
 	}
-	if response.Pending != nil {
-		t.Fatalf("Pending = %#v, want nil after declining", response.Pending)
+	if _, ok := response.Pending.(ActionRequest); !ok {
+		t.Fatalf("Pending = %T, want original detail actions after declining", response.Pending)
 	}
 	if adapter.editor != nil {
 		t.Fatalf("adapter.editor = %#v, want nil after declining", adapter.editor)
@@ -855,8 +854,8 @@ func TestResourceEditorEditEscMidMultiFieldSequenceAbortsImmediately(t *testing.
 	if !handled {
 		t.Fatalf("respondToEditor did not claim the cancellation")
 	}
-	if cancelled.Pending != nil {
-		t.Fatalf("Pending = %#v, want nil after cancellation", cancelled.Pending)
+	if _, ok := cancelled.Pending.(ActionRequest); !ok {
+		t.Fatalf("Pending = %T, want original detail actions after cancellation", cancelled.Pending)
 	}
 	if adapter.editor != nil {
 		t.Fatalf("adapter.editor = %#v, want nil after cancellation", adapter.editor)
@@ -886,8 +885,8 @@ func TestResourceEditorEditFinishImmediatelyCancelsCleanly(t *testing.T) {
 	response := openEditFor(t, adapter, existing)
 	response = answerQuestion(t, adapter, response, editFinishFieldCode)
 
-	if response.Pending != nil {
-		t.Fatalf("Pending = %#v, want nil (no confirmation when nothing changed)", response.Pending)
+	if _, ok := response.Pending.(ActionRequest); !ok {
+		t.Fatalf("Pending = %T, want original detail actions when nothing changed", response.Pending)
 	}
 	if _, ok := response.Messages[0].(TextMessage); !ok {
 		t.Fatalf("Messages[0] = %T, want TextMessage", response.Messages[0])
@@ -1000,8 +999,8 @@ func TestResourceEditorDuplicateZeroChangesStillProceedsAndDetectsCollision(t *t
 	if !found {
 		t.Fatalf("Messages = %v, want a StructuredResult showing the existing (original) resource, proving no second row was created", response.Messages)
 	}
-	if response.Pending != nil {
-		t.Fatalf("Pending = %#v, want nil (editor reset after duplicate collision)", response.Pending)
+	if _, ok := response.Pending.(QuestionRequest); !ok || adapter.editor == nil {
+		t.Fatalf("duplicate collision recovery = (%T, %#v), want field picker and preserved editor", response.Pending, adapter.editor)
 	}
 }
 

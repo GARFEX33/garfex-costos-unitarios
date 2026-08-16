@@ -361,10 +361,12 @@ func (a *ResourcesWorkspaceAdapter) startDuplicateEditor() (InteractionResponse,
 // method silently swallowing unrelated input.
 func (a *ResourcesWorkspaceAdapter) respondToEditor(ctx context.Context, input InteractionInput) (InteractionResponse, bool) {
 	if input.Kind == InputCancel {
+		mode := a.editor.mode
 		a.editor = nil
-		return InteractionResponse{Messages: []InteractionMessage{
-			TextMessage{Text: "Se canceló la operación."},
-		}}, true
+		if mode == editorModeEdit || mode == editorModeDuplicate {
+			return a.detailOriginResponse(TextMessage{Text: "Se canceló la operación."}), true
+		}
+		return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: "Se canceló la operación."}}}, true
 	}
 	if input.Key != resourceEditorKey {
 		return InteractionResponse{}, false
@@ -511,8 +513,11 @@ func (a *ResourcesWorkspaceAdapter) attributePickerQuestion() InteractionRespons
 	options = append(options, Option{ID: editNaturalUnitFieldCode, Label: "Unidad natural: " + state.currentUnit, Value: editNaturalUnitFieldCode})
 	options = append(options, Option{ID: editFinishFieldCode, Label: "Terminar edición", Value: editFinishFieldCode})
 	prompt := "¿Qué campo querés editar?"
-	if state.mode == editorModeDuplicate {
+	switch state.mode {
+	case editorModeDuplicate:
 		prompt = "¿Qué campo querés modificar en la copia?"
+	case editorModeCreate:
+		prompt = "¿Qué campo querés corregir?"
 	}
 	return InteractionResponse{Pending: QuestionRequest{
 		ID:            resourceEditorKey,
@@ -542,9 +547,7 @@ func (a *ResourcesWorkspaceAdapter) answerAttributePicker(code string) Interacti
 	if code == editFinishFieldCode {
 		if len(state.editedCodes) == 0 && state.mode == editorModeEdit {
 			a.editor = nil
-			return InteractionResponse{Messages: []InteractionMessage{
-				TextMessage{Text: "No hiciste ningún cambio."},
-			}}
+			return a.detailOriginResponse(TextMessage{Text: "No hiciste ningún cambio."})
 		}
 		return a.editConfirmationQuestion()
 	}
@@ -927,7 +930,7 @@ func (a *ResourcesWorkspaceAdapter) editConfirmationQuestion() InteractionRespon
 		byCode[value.AttributeCode] = value
 	}
 	header := "Vas a guardar estos cambios:"
-	if state.mode == editorModeDuplicate {
+	if state.mode == editorModeCreate || state.mode == editorModeDuplicate {
 		header = "Vas a crear un nuevo recurso con estos valores:"
 	}
 	lines := []string{header}
@@ -960,15 +963,16 @@ func (a *ResourcesWorkspaceAdapter) editConfirmationQuestion() InteractionRespon
 // "yes" calls finishEditor with the CURRENT unit (possibly changed during
 // this session, see resourceEditorState.currentUnit) — the exact same
 // finishEditor/Update/duplicate-collision path Edit already had. Any other
-// answer ("no") cancels the whole edit — resets a.editor, nothing saved,
-// the same "cancelado" spirit as InputCancel.
+// answer ("no") cancels the flow without saving: Create returns to its menu,
+// while Edit/Duplicate restore their source detail.
 func (a *ResourcesWorkspaceAdapter) answerEditConfirmation(ctx context.Context, value string) InteractionResponse {
 	state := a.editor
 	if value != "yes" {
 		a.editor = nil
-		return InteractionResponse{Messages: []InteractionMessage{
-			TextMessage{Text: "Se canceló la edición."},
-		}}
+		if state.mode == editorModeCreate {
+			return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: "Se canceló la creación."}}}
+		}
+		return a.detailOriginResponse(TextMessage{Text: "Se canceló la edición."})
 	}
 	return a.finishEditor(ctx, state.currentUnit)
 }
@@ -1006,17 +1010,16 @@ func filterApplicableValues(attributes []domain.ResourceAttribute, values []doma
 // finishEditor builds the candidate Resource from the fully-answered editor
 // state and persists it (Update targeting the original Resource.ID for
 // editorModeEdit; Create — never carrying an ID — for both editorModeCreate
-// and editorModeDuplicate). It always resets a.editor to nil — success,
-// validation failure, and every Create/Update error all end the flow;
-// simplicity over cleverness, an edge case a fresh "nuevo recurso"/
-// "Editar"/"Duplicar" can retry.
+// and editorModeDuplicate). Recoverable failures keep the compatible draft
+// and return to the shared field picker; only success or explicit cancellation
+// discard the editor.
 func (a *ResourcesWorkspaceAdapter) finishEditor(ctx context.Context, unit string) InteractionResponse {
 	state := a.editor
+	state.currentUnit = unit
 	values := filterApplicableValues(state.attributes, state.values)
 	scope := domain.ResourceScope{ClassCode: state.class, FamilyCode: state.family, TypeCode: state.itemType}
 	resource, err := domain.NewResource(a.catalog, scope, unit, values)
 	if err != nil {
-		a.editor = nil
 		// NewResource's validation errors are deliberately human-decipherable
 		// domain messages (e.g. "incoherent relation between \"diameter_inch\"
 		// and \"diameter_mm\""), not raw infrastructure failures — unlike a
@@ -1029,7 +1032,7 @@ func (a *ResourcesWorkspaceAdapter) finishEditor(ctx context.Context, unit strin
 		if state.mode == editorModeEdit {
 			errorText = fmt.Sprintf("No pude guardar los cambios: %s.", reason)
 		}
-		return InteractionResponse{Messages: []InteractionMessage{ErrorMessage{Text: errorText}}}
+		return a.recoverEditor(ErrorMessage{Text: errorText})
 	}
 
 	var opErr error
@@ -1041,33 +1044,51 @@ func (a *ResourcesWorkspaceAdapter) finishEditor(ctx context.Context, unit strin
 		opErr = a.creator.Create(ctx, resource)
 	}
 	if opErr != nil {
-		a.editor = nil
 		if errors.Is(opErr, domain.ErrDuplicateResource) {
 			// resource.ClassCode (never resource.FamilyCode) is the
 			// repository's real scoping key (design R1) — the family code
 			// alone would resolve to ErrResourceNotFound.
 			existing, getErr := a.resourcesGetter.Get(ctx, resource.ClassCode, resource.IdentityKey)
 			if getErr != nil {
-				return InteractionResponse{Messages: []InteractionMessage{
-					ErrorMessage{Text: "Ya existe un recurso con esa identidad, pero no pude abrir su detalle."},
-				}}
+				return a.recoverEditor(ErrorMessage{Text: "Ya existe un recurso con esa identidad, pero no pude abrir su detalle."})
 			}
 			title, fields := a.resourcePresentation(existing)
-			return InteractionResponse{Messages: []InteractionMessage{
+			return a.recoverEditor(
 				TextMessage{Text: "Ya existe un recurso con esa identidad. Este es el recurso existente:"},
 				StructuredResult{Title: title, Fields: fields},
-			}}
+			)
 		}
-		errorText := "No pude crear el recurso. Probá de nuevo en un momento."
-		if state.mode == editorModeEdit {
-			errorText = "No pude guardar los cambios. Probá de nuevo en un momento."
-		}
-		return InteractionResponse{Messages: []InteractionMessage{ErrorMessage{Text: errorText}}}
+		return a.recoverEditor(ErrorMessage{Text: resourceEditorPersistenceError(state.mode, opErr)})
 	}
 
 	a.editor = nil
 	title, fields := a.resourcePresentation(resource)
 	return InteractionResponse{Messages: []InteractionMessage{StructuredResult{Title: title, Fields: fields}}}
+}
+
+func (a *ResourcesWorkspaceAdapter) recoverEditor(messages ...InteractionMessage) InteractionResponse {
+	response := a.attributePickerQuestion()
+	response.Messages = append(messages, response.Messages...)
+	return response
+}
+
+func resourceEditorPersistenceError(mode resourceEditorMode, err error) string {
+	if errors.Is(err, domain.ErrResourceNotFound) {
+		return "No pude guardar los cambios porque el recurso ya no existe. Revisá el borrador o cancelá la edición."
+	}
+	if errors.Is(err, domain.ErrResourceReference) {
+		return "No pude guardar el recurso porque una referencia del catálogo ya no está disponible. Revisá el borrador."
+	}
+	if mode == editorModeEdit {
+		return "No pude guardar los cambios. Revisá el borrador o probá de nuevo en un momento."
+	}
+	return "No pude crear el recurso. Revisá el borrador o probá de nuevo en un momento."
+}
+
+func (a *ResourcesWorkspaceAdapter) detailOriginResponse(messages ...InteractionMessage) InteractionResponse {
+	title, fields := a.resourcePresentation(a.lastDetail)
+	messages = append(messages, StructuredResult{Title: title, Fields: fields})
+	return InteractionResponse{Messages: messages, Pending: detailActionsRequest()}
 }
 
 // resourcePresentation builds the shared "one resource" presentation used
@@ -1092,7 +1113,8 @@ func (a *ResourcesWorkspaceAdapter) resourcePresentation(resource domain.Resourc
 		if attribute.Text == notApplicableAttributeText {
 			continue
 		}
-		fields = append(fields, Field{Label: attribute.AttributeCode, Value: formatResourceAttributeValue(attribute)})
+		label, value := a.resourceAttributePresentation(resource, attribute)
+		fields = append(fields, Field{Label: label, Value: value})
 	}
 
 	title = resourceCatalogIdentity(a.catalog, resource)
@@ -1107,6 +1129,44 @@ func (a *ResourcesWorkspaceAdapter) resourcePresentation(resource domain.Resourc
 		title += " (Clase inactiva)"
 	}
 	return title, fields
+}
+
+func (a *ResourcesWorkspaceAdapter) resourceAttributePresentation(resource domain.Resource, value domain.ResourceAttributeValue) (string, string) {
+	label := "Atributo sin etiqueta (" + value.AttributeCode + ")"
+	scope := domain.ResourceScope{ClassCode: resource.ClassCode, FamilyCode: resource.FamilyCode, TypeCode: resource.TypeCode}
+	var matched *domain.ResourceAttribute
+	for _, attribute := range a.catalog.AttributesFor(scope) {
+		if strings.EqualFold(attribute.Definition.Code, value.AttributeCode) {
+			attributeCopy := attribute
+			matched = &attributeCopy
+			if attribute.Definition.Name != "" {
+				label = attribute.Definition.Name
+			}
+			break
+		}
+	}
+	if value.Type != domain.ValueTypeControlledOption || matched == nil {
+		return label, formatResourceAttributeValue(value)
+	}
+	for _, option := range a.catalog.Options {
+		if strings.EqualFold(option.AttributeCode, value.AttributeCode) && option.Code == value.OptionCode && sameOptionSet(option.OptionSet, matched.OptionSet) {
+			if option.Label != "" {
+				return label, option.Label
+			}
+			break
+		}
+	}
+	return label, "Sin etiqueta (" + value.OptionCode + ")"
+}
+
+func sameOptionSet(left, right string) bool {
+	if left == "" {
+		left = "DEFAULT"
+	}
+	if right == "" {
+		right = "DEFAULT"
+	}
+	return strings.EqualFold(left, right)
 }
 
 func resourceCatalogIdentity(catalog domain.ResourceCatalog, resource domain.Resource) string {
