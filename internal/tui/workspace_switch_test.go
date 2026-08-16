@@ -73,10 +73,10 @@ func TestSelectingMaterialesMaestrosOpensIndependentWorkspace(t *testing.T) {
 	if m.activeWorkspace != "materials" {
 		t.Fatalf("activeWorkspace = %q, want %q", m.activeWorkspace, "materials")
 	}
-	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "GARFEX / MATERIALES") {
-		t.Fatalf("view = %q, want the GARFEX / MATERIALES header", plain)
+	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "GARFEX › MATERIALES › Menú") {
+		t.Fatalf("view = %q, want the Materiales menu breadcrumb", plain)
 	}
-	m, _ = update(t, m, enter())
+	m, _ = update(t, m, key('b'))
 	for _, char := range "cable" {
 		m, _ = update(t, m, key(char))
 	}
@@ -121,7 +121,7 @@ func TestWorkspaceSwitchSeparatesStateAndPersistsMaterialsAcrossVisits(t *testin
 	}
 
 	// Put different text/history into Materiales' own chat.
-	m, _ = update(t, m, enter())
+	m, _ = update(t, m, key('b'))
 	for _, char := range "materials draft" {
 		m, _ = update(t, m, key(char))
 	}
@@ -236,6 +236,7 @@ func TestWorkspaceRegistrySeparatesStateAcrossTwoIndependentWorkspaces(t *testin
 	if m.activeWorkspace != "alpha" {
 		t.Fatalf("activeWorkspace = %q, want %q", m.activeWorkspace, "alpha")
 	}
+	m, _ = update(t, m, key('b'))
 	m = submitText(t, m, "alpha draft")
 	if !historyContains(m.history, "alpha draft") {
 		t.Fatalf("alpha history = %#v, want it to contain the alpha draft", m.history)
@@ -251,6 +252,7 @@ func TestWorkspaceRegistrySeparatesStateAcrossTwoIndependentWorkspaces(t *testin
 	if ok := m.enterWorkspace("beta"); !ok {
 		t.Fatal("enterWorkspace(\"beta\") = false, want true")
 	}
+	m, _ = update(t, m, key('b'))
 	if len(m.history) != 0 {
 		t.Fatalf("beta first-visit history = %#v, want empty (a fresh, independent workspace)", m.history)
 	}

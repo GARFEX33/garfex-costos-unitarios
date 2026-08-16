@@ -17,6 +17,8 @@ const recursosSlug = "recursos"
 // (design D13/§8).
 const configuracionSlug = "configuracion"
 
+const searchResourcesActionID = "search-resources"
+
 type assistantAction struct {
 	id       string
 	label    string
@@ -36,19 +38,6 @@ type assistantAction struct {
 // constructs the real catalog in the first place.
 var assistantActions = []assistantAction{
 	{id: "materials", label: "Materiales Maestros"},
-	{id: "concepts", label: "Conceptos"},
-	{id: "apu", label: "APU"},
-	{id: "suppliers", label: "Proveedores"},
-}
-
-// staticAssistantActions are the out-of-scope stubs buildAssistantActions
-// appends after the class-derived "Recursos" subtree (recursos-maestro
-// design §7) — Conceptos/APU/Proveedores are not resource classes and stay
-// exactly as they are today.
-var staticAssistantActions = []assistantAction{
-	{id: "concepts", label: "Conceptos"},
-	{id: "apu", label: "APU"},
-	{id: "suppliers", label: "Proveedores"},
 }
 
 // sortedActiveClasses filters classes down to the Active ones and sorts them
@@ -130,15 +119,12 @@ func buildWorkspaceDescriptors(classes []domain.ResourceClass, agentFor func(cla
 	return descriptors
 }
 
-// buildAssistantActions composes the class-derived "Recursos" subtree, the
-// "Configuración" workspace leaf (design §8 — gains this node after the
-// Recursos subtree, before the static stubs), and the untouched
-// out-of-scope static stubs.
+// buildAssistantActions exposes only capabilities backed by a working
+// workspace. Future modules stay hidden until their end-to-end flow exists.
 func buildAssistantActions(classes []domain.ResourceClass, kinds []domain.CatalogKind) []assistantAction {
-	actions := make([]assistantAction, 0, 2+len(staticAssistantActions))
+	actions := make([]assistantAction, 0, 2)
 	actions = append(actions, buildResourceActions(classes))
 	actions = append(actions, assistantAction{id: configuracionSlug, label: "Configuración"})
-	actions = append(actions, staticAssistantActions...)
 	return actions
 }
 
@@ -227,7 +213,10 @@ func workspaceActions(d WorkspaceDescriptor) []assistantAction {
 	if d.PaletteActions != nil {
 		return d.PaletteActions
 	}
-	return []assistantAction{{id: createResourceActionID, label: d.CreateLabel}}
+	return []assistantAction{
+		{id: createResourceActionID, label: d.CreateLabel},
+		{id: searchResourcesActionID, label: "Buscar recursos"},
+	}
 }
 
 func flattenLeafActions(actions []assistantAction) []assistantAction {
