@@ -550,6 +550,10 @@ func TestCatalogAdminOpenKindMenuListsExistingRecordsPlusCreateOption(t *testing
 	if err != nil {
 		t.Fatalf("Respond() error = %v", err)
 	}
+	response, err = adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: catalogStatusMenuKey, Value: catalogStatusActiveID})
+	if err != nil {
+		t.Fatalf("Respond(status) error = %v", err)
+	}
 	question, ok := response.Pending.(QuestionRequest)
 	if !ok {
 		t.Fatalf("Pending = %T, want QuestionRequest", response.Pending)

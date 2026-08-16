@@ -560,7 +560,7 @@ func identityParticipatesChanged(mode catalogEditorMode, def domain.CatalogKind,
 // always its Spanish display name (catalogRecordDisplayLabel), never its raw
 // Código (spec: Spanish-Only Catalog-Admin UI).
 func (a *CatalogAdminAdapter) refOptions(ctx context.Context, field domain.FieldDescriptor, values map[string]domain.CatalogValue) ([]Option, error) {
-	filter := domain.CatalogFilter{}
+	filter := domain.CatalogFilter{Status: domain.CatalogStatusActive}
 	if len(field.RefScopedBy) > 0 {
 		parent := make(map[string]domain.CatalogValue, len(field.RefScopedBy))
 		for _, name := range field.RefScopedBy {
@@ -878,11 +878,19 @@ func catalogUnitPresentation(name, symbol, dimension string) string {
 // the FieldDescriptor's own Spanish Label, never a raw storage key or Código
 // (spec: Spanish-Only Catalog-Admin UI).
 func catalogRecordFields(def domain.CatalogKind, rec domain.CatalogRecord) []Field {
-	fields := make([]Field, 0, len(def.Fields))
+	fields := make([]Field, 0, len(def.Fields)+1)
 	for _, fd := range def.Fields {
 		fields = append(fields, Field{Label: fd.Label, Value: formatCatalogFieldValue(fd, rec.Values[fd.Name])})
 	}
+	fields = append(fields, Field{Label: "Estado", Value: catalogStatusLabel(rec.Active)})
 	return fields
+}
+
+func catalogStatusLabel(active bool) string {
+	if active {
+		return "Activo"
+	}
+	return "Inactivo"
 }
 
 // formatCatalogFieldValue renders one CatalogValue for display, per its

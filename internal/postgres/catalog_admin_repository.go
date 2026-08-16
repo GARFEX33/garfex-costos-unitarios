@@ -281,11 +281,13 @@ func appendTextFilter(conditions []string, args []any, text string, columns ...s
 	return append(conditions, "("+strings.Join(parts, " OR ")+")"), args
 }
 
-// appendActiveFilter adds "column" (a boolean SQL expression) unless the
-// caller opted into inactive rows too (CatalogFilter.IncludeInactive —
-// the admin engine's escape hatch for editing inactive rows, design Risk#3).
-func appendActiveFilter(conditions []string, includeInactive bool, column string) []string {
-	if !includeInactive {
+func appendActiveFilter(conditions []string, status domain.CatalogStatus, column string) []string {
+	switch status {
+	case domain.CatalogStatusInactive:
+		conditions = append(conditions, "NOT "+column)
+	case domain.CatalogStatusAll:
+		return conditions
+	default:
 		conditions = append(conditions, column)
 	}
 	return conditions

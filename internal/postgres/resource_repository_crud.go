@@ -39,7 +39,7 @@ func (r *resourceRepository) Create(ctx context.Context, resource domain.Resourc
 		JOIN public.resource_types t ON t.family_id = f.id AND t.code = $3
 		JOIN public.resource_unit_policies p ON p.family_id = f.id AND p.allowed
 		JOIN public.unit_definitions u ON u.id = p.unit_id AND u.code = $4
-		WHERE cl.code = $1
+		WHERE cl.code = $1 AND cl.active AND f.active AND t.active AND u.active
 		RETURNING id`, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit, resource.FamilyCode, resource.IdentityKey).Scan(&resourceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -143,7 +143,7 @@ func (r *resourceRepository) Update(ctx context.Context, resource domain.Resourc
 		JOIN public.resource_types t ON t.family_id = f.id AND t.code = $3
 		JOIN public.resource_unit_policies p ON p.family_id = f.id AND p.allowed
 		JOIN public.unit_definitions u ON u.id = p.unit_id AND u.code = $4
-		WHERE cl.code = $1`, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit).Scan(&classID, &familyID, &typeID, &unitID)
+		WHERE cl.code = $1 AND cl.active AND f.active AND t.active AND u.active`, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit).Scan(&classID, &familyID, &typeID, &unitID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: class %q, family %q, type %q, or unit %q", domain.ErrResourceReference, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit)
