@@ -58,6 +58,9 @@ func TestLoadResourceCatalogIntegration(t *testing.T) {
 	})
 
 	t.Run("conditional rules hydrate nested from resource_attribute_rules", func(t *testing.T) {
+		if err := catalog.Validate(); err != nil {
+			t.Fatalf("LoadResourceCatalog() produced an invalid catalog: %v", err)
+		}
 		var color, voltage *domain.ResourceAttribute
 		for i := range catalog.Attributes {
 			switch catalog.Attributes[i].Definition.Code {
@@ -84,6 +87,21 @@ func TestLoadResourceCatalogIntegration(t *testing.T) {
 			if rule.Mode != domain.ModeForbidden || !rule.NotApplicable {
 				t.Fatalf("%s Rules[0] = %+v, want Mode=FORBIDDEN NotApplicable=true", attribute.Definition.Code, rule)
 			}
+		}
+		for _, tt := range []struct {
+			name, insulation string
+			wantMode         domain.AttributeMode
+			wantNA           bool
+		}{
+			{"matching rule", "DESNUDO", domain.ModeForbidden, true},
+			{"non-matching rule", "THW", domain.ModeRequired, false},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				mode, _, notApplicable := color.Effective([]domain.ResourceAttributeValue{domain.OptionValue("insulation", tt.insulation)})
+				if mode != tt.wantMode || notApplicable != tt.wantNA {
+					t.Fatalf("color.Effective(%s) = %v, %v; want %v, %v", tt.insulation, mode, notApplicable, tt.wantMode, tt.wantNA)
+				}
+			})
 		}
 	})
 
