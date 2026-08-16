@@ -168,6 +168,11 @@ func (a *CatalogAdminAdapter) startEditFlow(ctx context.Context, kind domain.Cat
 			ErrorMessage{Text: "No reconozco ese tipo de catálogo."},
 		}}, nil
 	}
+	if catalogRecordIsConditional(def, rec) {
+		return InteractionResponse{Messages: []InteractionMessage{
+			ErrorMessage{Text: conditionalCatalogReadOnlyMessage},
+		}}, nil
+	}
 	a.editor = &catalogEditorState{
 		mode: catalogEditorEdit, def: def,
 		values:   cloneCatalogEditorValues(rec.Values),
@@ -185,6 +190,10 @@ func (a *CatalogAdminAdapter) startEditFlow(ctx context.Context, kind domain.Cat
 		response.Messages = append([]InteractionMessage{TextMessage{Text: "Este nombre es provisional. Corregilo por un nombre humano antes de guardar."}}, response.Messages...)
 	}
 	return response, nil
+}
+
+func catalogRecordIsConditional(def domain.CatalogKind, rec domain.CatalogRecord) bool {
+	return def.Code == domain.KindAttributeBinding && rec.Values["mode"].Text == "CONDITIONAL"
 }
 
 // respondToEditor handles one InteractionInput while a.editor is

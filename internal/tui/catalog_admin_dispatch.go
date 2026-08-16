@@ -53,6 +53,8 @@ const catalogRecordReactivateActionID = "catalog-record-reactivate"
 const catalogRecordDeleteActionID = "catalog-record-delete"
 const catalogRecordBackActionID = "catalog-record-back"
 
+const conditionalCatalogReadOnlyMessage = "La Aplicabilidad Condicional existente es de solo lectura porque sus reglas se administran fuera de este flujo."
+
 // catalogDeleteConfirmKey identifies the ConfirmationRequest shown before a
 // real (unguarded) hard delete — mirrors resources_workspace_dispatch.go's
 // resourcesDeleteConfirmKey/startDeleteConfirmation/answerDeleteConfirmation
@@ -156,6 +158,10 @@ func (a *CatalogAdminAdapter) Respond(ctx context.Context, input InteractionInpu
 		}
 		return a.openRecordDetail(ctx, a.activeKind, input.Value)
 	case input.Kind == InputAction && input.ActionID == catalogRecordEditActionID:
+		def, _ := a.registry.Kind(a.activeKind)
+		if catalogRecordIsConditional(def, a.activeRecord) {
+			return a.conditionalReadOnlyResponse(), nil
+		}
 		return a.startEditFlow(ctx, a.activeKind, a.activeRecord)
 	case input.Kind == InputAction && input.ActionID == catalogRecordDeactivateActionID:
 		return a.answerSetActive(ctx, false)
@@ -169,6 +175,12 @@ func (a *CatalogAdminAdapter) Respond(ctx context.Context, input InteractionInpu
 		return a.startKindMenu(ctx, a.activeKind)
 	}
 	return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: catalogAdminGreeting}}}, nil
+}
+
+func (a *CatalogAdminAdapter) conditionalReadOnlyResponse() InteractionResponse {
+	response := a.recordDetailResponse()
+	response.Messages = append([]InteractionMessage{ErrorMessage{Text: conditionalCatalogReadOnlyMessage}}, response.Messages...)
+	return response
 }
 
 // startKindMenu opens kind's "existing record or crear nueva/o" menu: a
@@ -271,8 +283,9 @@ func (a *CatalogAdminAdapter) recordDetailResponse() InteractionResponse {
 // to fail (Generic Descriptor-Driven Engine: the descriptor itself decides,
 // no per-kind branch here).
 func catalogRecordActionsRequest(def domain.CatalogKind, rec domain.CatalogRecord) ActionRequest {
-	actions := []Action{
-		{ID: catalogRecordEditActionID, Label: "Editar", Value: catalogRecordEditActionID, Target: ActionTargetAgent},
+	actions := []Action{}
+	if !catalogRecordIsConditional(def, rec) {
+		actions = append(actions, Action{ID: catalogRecordEditActionID, Label: "Editar", Value: catalogRecordEditActionID, Target: ActionTargetAgent})
 	}
 	if def.SoftDelete {
 		if rec.Active {
