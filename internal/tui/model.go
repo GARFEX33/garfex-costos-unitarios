@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -1221,15 +1223,15 @@ func (m Model) pendingAllowsCustom() bool {
 // SearchTerms is empty for every non-palette Option, so this is a pure
 // extension of the previous label-only behavior, never a narrowing of it.
 func filterOptions(options []Option, query string) []Option {
-	tokens := strings.Fields(strings.ToLower(query))
+	tokens := strings.Fields(normalizeSearchText(query))
 	if len(tokens) == 0 {
 		return append([]Option(nil), options...)
 	}
 	filtered := make([]Option, 0, len(options))
 	for _, option := range options {
-		haystack := strings.ToLower(option.Label)
+		haystack := normalizeSearchText(option.Label)
 		if len(option.SearchTerms) > 0 {
-			haystack += " " + strings.ToLower(strings.Join(option.SearchTerms, " "))
+			haystack += " " + normalizeSearchText(strings.Join(option.SearchTerms, " "))
 		}
 		matches := true
 		for _, token := range tokens {
@@ -1243,6 +1245,15 @@ func filterOptions(options []Option, query string) []Option {
 		}
 	}
 	return filtered
+}
+
+func normalizeSearchText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, norm.NFD.String(value))
 }
 
 func pendingOptionsFor(message InteractionMessage) []Option {
