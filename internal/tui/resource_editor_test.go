@@ -476,8 +476,8 @@ func TestResourceEditorCreateDuplicateIdentityLooksUpByClassCode(t *testing.T) {
 	for _, message := range response.Messages {
 		if result, ok := message.(StructuredResult); ok {
 			found = true
-			if !strings.HasPrefix(result.Title, "CONDUCTORES") {
-				t.Fatalf("existing resource Title = %q, want it to start with %q", result.Title, "CONDUCTORES")
+			if !strings.HasPrefix(result.Title, "Cable · Material › Conductores") {
+				t.Fatalf("existing resource Title = %q, want it to start with the business identity", result.Title)
 			}
 		}
 	}

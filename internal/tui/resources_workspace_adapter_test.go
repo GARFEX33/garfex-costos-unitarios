@@ -513,7 +513,7 @@ func TestResourcesWorkspaceAdapterRespondDetailUsesDescriberForTitle(t *testing.
 	if !ok {
 		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
 	}
-	want := "CONDUCTORES — Cable THHN 12 AWG BLANCO"
+	want := "Cable · Material › Conductores — Cable THHN 12 AWG BLANCO"
 	if result.Title != want {
 		t.Fatalf("Title = %q, want %q", result.Title, want)
 	}
@@ -558,7 +558,7 @@ func TestResourcesWorkspaceAdapterRespondDeleteActionShowsConfirmation(t *testin
 	if !ok {
 		t.Fatalf("Pending = %T, want ConfirmationRequest", response.Pending)
 	}
-	if !strings.Contains(confirmation.Question, "CONDUCTORES") {
+	if !strings.Contains(confirmation.Question, "Conductores · Material") {
 		t.Fatalf("Question = %q, want it to name the resource", confirmation.Question)
 	}
 	if confirmation.Key != resourcesDeleteConfirmKey {
@@ -603,7 +603,7 @@ func TestResourcesWorkspaceAdapterRespondDeleteConfirmYesCallsDelete(t *testing.
 	if !ok {
 		t.Fatalf("Messages[0] = %T, want TextMessage", response.Messages[0])
 	}
-	if !strings.Contains(message.Text, "CONDUCTORES") {
+	if !strings.Contains(message.Text, "Conductores · Material") {
 		t.Fatalf("text = %q, want it to mention the deleted resource", message.Text)
 	}
 }
@@ -637,8 +637,8 @@ func TestResourcesWorkspaceAdapterRespondDeleteConfirmNoReturnsToSameDetail(t *t
 	if !ok {
 		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
 	}
-	if !strings.HasPrefix(result.Title, "CONDUCTORES") {
-		t.Fatalf("Title = %q, want it to start with CONDUCTORES", result.Title)
+	if !strings.HasPrefix(result.Title, "Conductores · Material") {
+		t.Fatalf("Title = %q, want it to start with the business family identity", result.Title)
 	}
 	action, ok := response.Pending.(ActionRequest)
 	if !ok {

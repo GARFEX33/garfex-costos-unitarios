@@ -212,6 +212,10 @@ func refValue(kind domain.CatalogKindCode, code string) domain.CatalogValue {
 	return domain.CatalogValue{Ref: domain.CatalogRef{Kind: kind, Code: code}}
 }
 
+func refValueLabel(kind domain.CatalogKindCode, code, label string) domain.CatalogValue {
+	return domain.CatalogValue{Ref: domain.CatalogRef{Kind: kind, Code: code, Label: label}}
+}
+
 // --- error mapping ---------------------------------------------------------
 
 // mapCatalogWriteError maps pgx constraint-violation codes surfaced by an

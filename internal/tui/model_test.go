@@ -1564,7 +1564,7 @@ func TestViewportFollowsBottomAcrossAWholeCreateFlowAndASecondOne(t *testing.T) 
 	for _, msg := range []tea.Msg{key('/'), enter(), enter(), enter(), enter(), enter(), enter(), enter()} {
 		m, _ = update(t, m, msg)
 	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "CONDUCTORES") {
+	if !strings.Contains(ansi.Strip(m.View().Content), "Cable · Material › Conductores") {
 		t.Fatalf("first create flow did not complete: view = %q", ansi.Strip(m.View().Content))
 	}
 
