@@ -41,19 +41,25 @@ type CatalogRecord struct {
 	Values map[string]CatalogValue
 }
 
+type CatalogStatus uint8
+
+const (
+	CatalogStatusActive CatalogStatus = iota
+	CatalogStatusInactive
+	CatalogStatusAll
+)
+
 // CatalogFilter narrows a CatalogAdminRepository.List call: Text is a
 // case-insensitive partial match against the kind's Searchable fields,
 // Parent narrows by one or more of the kind's own scoping fields (e.g.
-// {"class": ...} when listing Familias), and IncludeInactive opts into rows
-// a filtered read query (FamiliesFor/TypesFor/OptionsFor/NaturalUnitsFor)
-// would otherwise hide — the admin engine's own escape hatch for editing
-// inactive rows (design Risk#3).
+// {"class": ...} when listing Familias). Status defaults and fails closed to
+// Active so ordinary references cannot expose inactive records.
 type CatalogFilter struct {
-	Text            string
-	Parent          map[string]CatalogValue
-	IncludeInactive bool
-	Limit           int
-	Offset          int
+	Text   string
+	Parent map[string]CatalogValue
+	Status CatalogStatus
+	Limit  int
+	Offset int
 }
 
 // CatalogDependency reports how many rows of Kind reference one record,

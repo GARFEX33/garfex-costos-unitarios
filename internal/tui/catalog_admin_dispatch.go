@@ -61,6 +61,13 @@ const conditionalCatalogReadOnlyMessage = "La Aplicabilidad Condicional existent
 // precedent.
 const catalogDeleteConfirmKey = "catalog-admin-delete-confirm"
 
+const (
+	catalogStatusMenuKey    = "catalog-admin-status"
+	catalogStatusActiveID   = "active"
+	catalogStatusInactiveID = "inactive"
+	catalogStatusAllID      = "all"
+)
+
 func catalogOpenActionID(kind domain.CatalogKindCode) string {
 	return catalogOpenActionPrefix + string(kind)
 }
@@ -86,7 +93,8 @@ type CatalogAdminAdapter struct {
 	registry          domain.CatalogRegistry
 	// activeKind is the kind whose "existing record or crear nueva/o" menu
 	// (startKindMenu) is currently pending, "" when none is.
-	activeKind domain.CatalogKindCode
+	activeKind   domain.CatalogKindCode
+	activeStatus domain.CatalogStatus
 	// activeRecord is the record currently shown in the detail/lifecycle-
 	// actions view (openRecordDetail/recordDetailResponse, task 7.1) — the
 	// catalog-admin counterpart of ResourcesWorkspaceAdapter.lastDetail.
@@ -148,10 +156,20 @@ func (a *CatalogAdminAdapter) Respond(ctx context.Context, input InteractionInpu
 	case input.Kind == InputAction && input.ActionID == catalogWizardActionID:
 		return a.startWizard(ctx, nil)
 	case input.Kind == InputAction && input.ActionID == catalogIdentityActionID:
-		return a.startKindMenu(ctx, domain.KindAttributeBinding)
+		return a.startStatusMenu(domain.KindAttributeBinding), nil
 	case input.Kind == InputAction && strings.HasPrefix(input.ActionID, catalogOpenActionPrefix):
 		kind := domain.CatalogKindCode(strings.TrimPrefix(input.ActionID, catalogOpenActionPrefix))
-		return a.startKindMenu(ctx, kind)
+		return a.startStatusMenu(kind), nil
+	case input.Kind == InputSelection && input.Key == catalogStatusMenuKey:
+		switch input.Value {
+		case catalogStatusInactiveID:
+			a.activeStatus = domain.CatalogStatusInactive
+		case catalogStatusAllID:
+			a.activeStatus = domain.CatalogStatusAll
+		default:
+			a.activeStatus = domain.CatalogStatusActive
+		}
+		return a.startKindMenu(ctx, a.activeKind)
 	case input.Kind == InputSelection && input.Key == catalogKindMenuKey:
 		if input.Value == catalogCreateNewOptionID {
 			return a.startCreateFlow(ctx, a.activeKind)
@@ -177,6 +195,17 @@ func (a *CatalogAdminAdapter) Respond(ctx context.Context, input InteractionInpu
 	return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: catalogAdminGreeting}}}, nil
 }
 
+func (a *CatalogAdminAdapter) startStatusMenu(kind domain.CatalogKindCode) InteractionResponse {
+	def, ok := a.registry.Kind(kind)
+	if !ok {
+		return InteractionResponse{Messages: []InteractionMessage{ErrorMessage{Text: "No reconozco ese tipo de catálogo."}}}
+	}
+	a.activeKind, a.activeStatus = kind, domain.CatalogStatusActive
+	return InteractionResponse{Pending: QuestionRequest{ID: catalogStatusMenuKey, Key: catalogStatusMenuKey,
+		Prompt: def.Plural + " — elegí un estado", Question: "¿Qué estado querés ver?", SelectionMode: SelectionSingle,
+		Options: []Option{{ID: catalogStatusActiveID, Label: "Activos", Value: catalogStatusActiveID}, {ID: catalogStatusInactiveID, Label: "Inactivos", Value: catalogStatusInactiveID}, {ID: catalogStatusAllID, Label: "Todos", Value: catalogStatusAllID}}}}
+}
+
 func (a *CatalogAdminAdapter) conditionalReadOnlyResponse() InteractionResponse {
 	response := a.recordDetailResponse()
 	response.Messages = append([]InteractionMessage{ErrorMessage{Text: conditionalCatalogReadOnlyMessage}}, response.Messages...)
@@ -195,7 +224,7 @@ func (a *CatalogAdminAdapter) startKindMenu(ctx context.Context, kind domain.Cat
 			ErrorMessage{Text: "No reconozco ese tipo de catálogo."},
 		}}, nil
 	}
-	records, err := a.lister.List(ctx, kind, domain.CatalogFilter{})
+	records, err := a.lister.List(ctx, kind, domain.CatalogFilter{Status: a.activeStatus})
 	if err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
 			ErrorMessage{Text: "No pude cargar el listado. Probá de nuevo en un momento."},
@@ -207,14 +236,18 @@ func (a *CatalogAdminAdapter) startKindMenu(ctx context.Context, kind domain.Cat
 	options = append(options, Option{ID: catalogCreateNewOptionID, Label: "+ Crear nueva/o " + def.Singular, Value: catalogCreateNewOptionID})
 	for _, rec := range records {
 		id := fmt.Sprintf("%d", rec.ID)
-		options = append(options, Option{ID: id, Label: catalogRecordDisplayLabel(def, rec), Value: id})
+		options = append(options, Option{ID: id, Label: catalogRecordDisplayLabel(def, rec) + " · Estado: " + catalogStatusLabel(rec.Active), Value: id})
 	}
 
 	prompt := fmt.Sprintf("%s — elegí una/o existente o creá nueva/o", def.Plural)
-	return InteractionResponse{Pending: QuestionRequest{
+	response := InteractionResponse{Pending: QuestionRequest{
 		ID: catalogKindMenuKey, Key: catalogKindMenuKey, Prompt: prompt, Question: prompt,
 		SelectionMode: SelectionSearchable, Options: options,
-	}}, nil
+	}}
+	if len(records) == 0 {
+		response.Messages = []InteractionMessage{TextMessage{Text: "No hay registros para este estado."}}
+	}
+	return response, nil
 }
 
 // openRecordForEdit resolves idText (a startKindMenu Option.Value) to a real
@@ -269,8 +302,12 @@ func (a *CatalogAdminAdapter) recordDetailResponse() InteractionResponse {
 	if !a.activeRecord.Active {
 		title += " (Inactivo)"
 	}
+	messages := []InteractionMessage{StructuredResult{Title: title, Fields: catalogRecordFields(def, a.activeRecord)}}
+	if !a.activeRecord.Active && !def.SoftDelete {
+		messages = append(messages, TextMessage{Text: "Reactivación no disponible para este tipo de catálogo"})
+	}
 	return InteractionResponse{
-		Messages: []InteractionMessage{StructuredResult{Title: title, Fields: catalogRecordFields(def, a.activeRecord)}},
+		Messages: messages,
 		Pending:  catalogRecordActionsRequest(def, a.activeRecord),
 	}
 }

@@ -323,6 +323,87 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	}
 }
 
+func TestCatalogAdminE2EInactiveTypeReactivatedAfterRestartAllowsActiveOnlyCreate(t *testing.T) {
+	dsn := os.Getenv("GARFEX_TEST_DSN")
+	if dsn == "" {
+		t.Skip("GARFEX_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	boot, err := postgres.LoadResourceCatalog(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), domain.NewCatalogRegistry(), boot)
+	typeRec, err := svc.Create(ctx, domain.KindType, domain.CatalogRecord{Active: true, Values: map[string]domain.CatalogValue{
+		"class":  {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: "MATERIAL"}},
+		"family": {Ref: domain.CatalogRef{Kind: domain.KindFamily, Code: "CANALIZACIONES"}},
+		"code":   {Text: "TEST_U3_REACTIVACION"}, "name": {Text: "Test U3 Reactivación"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := svc.Delete(ctx, domain.KindType, typeRec.ID); err != nil {
+			t.Errorf("cleanup type: %v", err)
+		}
+	})
+	if err := svc.Deactivate(ctx, domain.KindType, typeRec.ID); err != nil {
+		t.Fatal(err)
+	}
+	restartedInactive, err := postgres.LoadResourceCatalog(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restartedInactive.TypesFor(domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES"}); resourceTypesContain(got, "TEST_U3_REACTIVACION") {
+		t.Fatalf("inactive type leaked into TypesFor: %#v", got)
+	}
+	resourceRepo := postgres.NewResourceRepository(pool)
+	resource := domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TEST_U3_REACTIVACION", NaturalUnit: "PZA", IdentityKey: "TEST_U3_REACTIVACION_RESOURCE"}
+	if err := resourceRepo.Create(ctx, resource); err == nil {
+		var leakedID int64
+		if scanErr := pool.QueryRow(ctx, `SELECT id FROM public.recursos WHERE identity_key=$1`, resource.IdentityKey).Scan(&leakedID); scanErr == nil {
+			t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM public.recursos WHERE id=$1`, leakedID) })
+		}
+		t.Fatal("inactive type unexpectedly allowed resource creation")
+	}
+	if err := svc.Reactivate(ctx, domain.KindType, typeRec.ID); err != nil {
+		t.Fatal(err)
+	}
+	restartedActive, err := postgres.LoadResourceCatalog(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restartedActive.TypesFor(domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES"}); !resourceTypesContain(got, "TEST_U3_REACTIVACION") {
+		t.Fatalf("reactivated type missing after restart: %#v", got)
+	}
+	if err := resourceRepo.Create(ctx, resource); err != nil {
+		t.Fatal(err)
+	}
+	var resourceID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM public.recursos WHERE identity_key=$1`, resource.IdentityKey).Scan(&resourceID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(ctx, `DELETE FROM public.recursos WHERE id=$1`, resourceID); err != nil {
+			t.Errorf("cleanup resource: %v", err)
+		}
+	})
+}
+
+func resourceTypesContain(types []domain.ResourceType, code string) bool {
+	for _, typ := range types {
+		if typ.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func assertAdminAuthoredStructure(t *testing.T, catalog domain.ResourceCatalog, classCode, familyCode, typeCode, definitionCode, optionSetCode, option1Code, option2Code, unitCode, unitSymbol string) {
 	t.Helper()
 

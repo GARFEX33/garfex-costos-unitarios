@@ -191,7 +191,7 @@ func listClasses(ctx context.Context, q querier, f domain.CatalogFilter) ([]doma
 	var conditions []string
 	var args []any
 	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name")
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	conditions = appendActiveFilter(conditions, f.Status, "active")
 	sql := finalizeQuery(`SELECT id, code, name, plural, slug, display_order, aliases, keywords, active FROM public.resource_classes`, conditions, "display_order, code", f)
 
 	rows, err := q.Query(ctx, sql, args...)
@@ -283,7 +283,7 @@ func listFamilies(ctx context.Context, q querier, f domain.CatalogFilter) ([]dom
 	var conditions []string
 	var args []any
 	conditions, args = appendTextFilter(conditions, args, f.Text, "f.code", "f.name", "cl.name")
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "f.active")
+	conditions = appendActiveFilter(conditions, f.Status, "f.active")
 	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
 	sql := finalizeQuery(`
 		SELECT f.id, cl.code, cl.name, f.code, f.name, f.active
@@ -380,7 +380,7 @@ func listTypes(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain
 	var conditions []string
 	var args []any
 	conditions, args = appendTextFilter(conditions, args, f.Text, "t.code", "t.name", "cl.name", "f.name")
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "t.active")
+	conditions = appendActiveFilter(conditions, f.Status, "t.active")
 	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
 	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
 	sql := finalizeQuery(`
@@ -481,7 +481,7 @@ func listDefinitions(ctx context.Context, q querier, f domain.CatalogFilter) ([]
 	var conditions []string
 	var args []any
 	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name")
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	conditions = appendActiveFilter(conditions, f.Status, "active")
 	sql := finalizeQuery(`SELECT id, code, name, value_type, dimension, default_identity_participates, active FROM public.attribute_definitions`, conditions, "id", f)
 
 	rows, err := q.Query(ctx, sql, args...)
@@ -577,7 +577,7 @@ func listOptionSets(ctx context.Context, q querier, f domain.CatalogFilter) ([]d
 	var conditions []string
 	var args []any
 	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name")
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	conditions = appendActiveFilter(conditions, f.Status, "active")
 	sql := finalizeQuery(`SELECT hashtextextended(code, 0), code, name, active FROM public.resource_option_sets`, conditions, "code", f)
 
 	rows, err := q.Query(ctx, sql, args...)
@@ -700,7 +700,7 @@ func listOptions(ctx context.Context, q querier, f domain.CatalogFilter) ([]doma
 	var conditions []string
 	var args []any
 	conditions, args = appendTextFilter(conditions, args, f.Text, "ao.code", "ao.label")
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "ao.active")
+	conditions = appendActiveFilter(conditions, f.Status, "ao.active")
 	conditions, args = appendEqualsFilter(conditions, args, "ao.option_set", parentRefCode(f, "optionSet"))
 	conditions, args = appendEqualsFilter(conditions, args, "d.code", parentRefCode(f, "characteristic"))
 	sql := finalizeQuery(`
@@ -844,7 +844,7 @@ func optionReferencedByResources(ctx context.Context, q querier, id int64) (bool
 func listOptionRelations(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
 	var conditions []string
 	var args []any
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "ar.active")
+	conditions = appendActiveFilter(conditions, f.Status, "ar.active")
 	conditions, args = appendEqualsFilter(conditions, args, "ar.option_set", parentRefCode(f, "optionSet"))
 	sql := finalizeQuery(`
 		SELECT ar.id, ar.option_set, fd.code, ar.from_option_code, td.code, ar.to_option_code, ar.active
@@ -939,7 +939,7 @@ func listUnits(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain
 	var conditions []string
 	var args []any
 	conditions, args = appendTextFilter(conditions, args, f.Text, "code", "name", "symbol", "dimension")
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "active")
+	conditions = appendActiveFilter(conditions, f.Status, "active")
 	sql := finalizeQuery(`SELECT id, code, name, symbol, dimension, active FROM public.unit_definitions`, conditions, "id", f)
 
 	rows, err := q.Query(ctx, sql, args...)
@@ -1026,7 +1026,7 @@ func unitReferencedByResources(ctx context.Context, q querier, id int64) (bool, 
 func listUnitPolicies(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
 	var conditions []string
 	var args []any
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "p.active")
+	conditions = appendActiveFilter(conditions, f.Status, "p.active")
 	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
 	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
 	sql := finalizeQuery(`
@@ -1153,7 +1153,7 @@ func deleteUnitPolicy(ctx context.Context, tx pgx.Tx, id int64) error {
 func listAttributeBindings(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
 	var conditions []string
 	var args []any
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "ra.active")
+	conditions = appendActiveFilter(conditions, f.Status, "ra.active")
 	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
 	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
 	conditions, args = appendEqualsFilter(conditions, args, "d.code", parentRefCode(f, "characteristic"))
@@ -1296,7 +1296,7 @@ func updateAttributeBinding(ctx context.Context, tx pgx.Tx, rec domain.CatalogRe
 func listPresentationFields(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
 	var conditions []string
 	var args []any
-	conditions = appendActiveFilter(conditions, f.IncludeInactive, "pf.active")
+	conditions = appendActiveFilter(conditions, f.Status, "pf.active")
 	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
 	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
 	conditions, args = appendEqualsFilter(conditions, args, "t.code", parentRefCode(f, "type"))
