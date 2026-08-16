@@ -85,26 +85,17 @@ func TestBuildWorkspaceDescriptorsUnfilteredEntryFirst(t *testing.T) {
 	}
 }
 
-// TestBuildAssistantActionsOrdersStaticStubsAfterClassSubtree proves
-// buildAssistantActions puts the class-derived "Recursos" subtree first and
-// the untouched out-of-scope stubs (concepts/apu/suppliers) after it, in
-// their existing order.
-func TestBuildAssistantActionsOrdersStaticStubsAfterClassSubtree(t *testing.T) {
+func TestBuildAssistantActionsOnlyExposesWorkingWorkspaces(t *testing.T) {
 	classes := sortedActiveClasses(commandsTestClasses())
 	actions := buildAssistantActions(classes, domain.NewCatalogRegistry().Kinds())
-	if len(actions) != 2+len(staticAssistantActions) {
-		t.Fatalf("len(actions) = %d, want %d (one Recursos subtree, one Configuración leaf, plus the static stubs)", len(actions), 2+len(staticAssistantActions))
+	if len(actions) != 2 {
+		t.Fatalf("len(actions) = %d, want Recursos and Configuración only", len(actions))
 	}
 	if actions[0].id != recursosSlug {
 		t.Fatalf("actions[0].id = %q, want %q (the class-derived subtree must come first)", actions[0].id, recursosSlug)
 	}
 	if actions[1].id != configuracionSlug || actions[1].label != "Configuración" {
 		t.Fatalf("actions[1] = %#v, want the Configuración leaf right after the Recursos subtree", actions[1])
-	}
-	for i, stub := range staticAssistantActions {
-		if actions[i+2].id != stub.id || actions[i+2].label != stub.label {
-			t.Fatalf("actions[%d] = %#v, want the static stub %#v (order preserved, after Recursos+Configuración)", i+2, actions[i+2], stub)
-		}
 	}
 }
 
@@ -181,8 +172,8 @@ func TestBuildCatalogAdminWorkspaceSetsSlugAndPaletteActions(t *testing.T) {
 func TestWorkspaceActionsFallsBackWhenPaletteActionsNil(t *testing.T) {
 	descriptor := WorkspaceDescriptor{Slug: "alphas", CreateLabel: "Crear alpha"}
 	actions := workspaceActions(descriptor)
-	if len(actions) != 1 || actions[0].label != "Crear alpha" || actions[0].id != createResourceActionID {
-		t.Fatalf("workspaceActions(%#v) = %#v, want the original single Crear leaf when PaletteActions is nil", descriptor, actions)
+	if len(actions) != 2 || actions[0].label != "Crear alpha" || actions[1].id != searchResourcesActionID {
+		t.Fatalf("workspaceActions(%#v) = %#v, want Crear and Buscar", descriptor, actions)
 	}
 }
 
@@ -256,8 +247,8 @@ func TestBuildResourceActionsCarriesAliasesAndKeywords(t *testing.T) {
 func TestWorkspaceActionsUsesDescriptorCreateLabel(t *testing.T) {
 	descriptor := WorkspaceDescriptor{Slug: "alphas", Title: "GARFEX / ALPHAS", CreateLabel: "Crear alpha"}
 	actions := workspaceActions(descriptor)
-	if len(actions) != 1 || actions[0].label != "Crear alpha" || actions[0].id != createResourceActionID {
-		t.Fatalf("workspaceActions(%#v) = %#v, want exactly one %q leaf labeled %q", descriptor, actions, createResourceActionID, "Crear alpha")
+	if len(actions) != 2 || actions[0].label != "Crear alpha" || actions[0].id != createResourceActionID || actions[1].id != searchResourcesActionID {
+		t.Fatalf("workspaceActions(%#v) = %#v, want Crear and Buscar actions", descriptor, actions)
 	}
 }
 

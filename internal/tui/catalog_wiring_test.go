@@ -55,9 +55,9 @@ func TestNewWithCatalogGlobalPaletteIsCatalogDriven(t *testing.T) {
 	if !containsString(topLabels, "Recursos") {
 		t.Fatalf("catalog-driven palette = %v, want the catalog-derived Recursos subtree", topLabels)
 	}
-	for _, want := range []string{"Conceptos", "APU", "Proveedores"} {
-		if !containsString(topLabels, want) {
-			t.Fatalf("catalog-driven palette = %v, want the static stub %q preserved", topLabels, want)
+	for _, hidden := range []string{"Conceptos", "APU", "Proveedores"} {
+		if containsString(topLabels, hidden) {
+			t.Fatalf("catalog-driven palette = %v, incomplete capability %q must stay hidden", topLabels, hidden)
 		}
 	}
 }
@@ -80,6 +80,7 @@ func TestNewWithCatalogClassWorkspaceReachesItsOwnAgent(t *testing.T) {
 	if ok := m.enterWorkspace("materiales"); !ok {
 		t.Fatal(`enterWorkspace("materiales") = false, want true`)
 	}
+	m, _ = update(t, m, key('b'))
 	m = submitText(t, m, "hola")
 	if materials.calls != 1 {
 		t.Fatalf("materials agent calls = %d, want 1 (the real class-scoped agent must have been reached)", materials.calls)
@@ -116,7 +117,8 @@ func TestNewWithCatalogRegistersConfigurationWorkspace(t *testing.T) {
 	if ok := m.enterWorkspace(configuracionSlug); !ok {
 		t.Fatal(`enterWorkspace("configuracion") = false, want true`)
 	}
-	m = submitText(t, m, "hola")
+	m, _ = update(t, m, enter())
+	m, _ = update(t, m, enter())
 	if catalogAgent.calls != 1 {
 		t.Fatalf("catalog admin agent calls = %d, want 1 (the real Configuración agent must have been reached)", catalogAgent.calls)
 	}

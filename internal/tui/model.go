@@ -80,6 +80,7 @@ const (
 	interactionModeConfirmation
 	interactionModeAction
 	interactionModePalette
+	interactionModeMenu
 )
 
 type Model struct {
@@ -108,6 +109,8 @@ type Model struct {
 	paletteActions         []assistantAction
 	paletteTitle           string
 	paletteFlat            bool
+	paletteReturnMode      interactionMode
+	helpVisible            bool
 	heroActive             bool
 	manualReturnInput      string
 	manualReturnOffset     int
@@ -278,6 +281,9 @@ func (m *Model) enterWorkspace(slug string) bool {
 	if slot.saved != nil {
 		m.applyWorkspace(*slot.saved)
 		m.activeWorkspace = slug
+		if m.interactionMode == interactionModeMenu {
+			m.openWorkspaceMenu()
+		}
 		m.refreshViewport()
 		m.restoreViewportPosition(*slot.saved)
 		return true
@@ -285,7 +291,7 @@ func (m *Model) enterWorkspace(slug string) bool {
 	m.engine = NewInteractionEngine(slot.agent)
 	m.history = nil
 	m.input = ""
-	m.interactionMode = interactionModeChat
+	m.interactionMode = interactionModeMenu
 	m.pending = nil
 	m.choiceIndex = 0
 	m.choicePrompt = ""
@@ -299,6 +305,7 @@ func (m *Model) enterWorkspace(slug string) bool {
 		m.appendGARFEX(g.Greeting())
 	}
 	m.activeWorkspace = slug
+	m.openWorkspaceMenu()
 	m.refreshViewport()
 	return true
 }
@@ -436,7 +443,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.screen == screenWorkspace {
-			if m.interactionMode == interactionModePalette {
+			if m.activeWorkspace != "" && m.handleAdministrativeKey(msg) {
+				return m, nil
+			}
+			if m.interactionMode == interactionModePalette || m.interactionMode == interactionModeMenu {
 				m.handlePaletteKey(msg)
 				return m, nil
 			}
@@ -554,7 +564,113 @@ func (m *Model) respond(input InteractionInput) {
 	m.choiceIndex = 0
 	m.choiceSelected = nil
 	m.syncChoiceFields()
+	if response.Pending == nil && m.activeWorkspace != "" {
+		m.openWorkspaceMenu()
+	}
 	m.refreshViewport()
+}
+
+func (m *Model) openWorkspaceMenu() {
+	slot, ok := m.workspaces[m.activeWorkspace]
+	if !ok {
+		return
+	}
+	m.paletteActions = workspaceActions(slot.descriptor)
+	m.paletteQuery, m.paletteIndex, m.paletteTitle = "", 0, ""
+	m.paletteFlat = false
+	m.interactionMode = interactionModeMenu
+	m.input, m.inputFocused = "", false
+}
+
+func (m *Model) startResourceSearch() {
+	m.paletteActions, m.paletteQuery, m.paletteTitle = nil, "", ""
+	m.interactionMode, m.inputFocused, m.input = interactionModeChat, true, ""
+	m.refreshViewport()
+}
+
+func (m *Model) handleAdministrativeKey(msg tea.KeyPressMsg) bool {
+	key := msg.String()
+	if key == "?" {
+		m.helpVisible = !m.helpVisible
+		return true
+	}
+	if key == "/" && m.interactionMode != interactionModePalette {
+		actions := m.contextualActions()
+		if len(actions) > 0 {
+			m.paletteReturnMode = m.interactionMode
+			m.openPaletteWithActions(actions)
+		}
+		return true
+	}
+	if key == "esc" {
+		if m.interactionMode == interactionModeChat {
+			m.openWorkspaceMenu()
+			return true
+		}
+		if request, ok := m.pending.(ActionRequest); ok {
+			for _, action := range request.Actions {
+				if action.ID == backActionID || action.ID == catalogRecordBackActionID {
+					m.respond(InteractionInput{Kind: InputAction, ActionID: action.ID, Value: action.Value, Target: action.Target})
+					return true
+				}
+			}
+		}
+		if request, ok := m.pending.(QuestionRequest); ok && (request.Key == searchResultsKey || request.Key == catalogStatusMenuKey || request.Key == catalogKindMenuKey) {
+			m.pending = nil
+			m.openWorkspaceMenu()
+			m.refreshViewport()
+			return true
+		}
+	}
+	if key == "b" && (m.interactionMode == interactionModeMenu || m.interactionMode == interactionModeAction) {
+		if slot := m.workspaces[m.activeWorkspace]; slot != nil && slot.descriptor.CreateLabel != "" {
+			m.startResourceSearch()
+			return true
+		}
+	}
+	shortcutIDs := map[string][]string{
+		"+": {createResourceActionID, catalogCreateNewOptionID},
+		"e": {editActionID, catalogRecordEditActionID},
+		"d": {duplicateActionID},
+		"x": {catalogRecordDeactivateActionID},
+		"r": {catalogRecordReactivateActionID},
+	}
+	ids, ok := shortcutIDs[key]
+	if !ok {
+		return false
+	}
+	options := m.pendingOptions()
+	if m.interactionMode == interactionModeMenu {
+		options = actionOptions(m.paletteActions)
+	}
+	for _, id := range ids {
+		for i, option := range options {
+			if option.ID == id {
+				if m.interactionMode == interactionModeMenu && id == createResourceActionID {
+					m.respond(InteractionInput{Kind: InputAction, ActionID: id, Value: id, Target: ActionTargetAgent})
+				} else {
+					m.choiceIndex = i
+					m.handlePendingKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m Model) contextualActions() []assistantAction {
+	if request, ok := m.pending.(ActionRequest); ok {
+		actions := make([]assistantAction, len(request.Actions))
+		for i, action := range request.Actions {
+			actions[i] = assistantAction{id: action.ID, label: action.Label}
+		}
+		return actions
+	}
+	if m.interactionMode == interactionModeMenu {
+		return m.paletteActions
+	}
+	return nil
 }
 
 // activePaletteActions returns the action tree the "/" palette should show:
@@ -577,18 +693,25 @@ func (m Model) activePaletteActions() []assistantAction {
 }
 
 func (m *Model) openPalette(query string) {
-	m.heroActive = false
-	m.paletteFlat = query != ""
-	if query == "" {
-		m.paletteActions = m.activePaletteActions()
-	} else {
+	m.paletteReturnMode = m.interactionMode
+	m.openPaletteWithActions(m.activePaletteActions())
+	if query != "" {
+		m.paletteFlat = true
 		m.paletteActions = flattenLeafActions(m.activePaletteActions())
+		m.paletteQuery, m.input = query, "/"+query
 	}
+	m.refreshViewport()
+}
+
+func (m *Model) openPaletteWithActions(actions []assistantAction) {
+	m.heroActive = false
+	m.paletteFlat = false
+	m.paletteActions = actions
 	m.paletteTitle = ""
-	m.paletteQuery = query
+	m.paletteQuery = ""
 	m.paletteIndex = 0
 	m.interactionMode = interactionModePalette
-	m.input = "/" + query
+	m.input = "/"
 	m.refreshViewport()
 }
 
@@ -597,9 +720,21 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 	options := filterOptions(actionOptions(m.paletteActions), m.paletteQuery)
 	switch key {
 	case "esc":
+		if m.interactionMode == interactionModeMenu {
+			if m.paletteTitle != "" {
+				m.openWorkspaceMenu()
+			} else {
+				m.leaveActiveWorkspace()
+			}
+			return
+		}
 		m.paletteQuery, m.paletteIndex, m.paletteActions = "", 0, nil
 		m.paletteFlat = false
-		m.interactionMode, m.inputFocused = interactionModeChat, true
+		m.interactionMode = m.paletteReturnMode
+		m.inputFocused = m.interactionMode == interactionModeChat
+		if m.activeWorkspace != "" && m.interactionMode == interactionModeMenu {
+			m.openWorkspaceMenu()
+		}
 		m.refreshViewport()
 	case "up", "k":
 		if m.paletteIndex > 0 {
@@ -635,6 +770,10 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 				m.paletteActions, m.paletteTitle, m.paletteQuery, m.paletteIndex = action.children, action.label, "", 0
 				m.paletteFlat = false
 				m.refreshViewport()
+				return
+			}
+			if action.id == searchResourcesActionID {
+				m.startResourceSearch()
 				return
 			}
 			if _, ok := m.workspaces[action.id]; ok {

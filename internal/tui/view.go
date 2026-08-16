@@ -153,7 +153,7 @@ func (m Model) renderWorkspace(width int) string {
 	if !m.heroActive {
 		header := "GARFEX / ASSISTANT"
 		if slot, ok := m.workspaces[m.activeWorkspace]; ok {
-			header = slot.descriptor.Title
+			header = strings.ReplaceAll(slot.descriptor.Title, " / ", " › ") + " › " + m.workspaceModeLabel()
 		}
 		lines = append(lines,
 			lipgloss.NewStyle().Foreground(accent).Bold(true).Render(header),
@@ -163,6 +163,22 @@ func (m Model) renderWorkspace(width int) string {
 	lines = append(lines, m.viewport.View())
 	lines = append(lines, m.renderInteractionDock(width-2))
 	return lipgloss.NewStyle().Width(width).Padding(1, 1).Foreground(primaryText).Background(surface).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) workspaceModeLabel() string {
+	if m.interactionMode == interactionModeMenu || m.interactionMode == interactionModePalette {
+		return "Menú"
+	}
+	if m.interactionMode == interactionModeChat {
+		return "Buscar"
+	}
+	if _, ok := m.pending.(ActionRequest); ok {
+		return "Detalle"
+	}
+	if request, ok := m.pending.(QuestionRequest); ok && (request.Key == searchResultsKey || request.Key == catalogStatusMenuKey || request.Key == catalogKindMenuKey) {
+		return "Lista"
+	}
+	return "Editar"
 }
 
 func (m Model) renderManual(width int) string {
@@ -216,6 +232,9 @@ func capitalizeHintWord(part string) string {
 func (m Model) renderInteractionDock(width int) string {
 	width = max(1, width)
 	if m.interactionMode == interactionModeChat {
+		if m.activeWorkspace != "" {
+			return lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("Buscar: " + m.input + "▌")
+		}
 		if m.inputFocused {
 			return lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("❯ " + m.input + "▌")
 		}
@@ -225,14 +244,24 @@ func (m Model) renderInteractionDock(width int) string {
 		prompt := lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("❯ " + m.input + "▌")
 		return strings.Join([]string{prompt, m.renderPalette()}, "\n")
 	}
-	composer := lipgloss.NewStyle().Foreground(secondaryText).Render("❯ " + m.input)
+	if m.interactionMode == interactionModeMenu {
+		return m.renderPalette()
+	}
 	parts := questionHelpParts(m.pending, false)
 	flat := make([]string, len(parts))
 	for i, part := range parts {
 		flat[i] = capitalizeHintWord(part.Key + " " + part.Description)
 	}
 	hintLine := lipgloss.NewStyle().Foreground(secondaryText).Render(strings.Join(flat, " · "))
-	return strings.Join([]string{composer, hintLine}, "\n")
+	if m.pendingAllowsCustom() {
+		composer := lipgloss.NewStyle().Foreground(primaryText).Render("Editar: " + m.input + "▌")
+		return strings.Join([]string{composer, hintLine}, "\n")
+	}
+	if m.activeWorkspace == "" {
+		composer := lipgloss.NewStyle().Foreground(secondaryText).Render("❯ " + m.input)
+		return strings.Join([]string{composer, hintLine}, "\n")
+	}
+	return hintLine
 }
 
 func (m Model) renderState(width int) string {
@@ -282,8 +311,8 @@ func (m Model) renderFooter(width int) string {
 	case screenHome:
 		parts = []string{hint("flechas", "navegar"), hint("enter", "elegir"), hint("ctrl+c", "salir")}
 	case screenWorkspace:
-		if m.interactionMode == interactionModePalette {
-			parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "abrir"), hint("esc", "cerrar")}
+		if m.interactionMode == interactionModePalette || m.interactionMode == interactionModeMenu {
+			parts = []string{hint("↑↓", "mover"), hint("enter", "seleccionar"), hint("esc", "volver"), hint("/", "acciones"), hint("?", "ayuda")}
 		} else if m.interactionMode == interactionModeSearchable || m.interactionMode == interactionModeChoice || m.interactionMode == interactionModeConfirmation || m.interactionMode == interactionModeAction {
 			parts = nil
 			for _, part := range questionHelpParts(m.pending, false) {
@@ -293,6 +322,25 @@ func (m Model) renderFooter(width int) string {
 			parts = []string{hint("enter", "enviar"), hint("esc", "cancelar"), hint("ctrl+c", "salir")}
 		} else {
 			parts = []string{hint("flechas", "navegar"), hint("enter", "usar"), hint("esc", "volver"), hint("ctrl+c", "salir")}
+		}
+		if m.helpVisible {
+			if slot := m.workspaces[m.activeWorkspace]; slot != nil && slot.descriptor.CreateLabel != "" && m.interactionMode == interactionModeMenu {
+				parts = append(parts, hint("b", "buscar"), hint("+", "crear"))
+			}
+			for _, option := range m.pendingOptions() {
+				switch option.ID {
+				case catalogCreateNewOptionID:
+					parts = append(parts, hint("+", "crear"))
+				case editActionID, catalogRecordEditActionID:
+					parts = append(parts, hint("e", "editar"))
+				case duplicateActionID:
+					parts = append(parts, hint("d", "duplicar"))
+				case catalogRecordDeactivateActionID:
+					parts = append(parts, hint("x", "desactivar"))
+				case catalogRecordReactivateActionID:
+					parts = append(parts, hint("r", "reactivar"))
+				}
+			}
 		}
 	case screenManual:
 		parts = []string{hint("↑↓/j/k", "seleccionar"), hint("enter", "confirmar"), hint("esc", "volver")}

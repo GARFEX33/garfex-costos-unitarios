@@ -1147,7 +1147,7 @@ func TestAssistantShellFlow(t *testing.T) {
 		want  string
 	}{
 		{"order independent partial filter", "maestros materiales", "Materiales Maestros"},
-		{"case insensitive filter", "APU", "APU"},
+		{"incomplete capability hidden", "APU", ""},
 		{"whitespace token AND", "material proveedores", ""},
 	}
 	for _, tt := range tests {
@@ -1366,7 +1366,7 @@ func TestPaletteShowsOnlyTopLevelModulesInitially(t *testing.T) {
 	for i, o := range options {
 		topLabels[i] = o.Label
 	}
-	for _, want := range []string{"Materiales Maestros", "Conceptos", "APU", "Proveedores"} {
+	for _, want := range []string{"Materiales Maestros"} {
 		if !containsString(topLabels, want) {
 			t.Fatalf("top-level palette missing %q in %v", want, topLabels)
 		}
