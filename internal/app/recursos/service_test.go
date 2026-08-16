@@ -295,3 +295,24 @@ func TestServiceDelete(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceDescribeUsesCurrentCommittedCatalog(t *testing.T) {
+	catalog := domain.SeedResourceCatalog()
+	authority := domain.NewCatalogAuthority(catalog)
+	service := NewServiceWithCatalogAuthority(nil, authority)
+	resource := domain.Resource{
+		ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE",
+		Attributes: []domain.ResourceAttributeValue{domain.OptionValue("insulation", "THW-LS")},
+	}
+
+	before := service.Describe(resource)
+	catalog.Types = append([]domain.ResourceType(nil), catalog.Types...)
+	catalog.Types[0].Name = "Cable actualizado"
+	authority.Publish(catalog)
+	after := service.Describe(resource)
+	fresh := NewService(nil, catalog).Describe(resource)
+
+	if before == after || after != fresh {
+		t.Fatalf("same-session presentation = %q, fresh presentation = %q, previous = %q", after, fresh, before)
+	}
+}

@@ -483,6 +483,7 @@ func TestServiceUpdateAllowsCodeChangeWhenNotReferenced(t *testing.T) {
 		},
 	}
 	svc := newTestService(repo)
+	svc.snapshot.Families = nil
 
 	changed := current
 	changed.Values = map[string]domain.CatalogValue{

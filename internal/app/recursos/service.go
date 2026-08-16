@@ -18,14 +18,20 @@ var ErrInvalidArgument = errors.New("resource lookup argument is required")
 
 // Service implements read-only resource use cases.
 type Service struct {
-	repo    domain.ResourceRepository
-	catalog domain.ResourceCatalog
+	repo      domain.ResourceRepository
+	authority *domain.CatalogAuthority
 }
 
 // NewService returns a Service backed by repo, using catalog to resolve
 // catalog-controlled concerns such as canonical presentation.
 func NewService(repo domain.ResourceRepository, catalog domain.ResourceCatalog) *Service {
-	return &Service{repo: repo, catalog: catalog}
+	return NewServiceWithCatalogAuthority(repo, domain.NewCatalogAuthority(catalog))
+}
+
+// NewServiceWithCatalogAuthority resolves catalog-controlled behavior from the
+// current committed version.
+func NewServiceWithCatalogAuthority(repo domain.ResourceRepository, authority *domain.CatalogAuthority) *Service {
+	return &Service{repo: repo, authority: authority}
 }
 
 // Get returns a resource by its owning class code and deterministic
@@ -61,7 +67,8 @@ func (s *Service) Search(ctx context.Context, criteria domain.SearchCriteria) ([
 // Describe resolves the canonical presentation of resource using the
 // catalog-controlled configuration owned by its ResourceType.
 func (s *Service) Describe(resource domain.Resource) string {
-	return s.catalog.Describe(resource)
+	catalog, _ := s.authority.Current()
+	return catalog.Describe(resource)
 }
 
 // Create persists a new resource built by the caller via domain.NewResource

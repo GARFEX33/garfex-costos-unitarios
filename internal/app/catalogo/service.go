@@ -22,10 +22,11 @@ var ErrInvalidArgument = errors.New("catalog lookup argument is required")
 
 // Service implements the catalog-structure admin use cases (design §4).
 type Service struct {
-	mu       sync.Mutex
-	repo     domain.CatalogAdminRepository
-	registry domain.CatalogRegistry
-	snapshot domain.ResourceCatalog
+	mu        sync.Mutex
+	repo      domain.CatalogAdminRepository
+	registry  domain.CatalogRegistry
+	snapshot  domain.ResourceCatalog
+	authority *domain.CatalogAuthority
 }
 
 // NewService returns a Service backed by repo, using registry to describe
@@ -33,7 +34,14 @@ type Service struct {
 // catalog state (design §4) — normally the exact value postgres.
 // LoadResourceCatalog returned at boot.
 func NewService(repo domain.CatalogAdminRepository, registry domain.CatalogRegistry, snapshot domain.ResourceCatalog) *Service {
-	return &Service{repo: repo, registry: registry, snapshot: snapshot}
+	return NewServiceWithCatalogAuthority(repo, registry, domain.NewCatalogAuthority(snapshot))
+}
+
+// NewServiceWithCatalogAuthority shares committed catalog versions with every
+// consumer wired to authority.
+func NewServiceWithCatalogAuthority(repo domain.CatalogAdminRepository, registry domain.CatalogRegistry, authority *domain.CatalogAuthority) *Service {
+	snapshot, _ := authority.Current()
+	return &Service{repo: repo, registry: registry, snapshot: snapshot, authority: authority}
 }
 
 // Kinds returns every registered CatalogKind (design §3) — the descriptor
@@ -106,7 +114,7 @@ func (s *Service) Create(ctx context.Context, kind domain.CatalogKindCode, rec d
 		return domain.CatalogRecord{}, err
 	}
 
-	s.snapshot = next
+	s.publish(next)
 	rec.ID = id
 	return rec, nil
 }
@@ -119,16 +127,8 @@ func (s *Service) Create(ctx context.Context, kind domain.CatalogKindCode, rec d
 // repo.ReferencedByResources reports the record is already in use by at
 // least one resource — checked, and rejected, BEFORE calling repo.Update.
 //
-// When a código change IS allowed (not yet referenced), it is frozen back
-// to its current value for the in-memory snapshot mutation only: every
-// per-kind match/build closure in domain.ApplyCatalogMutation resolves an
-// existing element by the mutation record's OWN identity-defining fields
-// (catalog_mutation.go), so passing the already-renamed value would make
-// the lookup miss the very element being renamed. The actual rename is
-// still persisted for real — repo.Update always receives the caller's full,
-// unfrozen rec — only the snapshot's own bookkeeping copy keeps the old
-// identity, which is safe because List/Get never read the snapshot (see
-// List's doc comment); it exists only to validate future mutations.
+// When a código change is allowed, the current record identifies the element
+// while rec supplies the replacement published after persistence.
 func (s *Service) Update(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
 	if rec.ID == 0 {
 		return domain.CatalogRecord{}, ErrInvalidArgument
@@ -173,7 +173,7 @@ func (s *Service) Update(ctx context.Context, kind domain.CatalogKindCode, rec d
 		mutationRecord.Values[field.Name] = oldValue
 	}
 
-	next, err := domain.ApplyCatalogMutation(s.snapshot, s.registry, domain.CatalogMutation{Op: domain.OpUpdate, Record: mutationRecord})
+	next, err := domain.ApplyCatalogMutation(s.snapshot, s.registry, domain.CatalogMutation{Op: domain.OpUpdate, Record: mutationRecord, Replacement: &rec})
 	if err != nil {
 		return domain.CatalogRecord{}, err
 	}
@@ -185,7 +185,7 @@ func (s *Service) Update(ctx context.Context, kind domain.CatalogKindCode, rec d
 		return domain.CatalogRecord{}, err
 	}
 
-	s.snapshot = next
+	s.publish(next)
 	return rec, nil
 }
 
@@ -232,7 +232,7 @@ func (s *Service) setActive(ctx context.Context, kind domain.CatalogKindCode, id
 		return err
 	}
 
-	s.snapshot = next
+	s.publish(next)
 	return nil
 }
 
@@ -269,8 +269,13 @@ func (s *Service) Delete(ctx context.Context, kind domain.CatalogKindCode, id in
 		return err
 	}
 
-	s.snapshot = next
+	s.publish(next)
 	return nil
+}
+
+func (s *Service) publish(next domain.ResourceCatalog) {
+	s.snapshot = next
+	s.authority.Publish(next)
 }
 
 // cloneCatalogValues returns a shallow copy of values — Update must never
