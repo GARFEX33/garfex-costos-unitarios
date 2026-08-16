@@ -16,9 +16,9 @@ func TestU2aBusinessIdentitiesStayDistinct(t *testing.T) {
 		recs []domain.CatalogRecord
 		want []string
 	}{
-		{"familias repetidas", domain.KindFamily, []domain.CatalogRecord{familyIdentity(1, "MATERIAL", "CONDUCTORES", "Conductores", "Material"), familyIdentity(2, "EQUIPO", "CONDUCTORES", "Conductores", "Equipo")}, []string{"Conductores · Material · Estado: Activo", "Conductores · Equipo · Estado: Activo"}},
-		{"tipos repetidos", domain.KindType, []domain.CatalogRecord{typeIdentity(3, "MATERIAL", "CONDUCTORES", "CABLE", "Cable", "Material", "Conductores"), typeIdentity(4, "MATERIAL", "TUBERIAS", "CABLE", "Cable", "Material", "Tuberías")}, []string{"Cable · Material › Conductores · Estado: Activo", "Cable · Material › Tuberías · Estado: Activo"}},
-		{"unidades con nombre repetido", domain.KindUnit, []domain.CatalogRecord{unitIdentity(5, "M", "Metro", "m", "Longitud"), unitIdentity(6, "KG", "Metro", "kg", "Masa")}, []string{"Metro · m · Longitud · Estado: Activo", "Metro · kg · Masa · Estado: Activo"}},
+		{"familias repetidas", domain.KindFamily, []domain.CatalogRecord{familyIdentity(1, "MATERIAL", "CONDUCTORES", "Conductores", "Material"), familyIdentity(2, "EQUIPO", "CONDUCTORES", "Conductores", "Equipo")}, []string{"Conductores · Material", "Conductores · Equipo"}},
+		{"tipos repetidos", domain.KindType, []domain.CatalogRecord{typeIdentity(3, "MATERIAL", "CONDUCTORES", "CABLE", "Cable", "Material", "Conductores"), typeIdentity(4, "MATERIAL", "TUBERIAS", "CABLE", "Cable", "Material", "Tuberías")}, []string{"Cable · Material › Conductores", "Cable · Material › Tuberías"}},
+		{"unidades con nombre repetido", domain.KindUnit, []domain.CatalogRecord{unitIdentity(5, "M", "Metro", "m", "Longitud"), unitIdentity(6, "KG", "Metro", "kg", "Masa")}, []string{"Metro · m · Longitud", "Metro · kg · Masa"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -69,7 +69,7 @@ func TestU2aListDetailEditRefreshesSearchAndReferences(t *testing.T) {
 	}
 	q := catalogQuestion(t, a, domain.KindFamily)
 	want := "Conductores actualizados · Material"
-	listWant := want + " · Estado: Activo"
+	listWant := want
 	if q.Options[1].Label != listWant {
 		t.Fatalf("refreshed list label = %q", q.Options[1].Label)
 	}

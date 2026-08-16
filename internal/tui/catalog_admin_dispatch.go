@@ -236,7 +236,7 @@ func (a *CatalogAdminAdapter) startKindMenu(ctx context.Context, kind domain.Cat
 	options = append(options, Option{ID: catalogCreateNewOptionID, Label: "+ Crear nueva/o " + def.Singular, Value: catalogCreateNewOptionID})
 	for _, rec := range records {
 		id := fmt.Sprintf("%d", rec.ID)
-		options = append(options, Option{ID: id, Label: catalogRecordDisplayLabel(def, rec) + " · Estado: " + catalogStatusLabel(rec.Active), Value: id})
+		options = append(options, Option{ID: id, Label: catalogRecordOptionLabel(def, rec, a.activeStatus), Value: id})
 	}
 
 	prompt := fmt.Sprintf("%s — elegí una/o existente o creá nueva/o", def.Plural)
@@ -248,6 +248,14 @@ func (a *CatalogAdminAdapter) startKindMenu(ctx context.Context, kind domain.Cat
 		response.Messages = []InteractionMessage{TextMessage{Text: "No hay registros para este estado."}}
 	}
 	return response, nil
+}
+
+func catalogRecordOptionLabel(def domain.CatalogKind, rec domain.CatalogRecord, status domain.CatalogStatus) string {
+	label := catalogRecordDisplayLabel(def, rec)
+	if status == domain.CatalogStatusAll {
+		return label + " · " + catalogStatusLabel(rec.Active)
+	}
+	return label
 }
 
 // openRecordForEdit resolves idText (a startKindMenu Option.Value) to a real

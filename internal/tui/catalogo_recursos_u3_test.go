@@ -17,11 +17,12 @@ func TestU3CatalogStatusDiscovery(t *testing.T) {
 		status          domain.CatalogStatus
 		records         []domain.CatalogRecord
 		wantText        string
+		wantLabels      []string
 	}{
-		{"active", catalogStatusActiveID, domain.CatalogStatusActive, []domain.CatalogRecord{classRecord(6, "ACTIVA", "Clase activa")}, "Clase activa"},
-		{"inactive", catalogStatusInactiveID, domain.CatalogStatusInactive, []domain.CatalogRecord{inactive}, "Clase inactiva"},
-		{"all", catalogStatusAllID, domain.CatalogStatusAll, []domain.CatalogRecord{classRecord(6, "ACTIVA", "Clase activa"), inactive}, "Clase inactiva"},
-		{"empty", catalogStatusInactiveID, domain.CatalogStatusInactive, nil, "No hay registros para este estado."},
+		{"active", catalogStatusActiveID, domain.CatalogStatusActive, []domain.CatalogRecord{classRecord(6, "ACTIVA", "Clase activa")}, "Clase activa", []string{"Clase activa"}},
+		{"inactive", catalogStatusInactiveID, domain.CatalogStatusInactive, []domain.CatalogRecord{inactive}, "Clase inactiva", []string{"Clase inactiva"}},
+		{"all", catalogStatusAllID, domain.CatalogStatusAll, []domain.CatalogRecord{classRecord(6, "ACTIVA", "Clase activa"), inactive}, "Clase inactiva", []string{"Clase activa · Activo", "Clase inactiva · Inactivo"}},
+		{"empty", catalogStatusInactiveID, domain.CatalogStatusInactive, nil, "No hay registros para este estado.", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,6 +42,12 @@ func TestU3CatalogStatusDiscovery(t *testing.T) {
 			}
 			if lister.lastFilter.Status != tt.status || !responseContains(list, tt.wantText) {
 				t.Fatalf("status/filter response = %v/%#v, want %v/%q", lister.lastFilter.Status, list, tt.status, tt.wantText)
+			}
+			question := list.Pending.(QuestionRequest)
+			for i, want := range tt.wantLabels {
+				if question.Options[i+1].Label != want {
+					t.Fatalf("option[%d].Label = %q, want %q", i+1, question.Options[i+1].Label, want)
+				}
 			}
 		})
 	}
