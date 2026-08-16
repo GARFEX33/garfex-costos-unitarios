@@ -7,6 +7,36 @@ Base operativa de Fase 0: CLI Go con TUI Bubble Tea, PostgreSQL local y migracio
 - [Límite de capacidades MCP](docs/architecture/mcp-capability-boundary.md)
 - [Harness de runtime de agentes](docs/architecture/agent-runtime-harness.md)
 
+## Repositorios y remotos Git
+
+El código del producto usa el repositorio público como fuente canónica. El
+repositorio privado del workspace sólo almacena artefactos locales que no
+pertenecen al producto.
+
+| Remoto | Responsabilidad |
+| --- | --- |
+| `origin` | Repositorio público canónico. Aloja `main`, ramas de producto, pull requests, CI y releases. |
+| `workspace` | Repositorio privado opcional para artefactos del entorno de trabajo. No es la base de ramas de producto. |
+
+La rama local `main` debe seguir `origin/main`. El flujo normal comienza desde
+esa referencia:
+
+```powershell
+git switch main
+git pull --ff-only origin main
+git switch -c <tipo>/<descripcion>
+```
+
+Verificá la configuración después de clonar o modificar remotos:
+
+```powershell
+git remote -v
+git branch -vv
+```
+
+Los archivos privados del workspace no deben incorporarse a ramas destinadas
+al repositorio público.
+
 ## Requisitos
 
 - Go 1.26.5 (declarado en `go.mod`).
