@@ -62,6 +62,7 @@ type FieldDescriptor struct {
 	Required    bool
 	Immutable   Immutability
 	Searchable  bool
+	Guidance    string          // optional Spanish help shown with the field prompt
 	RefKind     CatalogKindCode // when Kind == FieldRef
 	RefScopedBy []string        // parent field names narrowing the ref list
 	AllowCreate bool            // reuse-before-create: SelectionSearchable + AllowCustom (D12)
@@ -265,7 +266,7 @@ func catalogKinds() []CatalogKind {
 				codeField(),
 				{Name: "name", Label: "Nombre", Kind: FieldText, Required: true, Searchable: true},
 				{Name: "symbol", Label: "Símbolo", Kind: FieldText, Required: true},
-				{Name: "dimension", Label: "Dimensión", Kind: FieldText, Required: true},
+				{Name: "dimension", Label: "Dimensión", Kind: FieldText, Required: true, Guidance: "Categoría de medición. Ejemplos: Longitud, Masa, Tiempo o Pieza."},
 			},
 			IdentityFields: []string{"code"},
 			SoftDelete:     true,

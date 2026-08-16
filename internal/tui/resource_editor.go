@@ -444,7 +444,7 @@ func (a *ResourcesWorkspaceAdapter) familyQuestion() InteractionResponse {
 	families := a.catalog.FamiliesFor(a.editor.class)
 	options := make([]Option, len(families))
 	for i, family := range families {
-		options[i] = Option{ID: family.Code, Label: family.Name, Value: family.Code}
+		options[i] = Option{ID: family.Code, Label: resourceFamilyPresentation(a.catalog, family), Value: family.Code}
 	}
 	prompt := "¿Qué familia querés crear?"
 	return InteractionResponse{Pending: QuestionRequest{
@@ -464,7 +464,7 @@ func (a *ResourcesWorkspaceAdapter) typeQuestion() InteractionResponse {
 	types := a.catalog.TypesFor(domain.ResourceScope{ClassCode: state.class, FamilyCode: state.family})
 	options := make([]Option, len(types))
 	for i, t := range types {
-		options[i] = Option{ID: t.Code, Label: t.Name, Value: t.Code}
+		options[i] = Option{ID: t.Code, Label: resourceTypePresentation(a.catalog, t), Value: t.Code}
 	}
 	prompt := "¿Qué tipo querés crear?"
 	return InteractionResponse{Pending: QuestionRequest{
@@ -775,7 +775,7 @@ func (a *ResourcesWorkspaceAdapter) unitQuestion() InteractionResponse {
 	units = defaultUnitFirst(units, state.originalUnit)
 	options := make([]Option, len(units))
 	for i, unit := range units {
-		options[i] = Option{ID: unit.Code, Label: unit.Symbol, Value: unit.Code}
+		options[i] = Option{ID: unit.Code, Label: catalogUnitPresentation(unit.Name, unit.Symbol, unit.Dimension), Value: unit.Code}
 	}
 	prompt := "¿Cuál es la unidad natural?"
 	return InteractionResponse{Pending: QuestionRequest{
@@ -786,6 +786,38 @@ func (a *ResourcesWorkspaceAdapter) unitQuestion() InteractionResponse {
 		SelectionMode: SelectionSingle,
 		Options:       options,
 	}}
+}
+
+func resourceFamilyPresentation(catalog domain.ResourceCatalog, family domain.ResourceFamily) string {
+	className := family.ClassCode
+	for _, class := range catalog.Classes {
+		if class.Code == family.ClassCode {
+			className = class.Name
+			break
+		}
+	}
+	return catalogRecordPresentation(domain.CatalogKind{Code: domain.KindFamily}, domain.CatalogRecord{Values: map[string]domain.CatalogValue{
+		"name": {Text: family.Name}, "class": {Ref: domain.CatalogRef{Label: className}},
+	}})
+}
+
+func resourceTypePresentation(catalog domain.ResourceCatalog, itemType domain.ResourceType) string {
+	className, familyName := itemType.ClassCode, itemType.FamilyCode
+	for _, class := range catalog.Classes {
+		if class.Code == itemType.ClassCode {
+			className = class.Name
+			break
+		}
+	}
+	for _, family := range catalog.Families {
+		if family.ClassCode == itemType.ClassCode && family.Code == itemType.FamilyCode {
+			familyName = family.Name
+			break
+		}
+	}
+	return catalogRecordPresentation(domain.CatalogKind{Code: domain.KindType}, domain.CatalogRecord{Values: map[string]domain.CatalogValue{
+		"name": {Text: itemType.Name}, "class": {Ref: domain.CatalogRef{Label: className}}, "family": {Ref: domain.CatalogRef{Label: familyName}},
+	}})
 }
 
 // defaultOptionFirst reorders options so the one matching defaultCode (if
@@ -1063,7 +1095,7 @@ func (a *ResourcesWorkspaceAdapter) resourcePresentation(resource domain.Resourc
 		fields = append(fields, Field{Label: attribute.AttributeCode, Value: formatResourceAttributeValue(attribute)})
 	}
 
-	title = resource.FamilyCode
+	title = resourceCatalogIdentity(a.catalog, resource)
 	if presentation := a.describer.Describe(resource); presentation != "" {
 		title += " — " + presentation
 	}
@@ -1075,6 +1107,20 @@ func (a *ResourcesWorkspaceAdapter) resourcePresentation(resource domain.Resourc
 		title += " (Clase inactiva)"
 	}
 	return title, fields
+}
+
+func resourceCatalogIdentity(catalog domain.ResourceCatalog, resource domain.Resource) string {
+	for _, itemType := range catalog.Types {
+		if itemType.ClassCode == resource.ClassCode && itemType.FamilyCode == resource.FamilyCode && itemType.Code == resource.TypeCode {
+			return resourceTypePresentation(catalog, itemType)
+		}
+	}
+	for _, family := range catalog.Families {
+		if family.ClassCode == resource.ClassCode && family.Code == resource.FamilyCode {
+			return resourceFamilyPresentation(catalog, family)
+		}
+	}
+	return resource.FamilyCode
 }
 
 // formatResourceAttributeValue renders one ResourceAttributeValue for

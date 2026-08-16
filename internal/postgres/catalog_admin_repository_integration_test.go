@@ -144,6 +144,9 @@ func TestCatalogAdminRepositoryIntegration(t *testing.T) {
 		if got.Values["class"].Ref.Code != "TEST_REPO_CLASS" || got.Values["code"].Text != "TEST_REPO_FAM1" {
 			st.Fatalf("Get() family 1 = %+v", got)
 		}
+		if got.Values["class"].Ref.Label != "Test Repo Clase Renombrada" {
+			st.Fatalf("Get() family class label = %q, want enriched human name", got.Values["class"].Ref.Label)
+		}
 
 		must(st, "update family 1", repo.Update(ctx, domain.CatalogRecord{
 			Kind: domain.KindFamily, ID: fam1ID, Active: true,
@@ -183,6 +186,9 @@ func TestCatalogAdminRepositoryIntegration(t *testing.T) {
 		must(st, "get type", err)
 		if got.Values["family"].Ref.Code != "TEST_REPO_FAM1" || got.Values["code"].Text != "TEST_REPO_TYPE" {
 			st.Fatalf("Get() type = %+v", got)
+		}
+		if got.Values["class"].Ref.Label != "Test Repo Clase Renombrada" || got.Values["family"].Ref.Label != "Test Repo Familia 1 Renombrada" {
+			st.Fatalf("Get() type hierarchy labels = %#v, want enriched class/family names", got.Values)
 		}
 
 		must(st, "deactivate type", repo.SetActive(ctx, domain.KindType, typeID, false))
@@ -434,9 +440,9 @@ func TestCatalogAdminRepositoryIntegration(t *testing.T) {
 				"code": {Text: code}, "name": {Text: name}, "symbol": {Text: symbol}, "dimension": {Text: "LENGTH"},
 			}}
 		}
-		first, err := repo.Insert(ctx, makeUnit("TEST_REPO_UNIT_A", "Unidad repetida", "TRA"))
+		first, err := repo.Insert(ctx, makeUnit("TEST_REPO_UNIT_A", "Provisional: Código TEST_REPO_UNIT_A", "TRA"))
 		must(st, "insert first unit", err)
-		second, err := repo.Insert(ctx, makeUnit("TEST_REPO_UNIT_B", "Unidad repetida", "TRB"))
+		second, err := repo.Insert(ctx, makeUnit("TEST_REPO_UNIT_B", "Provisional: Código TEST_REPO_UNIT_A", "TRB"))
 		must(st, "insert duplicate-name unit", err)
 		st.Cleanup(func() { _ = repo.Delete(ctx, domain.KindUnit, first); _ = repo.Delete(ctx, domain.KindUnit, second) })
 		updated := makeUnit("TEST_REPO_UNIT_A", "Unidad corregida", "TRA")
@@ -450,6 +456,26 @@ func TestCatalogAdminRepositoryIntegration(t *testing.T) {
 		list, err := repo.List(ctx, domain.KindUnit, domain.CatalogFilter{Text: "corregida"})
 		if err != nil || len(list) != 1 || list[0].ID != first {
 			st.Fatalf("unit name search = %+v, err=%v, want updated unit", list, err)
+		}
+		updated.Values["name"] = domain.CatalogValue{Text: "Unidad estable"}
+		must(st, "correct provisional unit", repo.Update(ctx, updated))
+		var classID, familyID, typeID, resourceID int64
+		must(st, "resolve class", pool.QueryRow(ctx, `SELECT id FROM public.resource_classes WHERE code='MATERIAL'`).Scan(&classID))
+		must(st, "resolve family", pool.QueryRow(ctx, `SELECT id FROM public.resource_families WHERE code='CONDUCTORES'`).Scan(&familyID))
+		must(st, "resolve type", pool.QueryRow(ctx, `SELECT id FROM public.resource_types WHERE code='CABLE'`).Scan(&typeID))
+		must(st, "insert stable reference", pool.QueryRow(ctx, `INSERT INTO public.recursos (class_id,family_id,type_id,natural_unit_id,display_name,identity_key) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, classID, familyID, typeID, first, "U2a restart", "TEST_U2A_RESTART_KEY").Scan(&resourceID))
+		st.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM public.recursos WHERE id=$1", resourceID) })
+		freshPool, err := pgxpool.New(ctx, dsn)
+		must(st, "reconnect to PostgreSQL", err)
+		st.Cleanup(freshPool.Close)
+		freshRepo := NewCatalogAdminRepository(freshPool)
+		got, err = freshRepo.Get(ctx, domain.KindUnit, first)
+		if err != nil || got.Values["name"].Text != "Unidad estable" || got.Values["code"].Text != "TEST_REPO_UNIT_A" {
+			st.Fatalf("reloaded unit = %+v, error = %v", got, err)
+		}
+		referenced, err := freshRepo.ReferencedByResources(ctx, domain.KindUnit, first)
+		if err != nil || !referenced {
+			st.Fatalf("reloaded unit reference = %v, error = %v; want stable reference", referenced, err)
 		}
 	})
 }

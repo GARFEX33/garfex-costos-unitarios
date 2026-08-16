@@ -196,7 +196,7 @@ func TestCatalogAdminWizardSequencesNineKindsPreseedingInheritedContext(t *testi
 		// Unidad: code, name, symbol, dimension.
 		{"TEST_UNIDAD", "Nombre"},
 		{"Test Unidad", "Símbolo"},
-		{"tu", "Dimensión"},
+		{"tu", "Dimensión\nCategoría de medición. Ejemplos: Longitud, Masa, Tiempo o Pieza."},
 		{"PIECE", "Modo"}, // Unidad created -> Aplicabilidad.mode (class/family/type/characteristic/optionSet ALL pre-seeded)
 		// Aplicabilidad: mode, identityParticipates.
 		{"REQUIRED", "Participa en Identidad"},

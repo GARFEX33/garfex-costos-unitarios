@@ -13,6 +13,9 @@ import "context"
 type CatalogRef struct {
 	Kind CatalogKindCode
 	Code string
+	// Label is the human-readable identity resolved by the repository for UI
+	// presentation. Code remains the stable mutation/reference key.
+	Label string
 }
 
 // CatalogValue is one field's value inside a CatalogRecord (design D8) — a

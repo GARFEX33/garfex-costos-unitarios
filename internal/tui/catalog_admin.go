@@ -181,6 +181,9 @@ func (a *CatalogAdminAdapter) startEditFlow(ctx context.Context, kind domain.Cat
 			ErrorMessage{Text: "No pude iniciar la edición. Probá de nuevo en un momento."},
 		}}, nil
 	}
+	if kind == domain.KindUnit && strings.HasPrefix(rec.Values["name"].Text, "Provisional: ") {
+		response.Messages = append([]InteractionMessage{TextMessage{Text: "Este nombre es provisional. Corregilo por un nombre humano antes de guardar."}}, response.Messages...)
+	}
 	return response, nil
 }
 
@@ -251,6 +254,9 @@ func (a *CatalogAdminAdapter) respondToEditor(ctx context.Context, input Interac
 func (a *CatalogAdminAdapter) fieldQuestion(ctx context.Context, field domain.FieldDescriptor) (InteractionResponse, error) {
 	state := a.editor
 	prompt := field.Label
+	if field.Guidance != "" {
+		prompt += "\n" + field.Guidance
+	}
 	current, hasCurrent := state.values[field.Name]
 
 	switch field.Kind {
@@ -806,6 +812,23 @@ func boolValueString(b bool) string {
 // Código as if it were a friendly label" guard (spec: Spanish-Only
 // Catalog-Admin UI) — it never special-cases a specific CatalogKindCode.
 func catalogRecordDisplayLabel(def domain.CatalogKind, rec domain.CatalogRecord) string {
+	return catalogRecordPresentation(def, rec)
+}
+
+// catalogRecordPresentation is the single business-first identity policy for
+// catalog lists, searchable references, and detail titles. Stable Código is
+// kept in detail fields and mutation values, never promoted over the human
+// identity.
+func catalogRecordPresentation(def domain.CatalogKind, rec domain.CatalogRecord) string {
+	name := rec.Values["name"].Text
+	switch def.Code {
+	case domain.KindFamily:
+		return joinCatalogIdentity(name, catalogRefLabel(rec, "class"))
+	case domain.KindType:
+		return joinCatalogIdentity(name, catalogRefLabel(rec, "class")+" › "+catalogRefLabel(rec, "family"))
+	case domain.KindUnit:
+		return catalogUnitPresentation(name, rec.Values["symbol"].Text, rec.Values["dimension"].Text)
+	}
 	for _, name := range []string{"name", "label", "symbol"} {
 		if v, ok := rec.Values[name]; ok && strings.TrimSpace(v.Text) != "" {
 			return v.Text
@@ -815,6 +838,30 @@ func catalogRecordDisplayLabel(def domain.CatalogKind, rec domain.CatalogRecord)
 		return v.Text
 	}
 	return fmt.Sprintf("%s #%d", def.Singular, rec.ID)
+}
+
+func catalogRefLabel(rec domain.CatalogRecord, field string) string {
+	ref := rec.Values[field].Ref
+	if strings.TrimSpace(ref.Label) != "" {
+		return ref.Label
+	}
+	return ref.Code
+}
+
+func joinCatalogIdentity(primary, context string) string {
+	primary = strings.TrimSpace(primary)
+	context = strings.TrimSpace(context)
+	if primary == "" {
+		return context
+	}
+	if context == "" {
+		return primary
+	}
+	return primary + " · " + context
+}
+
+func catalogUnitPresentation(name, symbol, dimension string) string {
+	return strings.Join([]string{strings.TrimSpace(name), strings.TrimSpace(symbol), strings.TrimSpace(dimension)}, " · ")
 }
 
 // catalogRecordFields renders rec as the StructuredResult.Fields shown after
@@ -844,6 +891,9 @@ func formatCatalogFieldValue(field domain.FieldDescriptor, v domain.CatalogValue
 	case domain.FieldStringList:
 		return strings.Join(v.List, ", ")
 	case domain.FieldRef:
+		if strings.TrimSpace(v.Ref.Label) != "" {
+			return v.Ref.Label
+		}
 		return v.Ref.Code
 	case domain.FieldEnum:
 		for _, ev := range field.EnumValues {

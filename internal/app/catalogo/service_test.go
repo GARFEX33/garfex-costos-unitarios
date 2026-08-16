@@ -724,3 +724,27 @@ func TestServiceUnitNameUpdateRoundTrip(t *testing.T) {
 		t.Fatalf("unit update = %+v, err=%v, want persisted name", got, err)
 	}
 }
+
+func TestServiceUnitNameUpdateRejectsReferencedCodeChange(t *testing.T) {
+	current := domain.CatalogRecord{Kind: domain.KindUnit, ID: 7, Active: true, Values: map[string]domain.CatalogValue{
+		"code": {Text: "LEGACY_X"}, "name": {Text: "Provisional: Código LEGACY_X"}, "symbol": {Text: "lx"}, "dimension": {Text: "LENGTH"},
+	}}
+	repo := &fakeCatalogAdminRepository{
+		getFn: func(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) {
+			return current, nil
+		},
+		referencedByResourcesFn: func(context.Context, domain.CatalogKindCode, int64) (bool, error) { return true, nil },
+	}
+	svc := newTestService(repo)
+	updated := current
+	updated.Values = map[string]domain.CatalogValue{
+		"code": {Text: "LEGACY_RENAMED"}, "name": {Text: "Unidad corregida"}, "symbol": {Text: "lx"}, "dimension": {Text: "LENGTH"},
+	}
+	_, err := svc.Update(context.Background(), domain.KindUnit, updated)
+	if !errors.Is(err, domain.ErrCodeImmutable) {
+		t.Fatalf("Update() error = %v, want ErrCodeImmutable while references exist", err)
+	}
+	if repo.updateCalls != 0 {
+		t.Fatalf("repo.Update calls = %d, want 0 after rejected stable-code change", repo.updateCalls)
+	}
+}

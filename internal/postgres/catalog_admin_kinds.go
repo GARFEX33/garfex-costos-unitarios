@@ -282,11 +282,11 @@ func classReferencedByResources(ctx context.Context, q querier, id int64) (bool,
 func listFamilies(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
 	var conditions []string
 	var args []any
-	conditions, args = appendTextFilter(conditions, args, f.Text, "f.code", "f.name")
+	conditions, args = appendTextFilter(conditions, args, f.Text, "f.code", "f.name", "cl.name")
 	conditions = appendActiveFilter(conditions, f.IncludeInactive, "f.active")
 	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
 	sql := finalizeQuery(`
-		SELECT f.id, cl.code, f.code, f.name, f.active
+		SELECT f.id, cl.code, cl.name, f.code, f.name, f.active
 		FROM public.resource_families f
 		JOIN public.resource_classes cl ON cl.id = f.class_id`, conditions, "cl.id, f.id", f)
 
@@ -298,35 +298,35 @@ func listFamilies(ctx context.Context, q querier, f domain.CatalogFilter) ([]dom
 	var out []domain.CatalogRecord
 	for rows.Next() {
 		var id int64
-		var classCode, code, name string
+		var classCode, className, code, name string
 		var active bool
-		if err := rows.Scan(&id, &classCode, &code, &name, &active); err != nil {
+		if err := rows.Scan(&id, &classCode, &className, &code, &name, &active); err != nil {
 			return nil, fmt.Errorf("scan resource_families: %w", err)
 		}
-		out = append(out, familyRecord(id, classCode, code, name, active))
+		out = append(out, familyRecord(id, classCode, className, code, name, active))
 	}
 	return out, rows.Err()
 }
 
 func getFamily(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
-	var classCode, code, name string
+	var classCode, className, code, name string
 	var active bool
 	err := q.QueryRow(ctx, `
-		SELECT cl.code, f.code, f.name, f.active
+		SELECT cl.code, cl.name, f.code, f.name, f.active
 		FROM public.resource_families f JOIN public.resource_classes cl ON cl.id = f.class_id
-		WHERE f.id=$1`, id).Scan(&classCode, &code, &name, &active)
+		WHERE f.id=$1`, id).Scan(&classCode, &className, &code, &name, &active)
 	if isNoRows(err) {
 		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
 	}
 	if err != nil {
 		return domain.CatalogRecord{}, fmt.Errorf("get resource_families: %w", err)
 	}
-	return familyRecord(id, classCode, code, name, active), nil
+	return familyRecord(id, classCode, className, code, name, active), nil
 }
 
-func familyRecord(id int64, classCode, code, name string, active bool) domain.CatalogRecord {
+func familyRecord(id int64, classCode, className, code, name string, active bool) domain.CatalogRecord {
 	return domain.CatalogRecord{Kind: domain.KindFamily, ID: id, Active: active, Values: map[string]domain.CatalogValue{
-		"class": refValue(domain.KindClass, classCode), "code": textValue(code), "name": textValue(name),
+		"class": refValueLabel(domain.KindClass, classCode, className), "code": textValue(code), "name": textValue(name),
 	}}
 }
 
@@ -379,12 +379,12 @@ func familyReferencedByResources(ctx context.Context, q querier, id int64) (bool
 func listTypes(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain.CatalogRecord, error) {
 	var conditions []string
 	var args []any
-	conditions, args = appendTextFilter(conditions, args, f.Text, "t.code", "t.name")
+	conditions, args = appendTextFilter(conditions, args, f.Text, "t.code", "t.name", "cl.name", "f.name")
 	conditions = appendActiveFilter(conditions, f.IncludeInactive, "t.active")
 	conditions, args = appendEqualsFilter(conditions, args, "cl.code", parentRefCode(f, "class"))
 	conditions, args = appendEqualsFilter(conditions, args, "f.code", parentRefCode(f, "family"))
 	sql := finalizeQuery(`
-		SELECT t.id, cl.code, f.code, t.code, t.name, t.active
+		SELECT t.id, cl.code, cl.name, f.code, f.name, t.code, t.name, t.active
 		FROM public.resource_types t
 		JOIN public.resource_families f ON f.id = t.family_id
 		JOIN public.resource_classes cl ON cl.id = t.class_id`, conditions, "f.id, t.id", f)
@@ -397,37 +397,37 @@ func listTypes(ctx context.Context, q querier, f domain.CatalogFilter) ([]domain
 	var out []domain.CatalogRecord
 	for rows.Next() {
 		var id int64
-		var classCode, familyCode, code, name string
+		var classCode, className, familyCode, familyName, code, name string
 		var active bool
-		if err := rows.Scan(&id, &classCode, &familyCode, &code, &name, &active); err != nil {
+		if err := rows.Scan(&id, &classCode, &className, &familyCode, &familyName, &code, &name, &active); err != nil {
 			return nil, fmt.Errorf("scan resource_types: %w", err)
 		}
-		out = append(out, typeRecord(id, classCode, familyCode, code, name, active))
+		out = append(out, typeRecord(id, classCode, className, familyCode, familyName, code, name, active))
 	}
 	return out, rows.Err()
 }
 
 func getType(ctx context.Context, q querier, id int64) (domain.CatalogRecord, error) {
-	var classCode, familyCode, code, name string
+	var classCode, className, familyCode, familyName, code, name string
 	var active bool
 	err := q.QueryRow(ctx, `
-		SELECT cl.code, f.code, t.code, t.name, t.active
+		SELECT cl.code, cl.name, f.code, f.name, t.code, t.name, t.active
 		FROM public.resource_types t
 		JOIN public.resource_families f ON f.id = t.family_id
 		JOIN public.resource_classes cl ON cl.id = t.class_id
-		WHERE t.id=$1`, id).Scan(&classCode, &familyCode, &code, &name, &active)
+		WHERE t.id=$1`, id).Scan(&classCode, &className, &familyCode, &familyName, &code, &name, &active)
 	if isNoRows(err) {
 		return domain.CatalogRecord{}, domain.ErrCatalogRecordNotFound
 	}
 	if err != nil {
 		return domain.CatalogRecord{}, fmt.Errorf("get resource_types: %w", err)
 	}
-	return typeRecord(id, classCode, familyCode, code, name, active), nil
+	return typeRecord(id, classCode, className, familyCode, familyName, code, name, active), nil
 }
 
-func typeRecord(id int64, classCode, familyCode, code, name string, active bool) domain.CatalogRecord {
+func typeRecord(id int64, classCode, className, familyCode, familyName, code, name string, active bool) domain.CatalogRecord {
 	return domain.CatalogRecord{Kind: domain.KindType, ID: id, Active: active, Values: map[string]domain.CatalogValue{
-		"class": refValue(domain.KindClass, classCode), "family": refValue(domain.KindFamily, familyCode),
+		"class": refValueLabel(domain.KindClass, classCode, className), "family": refValueLabel(domain.KindFamily, familyCode, familyName),
 		"code": textValue(code), "name": textValue(name),
 	}}
 }
