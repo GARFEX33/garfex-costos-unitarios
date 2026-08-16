@@ -22,6 +22,14 @@ func containsFullWordmark(value string) bool {
 	}
 	return true
 }
+func containsMediumWordmark(value string) bool {
+	for _, line := range strings.Split(mediumWordmark, "\n") {
+		if !strings.Contains(value, strings.TrimSpace(line)) {
+			return false
+		}
+	}
+	return true
+}
 func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
 	next, cmd := m.Update(msg)
@@ -178,36 +186,54 @@ func TestModelViewResponsiveShell(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
 		width, height int
-		full          bool
+		tagline       bool
+		medium        bool
 	}{
-		{"full", 120, 30, true},
-		{"exact banner width", 102, 24, true},
-		{"exact full height", 102, 21, false},
-		{"insufficient full height", 102, 20, false},
-		{"ordinary terminal", 80, 24, false},
-		{"minimum boundary", 40, 10, false},
+		{"oversized terminal", 160, 40, true, true},
+		{"spacious terminal", 120, 26, true, true},
+		{"normal tier", 80, 24, true, true},
+		{"normal exact boundary", 64, 18, true, true},
+		{"normal width below boundary", 63, 18, false, false},
+		{"normal height below boundary", 64, 17, false, false},
+		{"wide but short", 120, 17, false, false},
+		{"minimum boundary", 40, 10, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
 			m.screen = screenHome
 			m, _ = update(t, m, tea.WindowSizeMsg{Width: tt.width, Height: tt.height})
 			got := m.View().Content
-			wantHeight := tt.height
-			if tt.name == "minimum boundary" {
-				wantHeight = 11
-			}
-			if lipgloss.Width(got) != tt.width || lipgloss.Height(got) != wantHeight {
-				t.Fatalf("view size = %dx%d, want %dx%d", lipgloss.Width(got), lipgloss.Height(got), tt.width, wantHeight)
+			if lipgloss.Width(got) != tt.width || lipgloss.Height(got) != tt.height {
+				t.Fatalf("view size = %dx%d, want %dx%d", lipgloss.Width(got), lipgloss.Height(got), tt.width, tt.height)
 			}
 			plain := ansi.Strip(got)
-			if !strings.Contains(normalized(plain), officialTagline) || strings.Contains(plain, "/\\/") || strings.Contains(plain, "╭") {
-				t.Fatalf("shell is not centered or branded: %q", plain)
+			for row, line := range strings.Split(got, "\n") {
+				if width := lipgloss.Width(line); width > tt.width {
+					t.Fatalf("row %d width = %d, exceeds viewport width %d", row, width, tt.width)
+				}
 			}
-			if tt.full != containsFullWordmark(plain) {
-				t.Fatalf("full wordmark presence = %v, want %v", containsFullWordmark(plain), tt.full)
+			if containsFullWordmark(plain) {
+				t.Fatal("responsive shell must never render the full wordmark")
 			}
-			if !tt.full && (!strings.Contains(plain, "GARFEX") || strings.Contains(plain, "G A R F E X") || strings.Contains(plain, "MENÚ PRINCIPAL")) {
-				t.Fatalf("compact shell fallback is invalid: %q", plain)
+			if gotTagline := strings.Contains(normalized(plain), officialTagline); gotTagline != tt.tagline {
+				t.Fatalf("tagline presence = %v, want %v: %q", gotTagline, tt.tagline, plain)
+			}
+			if gotMedium := containsMediumWordmark(plain); gotMedium != tt.medium {
+				t.Fatalf("medium wordmark presence = %v, want %v: %q", gotMedium, tt.medium, plain)
+			}
+			if !tt.medium && !strings.Contains(plain, "GARFEX · HOME") {
+				t.Fatalf("narrow view = %q, missing compact heading", plain)
+			}
+			for _, want := range []string{"› 01  Materiales Maestros", "05  Salir", "enter", "salir"} {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("view = %q, missing navigation content %q", plain, want)
+				}
+			}
+			if strings.Contains(plain, "/\\/") || strings.Contains(plain, "╭") || strings.Contains(plain, "G A R F E X") || strings.Contains(plain, "MENÚ PRINCIPAL") {
+				t.Fatalf("responsive shell contains rejected branding: %q", plain)
+			}
+			if one, two := m.View().Content, m.View().Content; one != two {
+				t.Fatalf("view is not deterministic")
 			}
 		})
 	}
@@ -246,52 +272,39 @@ func TestFullWordmark(t *testing.T) {
 		t.Fatal("full wordmark does not use GARFEX corporate red")
 	}
 
-	m := New(Handlers{Version: Status(), Config: Status(), Status: Status()})
-	m.screen = screenHome
-	m, _ = update(t, m, tea.WindowSizeMsg{Width: 102, Height: 24})
-	one, two := m.View().Content, m.View().Content
-	if one != two {
-		t.Fatal("full wordmark render must be deterministic")
+}
+
+func TestMediumWordmark(t *testing.T) {
+	const (
+		wantRows    = 5
+		wantColumns = 60
+	)
+	lines := strings.Split(mediumWordmark, "\n")
+	if len(lines) != wantRows {
+		t.Fatalf("medium wordmark rows = %d, want %d", len(lines), wantRows)
 	}
-	plain := ansi.Strip(one)
-	lines := strings.Split(plain, "\n")
-	first := -1
-	for i, line := range lines {
-		if strings.Contains(line, wordmarkLines[0]) {
-			first = i
-			break
+	for row, line := range lines {
+		if got := lipgloss.Width(line); got != wantColumns {
+			t.Fatalf("medium wordmark row %d width = %d, want %d", row, got, wantColumns)
+		}
+		for column, glyph := range []rune(line) {
+			if glyph != ' ' && glyph != '█' {
+				t.Fatalf("medium wordmark row %d column %d contains unsupported glyph %q", row, column, glyph)
+			}
+			if got := lipgloss.Width(string(glyph)); got != 1 {
+				t.Fatalf("medium wordmark glyph %q width = %d, want 1", glyph, got)
+			}
 		}
 	}
-	if first < 0 {
-		t.Fatal("rendered view is missing the full wordmark")
+	style := wordmarkStyle(wantColumns)
+	styled := style.GetForeground()
+	wantR, wantG, wantB, wantA := brandRed.RGBA()
+	gotR, gotG, gotB, gotA := styled.RGBA()
+	if gotR != wantR || gotG != wantG || gotB != wantB || gotA != wantA {
+		t.Fatal("medium wordmark does not use GARFEX corporate red")
 	}
-	last := first + len(wordmarkLines) - 1
-	for row, want := range wordmarkLines {
-		if !strings.Contains(lines[first+row], want) {
-			t.Fatalf("rendered wordmark row %d = %q, missing %q", row, lines[first+row], want)
-		}
-	}
-	tagline := -1
-	for i := last + 1; i < len(lines); i++ {
-		if strings.Contains(lines[i], "DISEÑO") {
-			tagline = i
-			break
-		}
-		if strings.TrimSpace(lines[i]) != "" {
-			t.Fatalf("unexpected content between wordmark and tagline: %q", lines[i])
-		}
-	}
-	if tagline <= last+1 {
-		t.Fatalf("wordmark/tagline spacing is invalid: first=%d last=%d", first, last)
-	}
-	for row, want := range wordmarkLines {
-		line := lines[first+row]
-		start := strings.Index(line, want)
-		left := lipgloss.Width(line[:start])
-		right := lipgloss.Width(line) - left - lipgloss.Width(want)
-		if left-right < -1 || left-right > 1 {
-			t.Fatalf("wordmark row %d is not centered: left=%d right=%d", row, left, right)
-		}
+	if rendered := style.Render(mediumWordmark); lipgloss.Width(rendered) != wantColumns || lipgloss.Height(rendered) != wantRows {
+		t.Fatalf("rendered medium wordmark size = %dx%d, want %dx%d", lipgloss.Width(rendered), lipgloss.Height(rendered), wantColumns, wantRows)
 	}
 }
 
@@ -1288,20 +1301,39 @@ func historyContains(values []conversationMessage, want string) bool {
 }
 
 func TestWelcomeModeShowsHeroBranding(t *testing.T) {
-	m := New(Handlers{})
-	m, _ = update(t, m, tea.WindowSizeMsg{Width: 102, Height: 24})
-	if !m.heroActive {
-		t.Fatal("startup must begin in welcome mode")
-	}
-	plain := ansi.Strip(m.View().Content)
-	if !containsFullWordmark(plain) {
-		t.Fatal("welcome mode must show the full wordmark")
-	}
-	if !strings.Contains(normalized(plain), officialTagline) {
-		t.Fatal("welcome mode must show the tagline")
-	}
-	if strings.Contains(plain, "GARFEX / ASSISTANT") {
-		t.Fatal("welcome mode must not show the compact workspace header")
+	for _, tt := range []struct {
+		name          string
+		width, height int
+		tagline       bool
+		medium        bool
+	}{
+		{"oversized terminal", 160, 40, true, true},
+		{"normal boundary", 64, 18, true, true},
+		{"narrow boundary", 40, 10, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New(Handlers{})
+			m, _ = update(t, m, tea.WindowSizeMsg{Width: tt.width, Height: tt.height})
+			if !m.heroActive {
+				t.Fatal("startup must begin in welcome mode")
+			}
+			plain := ansi.Strip(m.View().Content)
+			if containsFullWordmark(plain) {
+				t.Fatal("welcome mode must never render the full wordmark")
+			}
+			if gotMedium := containsMediumWordmark(plain); gotMedium != tt.medium {
+				t.Fatalf("medium wordmark presence = %v, want %v: %q", gotMedium, tt.medium, plain)
+			}
+			if !tt.medium && !strings.Contains(plain, "GARFEX · HOME") {
+				t.Fatalf("narrow welcome mode = %q, missing compact heading", plain)
+			}
+			if got := strings.Contains(normalized(plain), officialTagline); got != tt.tagline {
+				t.Fatalf("tagline presence = %v, want %v", got, tt.tagline)
+			}
+			if strings.Contains(plain, "GARFEX / ASSISTANT") {
+				t.Fatal("welcome mode must not show the compact workspace header")
+			}
+		})
 	}
 }
 
