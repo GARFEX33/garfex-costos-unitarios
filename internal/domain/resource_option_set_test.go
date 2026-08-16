@@ -37,7 +37,7 @@ func twoClassOptionSetCatalog() ResourceCatalog {
 			{ClassCode: "TEST_CLASS_A", FamilyCode: "WIDGETS", Code: "WIDGET", Name: "Widget A", Active: true},
 			{ClassCode: "TEST_CLASS_B", FamilyCode: "WIDGETS", Code: "WIDGET", Name: "Widget B", Active: true},
 		},
-		Units: []UnitDefinition{{Code: "PZA", Symbol: "PZA", Dimension: "PIECE", Active: true}},
+		Units: []UnitDefinition{{Code: "PZA", Name: "Pieza", Symbol: "PZA", Dimension: "PIECE", Active: true}},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "TEST_CLASS_A", FamilyCode: "WIDGETS", UnitCode: "PZA", Allowed: true, Suggested: true},
 			{ClassCode: "TEST_CLASS_B", FamilyCode: "WIDGETS", UnitCode: "PZA", Allowed: true, Suggested: true},

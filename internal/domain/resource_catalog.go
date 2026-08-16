@@ -35,8 +35,8 @@ func SeedResourceCatalog() ResourceCatalog {
 			{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA", AttributeCode: "diameter_inch", Position: 2},
 		},
 		Units: []UnitDefinition{
-			{Code: "M", Symbol: "M", Dimension: "LENGTH", Active: true},
-			{Code: "PZA", Symbol: "PZA", Dimension: "PIECE", Active: true},
+			{Code: "M", Name: "Metro", Symbol: "M", Dimension: "LENGTH", Active: true},
+			{Code: "PZA", Name: "Pieza", Symbol: "PZA", Dimension: "PIECE", Active: true},
 		},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", UnitCode: "M", Allowed: true, Suggested: true},

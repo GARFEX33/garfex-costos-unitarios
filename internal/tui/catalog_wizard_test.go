@@ -193,10 +193,11 @@ func TestCatalogAdminWizardSequencesNineKindsPreseedingInheritedContext(t *testi
 		// Opción: code, label.
 		{"ALTO", "Etiqueta"},
 		{"Alto", "Código"}, // Opción created -> Unidad.code (no refs to pre-seed)
-		// Unidad: code, symbol, dimension.
-		{"TEST_UNIDAD", "Símbolo"},
+		// Unidad: code, name, symbol, dimension.
+		{"TEST_UNIDAD", "Nombre"},
+		{"Test Unidad", "Símbolo"},
 		{"tu", "Dimensión"},
-		{"", "Modo"}, // Unidad created -> Aplicabilidad.mode (class/family/type/characteristic/optionSet ALL pre-seeded)
+		{"PIECE", "Modo"}, // Unidad created -> Aplicabilidad.mode (class/family/type/characteristic/optionSet ALL pre-seeded)
 		// Aplicabilidad: mode, identityParticipates.
 		{"REQUIRED", "Participa en Identidad"},
 		{"true", "Posición"}, // Aplicabilidad created -> Presentación.position (class/family/type/characteristic pre-seeded)

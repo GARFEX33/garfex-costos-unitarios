@@ -263,8 +263,9 @@ func catalogKinds() []CatalogKind {
 			Code: KindUnit, Singular: "Unidad", Plural: "Unidades",
 			Fields: []FieldDescriptor{
 				codeField(),
+				{Name: "name", Label: "Nombre", Kind: FieldText, Required: true, Searchable: true},
 				{Name: "symbol", Label: "Símbolo", Kind: FieldText, Required: true},
-				{Name: "dimension", Label: "Dimensión", Kind: FieldText},
+				{Name: "dimension", Label: "Dimensión", Kind: FieldText, Required: true},
 			},
 			IdentityFields: []string{"code"},
 			SoftDelete:     true,

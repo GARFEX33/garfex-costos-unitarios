@@ -165,7 +165,7 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	unitRec, err := svc.Create(ctx, domain.KindUnit, domain.CatalogRecord{
 		Active: true,
 		Values: map[string]domain.CatalogValue{
-			"code": {Text: unitCode}, "symbol": {Text: unitSymbol}, "dimension": {Text: "PIECE"},
+			"code": {Text: unitCode}, "name": {Text: "Test Unidad"}, "symbol": {Text: unitSymbol}, "dimension": {Text: "PIECE"},
 		},
 	})
 	must("create unit", err)

@@ -87,6 +87,21 @@ func TestLoadResourceCatalogIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("unit names hydrate without changing stable fields", func(t *testing.T) {
+		want := map[string]string{"M": "Metro", "PZA": "Pieza"}
+		seen := 0
+		for _, unit := range catalog.Units {
+			if expected, ok := want[unit.Code]; ok && (unit.Name != expected || unit.Symbol != unit.Code) {
+				t.Errorf("unit %q = %+v, want name %q and stable symbol", unit.Code, unit, expected)
+			} else if ok {
+				seen++
+			}
+		}
+		if seen != len(want) {
+			t.Fatalf("hydrated unit count = %d, want %d approved units", seen, len(want))
+		}
+	})
+
 	t.Run("parity with SeedResourceCatalog once normalized", func(t *testing.T) {
 		got := normalizeCatalogForParity(catalog)
 		want := normalizeCatalogForParity(domain.SeedResourceCatalog())

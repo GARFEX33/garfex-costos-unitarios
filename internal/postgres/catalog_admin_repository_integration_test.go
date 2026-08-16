@@ -427,6 +427,31 @@ func TestCatalogAdminRepositoryIntegration(t *testing.T) {
 			st.Fatalf("Delete() referenced class error = %v, want ErrCatalogInUse", err)
 		}
 	})
+
+	t.Run("unit names accept duplicates and round trip", func(st *testing.T) {
+		makeUnit := func(code, name, symbol string) domain.CatalogRecord {
+			return domain.CatalogRecord{Kind: domain.KindUnit, Active: true, Values: map[string]domain.CatalogValue{
+				"code": {Text: code}, "name": {Text: name}, "symbol": {Text: symbol}, "dimension": {Text: "LENGTH"},
+			}}
+		}
+		first, err := repo.Insert(ctx, makeUnit("TEST_REPO_UNIT_A", "Unidad repetida", "TRA"))
+		must(st, "insert first unit", err)
+		second, err := repo.Insert(ctx, makeUnit("TEST_REPO_UNIT_B", "Unidad repetida", "TRB"))
+		must(st, "insert duplicate-name unit", err)
+		st.Cleanup(func() { _ = repo.Delete(ctx, domain.KindUnit, first); _ = repo.Delete(ctx, domain.KindUnit, second) })
+		updated := makeUnit("TEST_REPO_UNIT_A", "Unidad corregida", "TRA")
+		updated.ID = first
+		must(st, "update unit name", repo.Update(ctx, updated))
+		got, err := repo.Get(ctx, domain.KindUnit, first)
+		must(st, "get updated unit", err)
+		if got.Values["name"].Text != "Unidad corregida" || got.Values["code"].Text != "TEST_REPO_UNIT_A" || got.Values["symbol"].Text != "TRA" {
+			st.Fatalf("unit round-trip = %+v, want editable name and stable code/symbol", got)
+		}
+		list, err := repo.List(ctx, domain.KindUnit, domain.CatalogFilter{Text: "corregida"})
+		if err != nil || len(list) != 1 || list[0].ID != first {
+			st.Fatalf("unit name search = %+v, err=%v, want updated unit", list, err)
+		}
+	})
 }
 
 func depCount(deps []domain.CatalogDependency, kind domain.CatalogKindCode) int {

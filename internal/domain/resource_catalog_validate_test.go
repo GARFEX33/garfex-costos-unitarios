@@ -34,7 +34,7 @@ func validResourceCatalog() ResourceCatalog {
 			{OptionSet: "COLORES", AttributeCode: "color", Code: "NEGRO", Label: "Negro"},
 		},
 		Units: []UnitDefinition{
-			{Code: "M", Symbol: "M", Dimension: "LENGTH"},
+			{Code: "M", Name: "Metro", Symbol: "M", Dimension: "LENGTH"},
 		},
 		UnitPolicies: []ResourceUnitPolicy{
 			{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", UnitCode: "M", Allowed: true, Suggested: true},
@@ -174,6 +174,54 @@ func TestResourceCatalog_Validate_DefectCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResourceCatalog_Validate_UnitFieldsAndDuplicateNames(t *testing.T) {
+	for _, tt := range []struct{ name, want string }{
+		{"code", "unit code"}, {"name", "unit name"}, {"symbol", "unit symbol"}, {"dimension", "unit dimension"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := validResourceCatalog()
+			switch tt.name {
+			case "code":
+				catalog.Units[0].Code = "  "
+			case "name":
+				catalog.Units[0].Name = " \t"
+			case "symbol":
+				catalog.Units[0].Symbol = ""
+			case "dimension":
+				catalog.Units[0].Dimension = "\n"
+			}
+			if err := catalog.Validate(); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() = %v, want %q", err, tt.want)
+			}
+		})
+	}
+	catalog := validResourceCatalog()
+	catalog.Units = append(catalog.Units, UnitDefinition{Code: "M2", Name: "Metro", Symbol: "M2", Dimension: "LENGTH"})
+	if err := catalog.Validate(); err != nil {
+		t.Fatalf("duplicate unit names rejected: %v", err)
+	}
+}
+
+func TestSeedResourceCatalog_UnitNamesAndConditionalRuntimeFixture(t *testing.T) {
+	catalog := SeedResourceCatalog()
+	if len(catalog.Units) != 2 || catalog.Units[0].Name != "Metro" || catalog.Units[1].Name != "Pieza" {
+		t.Fatalf("seeded units = %+v, want Metro and Pieza", catalog.Units)
+	}
+	if err := catalog.Validate(); err != nil {
+		t.Fatalf("seed catalog validation = %v", err)
+	}
+	for _, attribute := range catalog.Attributes {
+		if attribute.Definition.Code == "color" {
+			mode, _, na := attribute.Effective([]ResourceAttributeValue{OptionValue("insulation", "DESNUDO")})
+			if attribute.Mode != ModeConditional || len(attribute.Rules) != 1 || mode != ModeForbidden || !na {
+				t.Fatalf("conditional fixture = %+v, want persisted FORBIDDEN rule", attribute)
+			}
+			return
+		}
+	}
+	t.Fatal("conditional color fixture not found")
 }
 
 // --- Task 3.6 (R1 carve-out): validateAttributeRules() (design D4's
