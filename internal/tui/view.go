@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	defaultWidth  = 72
-	defaultHeight = 20
-	maxCardWidth  = 100
+	defaultWidth     = 72
+	defaultHeight    = 20
+	maxCardWidth     = 100
+	normalHomeWidth  = 64
+	normalHomeHeight = 18
 
 	officialTagline  = "DISEÑO · CONSTRUCCIÓN · MANTENIMIENTO ELÉCTRICO"
 	backgroundHex    = "#0B0D0E"
@@ -22,6 +24,11 @@ const (
 	accentHex        = "#FFD400"
 	successHex       = "#4FC38A"
 	errorHex         = "#FF6B6B"
+	mediumWordmark   = "    █████      ███     ██████    ███████   ███████   ██   ██" +
+		"\n   ██         ██ ██    ██   ██   ██        ██         ██ ██ " +
+		"\n   ██ ███    ███████   ██████    ██████    ██████      ███  " +
+		"\n   ██  ██    ██   ██   ██  ██    ██        ██         ██ ██ " +
+		"\n    ████     ██   ██   ██   ██   ██        ███████   ██   ██"
 
 	fullWordmark = `⠀⠀⠀⡄⡘⠤⡉⠌⣾⣿⣿⣶⣄⠀⠀⠀⠀⠀⠀⠀⠀⣼⣿⣿⣿⣿⣷⠀⠀⠀⠀⠀⠀⠀⢘⣿⣿⣿⣿⣿⣿⣿⣿⣷⣶⣄⠀⠀⠀⠀⠀⣽⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡗⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠹⣿⣿⣿⣿⣷⡄⠀⠀⠀⣼⣿⣿⣿⣿⡿⠁⠀⠀⠀
 ⠀⡤⠘⡠⢑⠢⡑⣸⣿⣿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⢰⣿⣿⣿⣿⣿⣿⣇⠀⠀⠀⠀⠀⠀⢨⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⡀⠀⠀⠀⢾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣏⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠘⢿⣿⣿⣿⣿⣆⠠⣽⣿⣿⣿⣿⡟⠁⠀⠀⠀⠀
@@ -32,6 +39,13 @@ const (
 ⠈⢿⠡⢌⢂⣿⣿⣷⣾⣾⣿⣿⣿⣿⡟⠀⢀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⢘⣿⣿⣿⣿⡇⠈⢿⣿⣿⣿⣿⣄⠀⠀⠀⠀⣽⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⢀⣾⣿⣿⣿⣿⠟⠘⢿⣿⣿⣿⣿⣆⠀⠀⠀⠀⠀
 ⠀⠀⡘⢠⣾⣿⣿⣿⣿⣿⣿⣿⡿⠋⠀⠀⣼⣿⣿⣿⣿⡏⠁⠉⠈⠁⠙⣿⣿⣿⣿⣷⡀⠀⢨⣿⣿⣿⣿⡇⠀⠈⢿⣿⣿⣿⣿⣆⠀⠀⠀⢾⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⣠⣿⣿⣿⣿⣿⠋⠀⠀⠈⢻⣿⣿⣿⣿⣧⡀⠀⠀⠀
 ⠀⠀⠀⠀⠈⠉⠛⠛⠛⠋⠉⠁⠀⠀⠀⠐⠉⠋⠙⠉⠙⠀⠀⠀⠀⠀⠀⠉⠋⠙⠉⠋⠁⠀⠀⠋⠙⠉⠋⠁⠀⠀⠈⠋⠙⠉⠋⠙⠀⠀⠀⠉⠋⠙⠉⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠋⠙⠉⠋⠙⠉⠋⠉⠉⠉⠙⠁⠀⠀⠋⠙⠉⠋⠙⠁⠀⠀⠀⠀⠀⠙⠉⠋⠙⠉⠃⠀⠀⠀`
+)
+
+type homeBrandTier uint8
+
+const (
+	homeBrandNarrow homeBrandTier = iota
+	homeBrandNormal
 )
 
 var (
@@ -54,28 +68,38 @@ func (m Model) render() string {
 	}
 
 	cardWidth := min(width-2, maxCardWidth)
-	full := cardWidth >= lipgloss.Width(fullWordmark)
-	if full {
-		full = lipgloss.Height(m.renderCard(cardWidth, true)) <= height-2
-	}
-	card := m.renderCard(cardWidth, full)
+	tier := homeBrandTierFor(width, height)
+	card := m.renderCard(cardWidth, tier)
 	canvas := lipgloss.NewStyle().Background(background)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, card,
 		lipgloss.WithWhitespaceStyle(canvas))
 }
 
-func (m Model) renderCard(width int, full bool) string {
+func homeBrandTierFor(width, height int) homeBrandTier {
+	if width >= normalHomeWidth && height >= normalHomeHeight {
+		return homeBrandNormal
+	}
+	return homeBrandNarrow
+}
+
+func (m Model) renderCard(width int, tier homeBrandTier) string {
 	sections := make([]string, 0, 4)
 	switch m.screen {
 	case screenHome:
-		sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
-		if full {
-			sections = append(sections, lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("HOME · ÁREAS DE GARFEX"))
+		sections = append(sections, renderWordmark(width, tier))
+		if tier != homeBrandNarrow {
+			sections = append(sections, renderTagline(width), renderDivider(width))
+		}
+		if tier != homeBrandNarrow {
+			sections = append(sections, renderHomeLabel(width))
 		}
 		sections = append(sections, m.renderMenu(width))
 	case screenWorkspace:
 		if m.heroActive {
-			sections = append(sections, renderWordmark(width, full), renderTagline(width), renderDivider(width, full))
+			sections = append(sections, renderWordmark(width, tier))
+			if tier != homeBrandNarrow {
+				sections = append(sections, renderTagline(width), renderDivider(width))
+			}
 		}
 		sections = append(sections, m.renderWorkspace(width))
 	case screenManual:
@@ -83,20 +107,20 @@ func (m Model) renderCard(width int, full bool) string {
 	default:
 		sections = append(sections, m.renderState(width))
 	}
-	sections = append(sections, m.renderFooter(width))
+	if m.screen == screenHome && tier == homeBrandNarrow {
+		sections = append(sections, renderNarrowHomeFooter(width))
+	} else {
+		sections = append(sections, m.renderFooter(width))
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-func renderWordmark(width int, full bool) string {
-	wordmark := "GARFEX"
-	if full {
-		wordmark = fullWordmark
+func renderWordmark(width int, tier homeBrandTier) string {
+	wordmark := "GARFEX · HOME"
+	if tier == homeBrandNormal {
+		wordmark = mediumWordmark
 	}
-	style := wordmarkStyle(width)
-	if full {
-		style = style.PaddingBottom(1)
-	}
-	return style.Render(wordmark)
+	return wordmarkStyle(width).Render(wordmark)
 }
 
 func wordmarkStyle(width int) lipgloss.Style {
@@ -108,12 +132,17 @@ func renderTagline(width int) string {
 		Render(officialTagline)
 }
 
-func renderDivider(width int, full bool) string {
-	style := lipgloss.NewStyle().Width(width).Foreground(surface)
-	if full {
-		style = style.PaddingBottom(1)
-	}
-	return style.Render(strings.Repeat("-", width))
+func renderHomeLabel(width int) string {
+	return lipgloss.NewStyle().Width(width).Foreground(secondaryText).Render("HOME · ÁREAS DE GARFEX")
+}
+
+func renderNarrowHomeFooter(width int) string {
+	parts := []string{hint("↑↓", "navegar"), hint("enter", "elegir"), hint("ctrl+c", "salir")}
+	return lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(strings.Join(parts, "  "))
+}
+
+func renderDivider(width int) string {
+	return lipgloss.NewStyle().Width(width).Foreground(surface).Render(strings.Repeat("-", width))
 }
 
 func menuItemStyle(active bool) lipgloss.Style {
