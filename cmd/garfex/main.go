@@ -87,20 +87,21 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 			fmt.Fprintf(errw, "catálogo de recursos inválido: %v\n", err)
 			return 1
 		}
-		service := recursos.NewService(repo, catalog)
-		agentFor := func(classCode string) tui.InteractionAgent {
-			return tui.NewResourcesWorkspaceAdapter(service, service, service, service, service, service, catalog, classCode)
+		authority := domain.NewCatalogAuthority(catalog)
+		service := recursos.NewServiceWithCatalogAuthority(repo, authority)
+		agentFor := func(snapshot domain.ResourceCatalog, classCode string) tui.InteractionAgent {
+			return tui.NewResourcesWorkspaceAdapter(service, service, service, service, service, service, snapshot, classCode)
 		}
 		assistantAgent := tui.NewAssistantShellAgent()
 		registry := domain.NewCatalogRegistry()
-		catalogService := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), registry, catalog)
+		catalogService := catalogo.NewServiceWithCatalogAuthority(postgres.NewCatalogAdminRepository(pool), registry, authority)
 		catalogAgent := tui.NewCatalogAdminAdapter(catalogService, catalogService, catalogService, catalogService,
 			catalogService, catalogService, catalogService, catalogService, catalogService, registry)
-		model := tui.NewWithCatalog(tui.Handlers{
+		model := tui.NewWithCatalogAuthority(tui.Handlers{
 			Version: tui.Version(version),
 			Config:  tui.Config(look),
 			Status:  tui.Status(),
-		}, assistantAgent, catalog, agentFor, registry, catalogAgent)
+		}, assistantAgent, authority, agentFor, registry, catalogAgent)
 		if _, err := launch(model).Run(); err != nil {
 			fmt.Fprintf(errw, "TUI launcher failed: %v\n", err)
 			return 1

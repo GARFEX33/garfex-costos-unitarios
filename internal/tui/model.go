@@ -140,6 +140,10 @@ type Model struct {
 	// New/NewWithAgent/NewWithWorkspaces, which keeps the legacy flat
 	// package var as their global palette, unchanged.
 	assistantActions []assistantAction
+	catalogAuthority *domain.CatalogAuthority
+	catalogVersion   uint64
+	catalogAgentFor  func(domain.ResourceCatalog, string) InteractionAgent
+	catalogKinds     []domain.CatalogKind
 }
 
 // WorkspaceDescriptor is one registered specialized workspace's static shape
@@ -390,17 +394,27 @@ func NewWithWorkspaces(handlers Handlers, assistant InteractionAgent, descriptor
 // the full reasoning, flagged there as a deviation from the tasks artifact's
 // literal wording).
 func NewWithCatalog(handlers Handlers, assistant InteractionAgent, catalog domain.ResourceCatalog, agentFor func(classCode string) InteractionAgent, registry domain.CatalogRegistry, catalogAgent InteractionAgent) Model {
+	return NewWithCatalogAuthority(handlers, assistant, domain.NewCatalogAuthority(catalog), func(_ domain.ResourceCatalog, classCode string) InteractionAgent { return agentFor(classCode) }, registry, catalogAgent)
+}
+
+// NewWithCatalogAuthority keeps dynamic navigation and resource workspaces on
+// the same committed catalog version as application services.
+func NewWithCatalogAuthority(handlers Handlers, assistant InteractionAgent, authority *domain.CatalogAuthority, agentFor func(domain.ResourceCatalog, string) InteractionAgent, registry domain.CatalogRegistry, catalogAgent InteractionAgent) Model {
+	catalog, version := authority.Current()
 	kinds := registry.Kinds()
-	descriptors := BuildWorkspaceDescriptors(catalog, agentFor)
+	descriptors := BuildWorkspaceDescriptors(catalog, func(code string) InteractionAgent { return agentFor(catalog, code) })
 	descriptors = append(descriptors, buildCatalogAdminWorkspace(kinds, catalogAgent))
 	m := NewWithWorkspaces(handlers, assistant, descriptors)
 	m.assistantActions = buildAssistantActions(catalog.ActiveClasses(), kinds)
+	m.catalogAuthority, m.catalogVersion = authority, version
+	m.catalogAgentFor, m.catalogKinds = agentFor, kinds
 	return m
 }
 
 func (Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.refreshCatalogIfChanged()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -564,10 +578,45 @@ func (m *Model) respond(input InteractionInput) {
 	m.choiceIndex = 0
 	m.choiceSelected = nil
 	m.syncChoiceFields()
+	m.refreshCatalogIfChanged()
 	if response.Pending == nil && m.activeWorkspace != "" {
 		m.openWorkspaceMenu()
 	}
 	m.refreshViewport()
+}
+
+func (m *Model) refreshCatalogIfChanged() bool {
+	if m.catalogAuthority == nil {
+		return false
+	}
+	catalog, version := m.catalogAuthority.Current()
+	if version == m.catalogVersion {
+		return false
+	}
+
+	configuration := m.workspaces[configuracionSlug]
+	if m.activeWorkspace != "" && m.activeWorkspace != configuracionSlug {
+		if m.assistantSaved != nil {
+			m.applyWorkspace(*m.assistantSaved)
+		}
+		m.activeWorkspace, m.assistantSaved = "", nil
+	}
+	descriptors := BuildWorkspaceDescriptors(catalog, func(code string) InteractionAgent { return m.catalogAgentFor(catalog, code) })
+	workspaces := make(map[string]*workspaceSlot, len(descriptors)+1)
+	order := make([]string, 0, len(descriptors)+1)
+	for _, descriptor := range descriptors {
+		workspaces[descriptor.Slug] = &workspaceSlot{descriptor: descriptor, agent: descriptor.Agent}
+		order = append(order, descriptor.Slug)
+	}
+	if configuration != nil {
+		workspaces[configuracionSlug] = configuration
+		order = append(order, configuracionSlug)
+	}
+	m.workspaces, m.workspaceOrder = workspaces, order
+	m.assistantActions = buildAssistantActions(catalog.ActiveClasses(), m.catalogKinds)
+	m.catalogVersion = version
+	m.appendGARFEX(TextMessage{Text: "El catálogo cambió. Los flujos abiertos de recursos se reiniciaron para usar la versión actual."})
+	return true
 }
 
 func (m *Model) openWorkspaceMenu() {

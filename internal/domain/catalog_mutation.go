@@ -19,8 +19,9 @@ const (
 // CatalogMutation is one pending write against a ResourceCatalog snapshot
 // (design §4) — the input ApplyCatalogMutation validates and applies.
 type CatalogMutation struct {
-	Op     MutationOp
-	Record CatalogRecord
+	Op          MutationOp
+	Record      CatalogRecord
+	Replacement *CatalogRecord
 }
 
 var (
@@ -49,13 +50,17 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 		return c, fmt.Errorf("%w: %q", ErrCatalogKindUnknown, m.Record.Kind)
 	}
 
+	buildRecord := m.Record
+	if m.Replacement != nil {
+		buildRecord = *m.Replacement
+	}
 	next := c
 	var err error
 	switch m.Record.Kind {
 	case KindClass:
 		next.Classes, err = mutateSlice(c.Classes, m.Op,
 			func(v ResourceClass) bool { return canonical(v.Code) == canonical(text(m.Record, "code")) },
-			func() ResourceClass { return classFromRecord(m.Record) },
+			func() ResourceClass { return classFromRecord(buildRecord) },
 			func(v *ResourceClass, active bool) { v.Active = active },
 		)
 	case KindFamily:
@@ -63,7 +68,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 			func(v ResourceFamily) bool {
 				return canonical(v.ClassCode) == canonical(ref(m.Record, "class")) && canonical(v.Code) == canonical(text(m.Record, "code"))
 			},
-			func() ResourceFamily { return familyFromRecord(m.Record) },
+			func() ResourceFamily { return familyFromRecord(buildRecord) },
 			func(v *ResourceFamily, active bool) { v.Active = active },
 		)
 	case KindType:
@@ -73,7 +78,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonical(v.FamilyCode) == canonical(ref(m.Record, "family")) &&
 					canonical(v.Code) == canonical(text(m.Record, "code"))
 			},
-			func() ResourceType { return typeFromRecord(m.Record) },
+			func() ResourceType { return typeFromRecord(buildRecord) },
 			func(v *ResourceType, active bool) { v.Active = active },
 		)
 	case KindAttributeDefinition:
@@ -81,7 +86,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 			func(v AttributeDefinition) bool {
 				return canonicalAttribute(v.Code) == canonicalAttribute(text(m.Record, "code"))
 			},
-			func() AttributeDefinition { return definitionFromRecord(m.Record) },
+			func() AttributeDefinition { return definitionFromRecord(buildRecord) },
 			nil, // no Active field on this Go struct yet (see CatalogKind.SoftDelete doc)
 		)
 	case KindOptionSet:
@@ -99,7 +104,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonicalAttribute(v.AttributeCode) == canonicalAttribute(ref(m.Record, "characteristic")) &&
 					v.Code == text(m.Record, "code")
 			},
-			func() AttributeOption { return optionFromRecord(m.Record) },
+			func() AttributeOption { return optionFromRecord(buildRecord) },
 			func(v *AttributeOption, active bool) { v.Active = active },
 		)
 	case KindOptionRelation:
@@ -108,13 +113,13 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 				return canonicalOptionSet(v.OptionSet) == canonicalOptionSet(ref(m.Record, "optionSet")) &&
 					v.FromOption == ref(m.Record, "fromOption") && v.ToOption == ref(m.Record, "toOption")
 			},
-			func() AttributeOptionRelation { return optionRelationFromRecord(m.Record) },
+			func() AttributeOptionRelation { return optionRelationFromRecord(buildRecord) },
 			nil,
 		)
 	case KindUnit:
 		next.Units, err = mutateSlice(c.Units, m.Op,
 			func(v UnitDefinition) bool { return canonical(v.Code) == canonical(text(m.Record, "code")) },
-			func() UnitDefinition { return unitFromRecord(m.Record) },
+			func() UnitDefinition { return unitFromRecord(buildRecord) },
 			func(v *UnitDefinition, active bool) { v.Active = active },
 		)
 	case KindUnitPolicy:
@@ -124,7 +129,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonical(v.FamilyCode) == canonical(ref(m.Record, "family")) &&
 					canonical(v.UnitCode) == canonical(ref(m.Record, "unit"))
 			},
-			func() ResourceUnitPolicy { return unitPolicyFromRecord(m.Record) },
+			func() ResourceUnitPolicy { return unitPolicyFromRecord(buildRecord) },
 			nil,
 		)
 	case KindAttributeBinding:
@@ -135,7 +140,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonical(v.TypeCode) == canonical(ref(m.Record, "type")) &&
 					canonicalAttribute(v.Definition.Code) == canonicalAttribute(ref(m.Record, "characteristic"))
 			},
-			func() ResourceAttribute { return c.attributeBindingFromRecord(m.Record) },
+			func() ResourceAttribute { return c.attributeBindingFromRecord(buildRecord) },
 			nil,
 		)
 	case KindPresentationField:
@@ -146,7 +151,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonical(v.TypeCode) == canonical(ref(m.Record, "type")) &&
 					canonicalAttribute(v.AttributeCode) == canonicalAttribute(ref(m.Record, "characteristic"))
 			},
-			func() PresentationField { return presentationFieldFromRecord(m.Record) },
+			func() PresentationField { return presentationFieldFromRecord(buildRecord) },
 			nil,
 		)
 	default:
