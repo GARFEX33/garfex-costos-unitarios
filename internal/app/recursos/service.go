@@ -71,40 +71,50 @@ func (s *Service) Describe(resource domain.Resource) string {
 	return catalog.Describe(resource)
 }
 
-// Create persists a new resource built by the caller via domain.NewResource
-// (this method does not itself validate — NewResource already did).
-func (s *Service) Create(ctx context.Context, resource domain.Resource) error {
+// Create constructs and validates a canonical resource before persistence.
+func (s *Service) Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+	catalog, _ := s.authority.Current()
+	resource, err := domain.NewResource(catalog, command.Scope, command.NaturalUnit, command.Attributes)
+	if err != nil {
+		return domain.Resource{}, err
+	}
 	if err := s.repo.Create(ctx, resource); err != nil {
 		if errors.Is(err, domain.ErrDuplicateResource) {
-			return domain.ErrDuplicateResource
+			return resource, domain.ErrDuplicateResource
 		}
 		if errors.Is(err, domain.ErrResourceReference) {
-			return domain.ErrResourceReference
+			return resource, domain.ErrResourceReference
 		}
-		return fmt.Errorf("create resource: %w", err)
+		return resource, fmt.Errorf("create resource: %w", err)
 	}
-	return nil
+	return resource, nil
 }
 
-// Update persists changes to an existing resource, identified by its stable
-// ID (independent of IdentityKey, which the update itself may change).
-func (s *Service) Update(ctx context.Context, resource domain.Resource) error {
-	if resource.ID == 0 {
-		return ErrInvalidArgument
+// Update constructs a canonical resource from intent and attaches only the
+// stable persistence ID supplied by the caller.
+func (s *Service) Update(ctx context.Context, command domain.UpdateCommand) (domain.Resource, error) {
+	if command.ID <= 0 {
+		return domain.Resource{}, ErrInvalidArgument
 	}
+	catalog, _ := s.authority.Current()
+	resource, err := domain.NewResource(catalog, command.Scope, command.NaturalUnit, command.Attributes)
+	if err != nil {
+		return domain.Resource{}, err
+	}
+	resource.ID = command.ID
 	if err := s.repo.Update(ctx, resource); err != nil {
 		if errors.Is(err, domain.ErrResourceNotFound) {
-			return domain.ErrResourceNotFound
+			return resource, domain.ErrResourceNotFound
 		}
 		if errors.Is(err, domain.ErrDuplicateResource) {
-			return domain.ErrDuplicateResource
+			return resource, domain.ErrDuplicateResource
 		}
 		if errors.Is(err, domain.ErrResourceReference) {
-			return domain.ErrResourceReference
+			return resource, domain.ErrResourceReference
 		}
-		return fmt.Errorf("update resource %d: %w", resource.ID, err)
+		return resource, fmt.Errorf("update resource %d: %w", resource.ID, err)
 	}
-	return nil
+	return resource, nil
 }
 
 // Delete soft-deletes a resource by its stable ID (toggles active=false —

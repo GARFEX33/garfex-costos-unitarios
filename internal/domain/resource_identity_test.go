@@ -27,7 +27,7 @@ func TestIdentityKey_HasClassSegmentFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResource() error = %v", err)
 	}
-	want := "MATERIAL|CONDUCTORES|CABLE|color=NEGRO|conductor_material=COBRE|gauge=12 AWG|insulation=THW|voltage=600 V"
+	want := "v1|8:MATERIAL11:CONDUCTORES5:CABLE5:color17:CONTROLLED_OPTION5:NEGRO18:conductor_material17:CONTROLLED_OPTION5:COBRE5:gauge17:CONTROLLED_OPTION6:12 AWG10:insulation17:CONTROLLED_OPTION3:THW7:voltage17:CONTROLLED_OPTION5:600 V"
 	if resource.IdentityKey != want {
 		t.Fatalf("IdentityKey = %q, want %q", resource.IdentityKey, want)
 	}
@@ -81,10 +81,10 @@ func TestIdentityKey_DiffersAcrossClassesWithIdenticalFamilyTypeAttributes(t *te
 	if one.IdentityKey == two.IdentityKey {
 		t.Fatalf("identical family/type/attribute values across two classes must not collide, both got %q", one.IdentityKey)
 	}
-	if want := "CLASS_ONE|SAMPLE|ITEM|tag=STANDARD"; one.IdentityKey != want {
+	if want := "v1|9:CLASS_ONE6:SAMPLE4:ITEM3:tag17:CONTROLLED_OPTION8:STANDARD"; one.IdentityKey != want {
 		t.Fatalf("IdentityKey(CLASS_ONE) = %q, want %q", one.IdentityKey, want)
 	}
-	if want := "CLASS_TWO|SAMPLE|ITEM|tag=STANDARD"; two.IdentityKey != want {
+	if want := "v1|9:CLASS_TWO6:SAMPLE4:ITEM3:tag17:CONTROLLED_OPTION8:STANDARD"; two.IdentityKey != want {
 		t.Fatalf("IdentityKey(CLASS_TWO) = %q, want %q", two.IdentityKey, want)
 	}
 	if ExactDuplicate(one, two) {

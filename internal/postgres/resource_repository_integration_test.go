@@ -67,8 +67,6 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.up.sql"); err != nil {
 		t.Fatalf("apply integrity migration: %v", err)
 	}
-	postUpLegacy := "TEST_RESOURCE_INTEGRITY_LEGACY_POST_UP"
-	postUpID := insertIntegrityResource(t, p, postUpLegacy)
 	var key, oldKey, mappedKey string
 	if err := p.QueryRow(ctx, `SELECT r.identity_key, m.legacy_identity_key, m.v1_identity_key
 		FROM public.recursos r JOIN public.resource_integrity_identity_map m ON m.resource_id=r.id
@@ -78,24 +76,35 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	if key != legacy || oldKey != legacy || mappedKey != "v1|8:MATERIAL11:CONDUCTORES5:CABLE18:conductor_material17:CONTROLLED_OPTION5:COBRE" {
 		t.Fatalf("identity mapping = %q/%q/%q, want unchanged legacy key %q and v1 mapping", key, oldKey, mappedKey, legacy)
 	}
-	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, postUpID).Scan(&key); err != nil {
-		t.Fatalf("read post-up identity: %v", err)
+	if err := applyResourceIntegrityMigration(p, "000006_resource_identity_v1.up.sql"); err != nil {
+		t.Fatalf("apply v1 migration: %v", err)
 	}
-	if key != postUpLegacy {
-		t.Fatalf("post-up identity = %q, want unchanged legacy key %q", key, postUpLegacy)
+	const admitted = "v1|8:MATERIAL11:CONDUCTORES5:CABLE18:conductor_material17:CONTROLLED_OPTION5:COBRE"
+	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, id).Scan(&key); err != nil || key != admitted {
+		t.Fatalf("rewritten identity = %q, error %v", key, err)
+	}
+	created := mustCreateResource(t, domain.SeedResourceCatalog(), conductoresScope, "M", []domain.ResourceAttributeValue{domain.OptionValue("conductor_material", "ALUMINIO"), domain.OptionValue("gauge", "12 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.OptionValue("voltage", "600 V")})
+	if err := NewResourceRepository(p).Create(ctx, created); err != nil {
+		t.Fatalf("post-up create: %v", err)
+	}
+	if err := applyResourceIntegrityMigration(p, "000006_resource_identity_v1.down.sql"); err != nil {
+		t.Fatalf("rollback v1 migration: %v", err)
+	}
+	var constraint bool
+	if err := p.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='recursos_identity_key_v1')`).Scan(&constraint); err != nil || constraint {
+		t.Fatalf("v1 constraint after rollback = %t, error %v", constraint, err)
 	}
 	if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.down.sql"); err != nil {
 		t.Fatalf("rollback integrity migration: %v", err)
 	}
-	var rolledBackKey, postUpRolledBackKey string
-	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, id).Scan(&rolledBackKey); err != nil {
-		t.Fatalf("read rolled-back identity: %v", err)
+	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, id).Scan(&key); err != nil || key != admitted {
+		t.Fatalf("admitted key after rollback = %q, error %v", key, err)
 	}
-	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, postUpID).Scan(&postUpRolledBackKey); err != nil {
-		t.Fatalf("read post-up rolled-back identity: %v", err)
+	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE identity_key=$1`, created.IdentityKey).Scan(&key); err != nil || key != created.IdentityKey {
+		t.Fatalf("post-up key after rollback = %q, error %v", key, err)
 	}
-	if rolledBackKey != legacy || postUpRolledBackKey != postUpLegacy {
-		t.Fatalf("rolled-back identities = %q/%q, want %q/%q", rolledBackKey, postUpRolledBackKey, legacy, postUpLegacy)
+	if _, err := p.Exec(ctx, `DELETE FROM public.recursos WHERE identity_key=$1`, created.IdentityKey); err != nil {
+		t.Fatalf("clean post-up resource: %v", err)
 	}
 	var mapExists, functionExists bool
 	if err := p.QueryRow(ctx, `SELECT to_regclass('public.resource_integrity_identity_map') IS NOT NULL,
@@ -189,7 +198,11 @@ func TestResourceRepositoryIntegration(t *testing.T) {
 			t.Fatalf("Create() insulated: %v", err)
 		}
 		assertRoundTrip(t, ctx, repo, insulated)
-		desnudo := domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", NaturalUnit: "M", IdentityKey: "MATERIAL|CONDUCTORES|CABLE|conductor_material=COBRE|gauge=12 AWG|insulation=DESNUDO", Attributes: []domain.ResourceAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "12 AWG"), domain.OptionValue("insulation", "DESNUDO"), {AttributeCode: "color", Type: domain.ValueTypeControlledOption, Text: notApplicableState}, {AttributeCode: "voltage", Type: domain.ValueTypeControlledOption, Text: notApplicableState}}}
+		desnudo, err := domain.HydrateResource(domain.ResourceSnapshot{ID: 1, ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", NaturalUnit: "M", IdentityKey: "v1|8:MATERIAL11:CONDUCTORES5:CABLE18:conductor_material17:CONTROLLED_OPTION5:COBRE5:gauge17:CONTROLLED_OPTION6:12 AWG10:insulation17:CONTROLLED_OPTION7:DESNUDO"})
+		if err != nil {
+			t.Fatalf("hydrate desnudo: %v", err)
+		}
+		desnudo.Attributes = []domain.ResourceAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "12 AWG"), domain.OptionValue("insulation", "DESNUDO"), {AttributeCode: "color", Type: domain.ValueTypeControlledOption, Text: notApplicableState}, {AttributeCode: "voltage", Type: domain.ValueTypeControlledOption, Text: notApplicableState}}
 		if err := repo.Create(ctx, desnudo); err != nil {
 			t.Fatalf("Create() desnudo: %v", err)
 		}

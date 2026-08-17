@@ -46,10 +46,17 @@ type fakeResourceCreator struct {
 	err         error
 }
 
-func (f *fakeResourceCreator) Create(_ context.Context, resource domain.Resource) error {
+func (f *fakeResourceCreator) Create(_ context.Context, command domain.CreateCommand) (domain.Resource, error) {
 	f.callCount++
+	resource, err := domain.NewResource(domain.SeedResourceCatalog(), command.Scope, command.NaturalUnit, command.Attributes)
+	if err != nil {
+		if command.Scope.ClassCode == "MATERIAL" {
+			return domain.Resource{}, err
+		}
+		resource = domain.Resource{ClassCode: command.Scope.ClassCode, FamilyCode: command.Scope.FamilyCode, TypeCode: command.Scope.TypeCode, NaturalUnit: command.NaturalUnit, Attributes: command.Attributes}
+	}
 	f.gotResource = resource
-	return f.err
+	return resource, f.err
 }
 
 // fakeResourceUpdater is the fake resourceUpdater used by the edit-flow
@@ -60,10 +67,18 @@ type fakeResourceUpdater struct {
 	err         error
 }
 
-func (f *fakeResourceUpdater) Update(_ context.Context, resource domain.Resource) error {
+func (f *fakeResourceUpdater) Update(_ context.Context, command domain.UpdateCommand) (domain.Resource, error) {
 	f.callCount++
+	resource, err := domain.NewResource(domain.SeedResourceCatalog(), command.Scope, command.NaturalUnit, command.Attributes)
+	if err != nil {
+		if command.Scope.ClassCode == "MATERIAL" {
+			return domain.Resource{}, err
+		}
+		resource = domain.Resource{ClassCode: command.Scope.ClassCode, FamilyCode: command.Scope.FamilyCode, TypeCode: command.Scope.TypeCode, NaturalUnit: command.NaturalUnit, Attributes: command.Attributes}
+	}
+	resource.ID = command.ID
 	f.gotResource = resource
-	return f.err
+	return resource, f.err
 }
 
 // newTestAdapter builds a ResourcesWorkspaceAdapter against the real

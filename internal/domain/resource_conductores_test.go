@@ -129,7 +129,7 @@ func TestVoltageBehavesLikeAnyControlledOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResource() error = %v", err)
 	}
-	want := "MATERIAL|CONDUCTORES|CABLE|color=NEGRO|conductor_material=COBRE|gauge=10 AWG|insulation=THW|voltage=600 V"
+	want := "v1|8:MATERIAL11:CONDUCTORES5:CABLE5:color17:CONTROLLED_OPTION5:NEGRO18:conductor_material17:CONTROLLED_OPTION5:COBRE5:gauge17:CONTROLLED_OPTION6:10 AWG10:insulation17:CONTROLLED_OPTION3:THW7:voltage17:CONTROLLED_OPTION5:600 V"
 	if resource.IdentityKey != want {
 		t.Errorf("IdentityKey = %q, want %q", resource.IdentityKey, want)
 	}

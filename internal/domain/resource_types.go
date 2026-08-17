@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/shopspring/decimal"
 )
@@ -151,6 +152,47 @@ type Resource struct {
 	NaturalUnit string
 	Attributes  []ResourceAttributeValue
 	IdentityKey string
+	canonical   bool
+}
+
+type CreateCommand struct {
+	Scope       ResourceScope
+	NaturalUnit string
+	Attributes  []ResourceAttributeValue
+}
+
+type UpdateCommand struct {
+	ID          int64
+	Scope       ResourceScope
+	NaturalUnit string
+	Attributes  []ResourceAttributeValue
+}
+
+type ResourceSnapshot struct {
+	ID          int64
+	ClassCode   string
+	FamilyCode  string
+	TypeCode    string
+	NaturalUnit string
+	Attributes  []ResourceAttributeValue
+	IdentityKey string
+}
+
+func HydrateResource(snapshot ResourceSnapshot) (Resource, error) {
+	if snapshot.ID <= 0 || strings.TrimSpace(snapshot.ClassCode) == "" || strings.TrimSpace(snapshot.FamilyCode) == "" || strings.TrimSpace(snapshot.TypeCode) == "" || strings.TrimSpace(snapshot.NaturalUnit) == "" {
+		return Resource{}, validation("resource snapshot is incomplete")
+	}
+	if !strings.HasPrefix(snapshot.IdentityKey, "v1|") {
+		return Resource{}, validation("resource snapshot identity is not v1")
+	}
+	return Resource{ID: snapshot.ID, ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode, NaturalUnit: snapshot.NaturalUnit, Attributes: append([]ResourceAttributeValue(nil), snapshot.Attributes...), IdentityKey: snapshot.IdentityKey, canonical: true}, nil
+}
+
+func (r Resource) ValidateForPersistence() error {
+	if !r.canonical {
+		return ErrResourceReference
+	}
+	return nil
 }
 
 // SearchCriteria narrows a Search over the resource catalog. All fields
@@ -175,8 +217,8 @@ type SearchCriteria struct {
 }
 
 // ResourceRepository persists and retrieves the complete technical
-// aggregate. NaturalUnit is stored metadata; IdentityKey is the
-// deterministic lookup key. Get's first argument is the owning class code
+// aggregate. NaturalUnit is stored metadata; IdentityKey is the deterministic
+// lookup key. Get's first argument is the owning class code
 // (design R1): IdentityKey already encodes class|family|type, so class+key
 // is the minimal complete lookup.
 type ResourceRepository interface {

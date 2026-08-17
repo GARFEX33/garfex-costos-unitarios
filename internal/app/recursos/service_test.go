@@ -190,33 +190,34 @@ func TestServiceSearch(t *testing.T) {
 
 func TestServiceUpdate(t *testing.T) {
 	repositoryError := errors.New("connection lost")
+	command := domain.UpdateCommand{ID: 1, Scope: domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}, NaturalUnit: "M", Attributes: []domain.ResourceAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "12 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.OptionValue("voltage", "600 V")}}
 	cases := []struct {
 		name       string
-		resource   domain.Resource
+		command    domain.UpdateCommand
 		repoErr    error
 		wantErr    error
 		wantCalled bool
 	}{
-		{name: "happy path calls through", resource: domain.Resource{ID: 1, ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "MATERIAL|CONDUCTORES|a"}, wantCalled: true},
-		{name: "rejects zero id", resource: domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "MATERIAL|CONDUCTORES|a"}, wantErr: ErrInvalidArgument},
-		{name: "propagates not found", resource: domain.Resource{ID: 1}, repoErr: domain.ErrResourceNotFound, wantErr: domain.ErrResourceNotFound, wantCalled: true},
-		{name: "propagates duplicate", resource: domain.Resource{ID: 1}, repoErr: domain.ErrDuplicateResource, wantErr: domain.ErrDuplicateResource, wantCalled: true},
-		{name: "propagates reference error", resource: domain.Resource{ID: 1}, repoErr: domain.ErrResourceReference, wantErr: domain.ErrResourceReference, wantCalled: true},
-		{name: "wraps repository error", resource: domain.Resource{ID: 1}, repoErr: repositoryError, wantErr: repositoryError, wantCalled: true},
+		{name: "happy path calls through", command: command, wantCalled: true},
+		{name: "rejects zero id", command: func() domain.UpdateCommand { c := command; c.ID = 0; return c }(), wantErr: ErrInvalidArgument},
+		{name: "propagates not found", command: command, repoErr: domain.ErrResourceNotFound, wantErr: domain.ErrResourceNotFound, wantCalled: true},
+		{name: "propagates duplicate", command: command, repoErr: domain.ErrDuplicateResource, wantErr: domain.ErrDuplicateResource, wantCalled: true},
+		{name: "propagates reference error", command: command, repoErr: domain.ErrResourceReference, wantErr: domain.ErrResourceReference, wantCalled: true},
+		{name: "wraps repository error", command: command, repoErr: repositoryError, wantErr: repositoryError, wantCalled: true},
 	}
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{updateErr: tt.repoErr}
-			err := NewService(repo, domain.SeedResourceCatalog()).Update(context.Background(), tt.resource)
+			got, err := NewService(repo, domain.SeedResourceCatalog()).Update(context.Background(), tt.command)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Update() error = %v, want %v", err, tt.wantErr)
 			}
 			if !tt.wantCalled && repo.gotUpdate.ID != 0 {
 				t.Fatalf("repository called with %+v", repo.gotUpdate)
 			}
-			if tt.wantCalled && !reflect.DeepEqual(repo.gotUpdate, tt.resource) {
-				t.Fatalf("repository called with %+v, want %+v", repo.gotUpdate, tt.resource)
+			if tt.wantCalled && !reflect.DeepEqual(repo.gotUpdate, got) {
+				t.Fatalf("repository called with %+v, want %+v", repo.gotUpdate, got)
 			}
 			if tt.repoErr == repositoryError && !strings.Contains(err.Error(), "update resource") {
 				t.Fatalf("Update() error = %v, want prefix %q", err, "update resource")
@@ -227,6 +228,7 @@ func TestServiceUpdate(t *testing.T) {
 
 func TestServiceCreate(t *testing.T) {
 	repositoryError := errors.New("connection lost")
+	command := domain.CreateCommand{Scope: domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}, NaturalUnit: "M", Attributes: []domain.ResourceAttributeValue{domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "12 AWG"), domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.OptionValue("voltage", "600 V")}}
 	cases := []struct {
 		name    string
 		repoErr error
@@ -238,16 +240,15 @@ func TestServiceCreate(t *testing.T) {
 		{name: "wraps repository error", repoErr: repositoryError, wantErr: repositoryError},
 	}
 
-	resource := domain.Resource{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "MATERIAL|CONDUCTORES|a"}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{createErr: tt.repoErr}
-			err := NewService(repo, domain.SeedResourceCatalog()).Create(context.Background(), resource)
+			got, err := NewService(repo, domain.SeedResourceCatalog()).Create(context.Background(), command)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Create() error = %v, want %v", err, tt.wantErr)
 			}
-			if !reflect.DeepEqual(repo.gotCreate, resource) {
-				t.Fatalf("repository called with %+v, want %+v", repo.gotCreate, resource)
+			if !reflect.DeepEqual(repo.gotCreate, got) {
+				t.Fatalf("repository called with %+v, want %+v", repo.gotCreate, got)
 			}
 			if tt.repoErr == repositoryError && !strings.Contains(err.Error(), "create resource") {
 				t.Fatalf("Create() error = %v, want prefix %q", err, "create resource")
