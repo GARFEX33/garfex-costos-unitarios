@@ -11,6 +11,10 @@ import (
 // deterministic IdentityKey, now class-prefixed (design: "class|family|type|
 // sorted(code=canonicalValue...)").
 func NewResource(catalog ResourceCatalog, scope ResourceScope, naturalUnit string, values []ResourceAttributeValue) (Resource, error) {
+	return newResource(catalog, scope, naturalUnit, values, true)
+}
+
+func newResource(catalog ResourceCatalog, scope ResourceScope, naturalUnit string, values []ResourceAttributeValue, requireActive bool) (Resource, error) {
 	scope = scope.canonicalize()
 	if !catalog.hasFamily(scope) {
 		return Resource{}, validation("family %q is not defined for class %q", scope.FamilyCode, scope.ClassCode)
@@ -38,6 +42,11 @@ func NewResource(catalog ResourceCatalog, scope ResourceScope, naturalUnit strin
 			return Resource{}, err
 		}
 		byCode[code] = canonicalValue
+	}
+	if requireActive {
+		if err := catalog.validateActiveChain(scope, naturalUnit, attributes, byCode); err != nil {
+			return Resource{}, err
+		}
 	}
 	if err := catalog.validateRelations(attributes, byCode); err != nil {
 		return Resource{}, err
@@ -80,6 +89,7 @@ func NewResource(catalog ResourceCatalog, scope ResourceScope, naturalUnit strin
 		NaturalUnit: naturalUnit,
 		Attributes:  canonicalValues,
 		IdentityKey: "v1|" + identityComponent(scope.ClassCode) + identityComponent(scope.FamilyCode) + identityComponent(scope.TypeCode) + strings.Join(identity, ""),
+		Active:      true,
 		canonical:   true,
 	}, nil
 }
@@ -98,7 +108,7 @@ func RehydrateResource(catalog ResourceCatalog, snapshot ResourceSnapshot) (Reso
 			applicable = append(applicable, value)
 		}
 	}
-	resource, err := NewResource(catalog, ResourceScope{ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode}, snapshot.NaturalUnit, applicable)
+	resource, err := newResource(catalog, ResourceScope{ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode}, snapshot.NaturalUnit, applicable, false)
 	if err != nil {
 		return Resource{}, err
 	}
@@ -106,6 +116,7 @@ func RehydrateResource(catalog ResourceCatalog, snapshot ResourceSnapshot) (Reso
 		return Resource{}, validation("stored identity %q does not match canonical identity %q", snapshot.IdentityKey, resource.IdentityKey)
 	}
 	resource.ID = snapshot.ID
+	resource.Active = snapshot.Active
 	for _, value := range snapshot.Attributes {
 		if value.Text == NotApplicableText {
 			resource.Attributes = append(resource.Attributes, value)
@@ -115,6 +126,97 @@ func RehydrateResource(catalog ResourceCatalog, snapshot ResourceSnapshot) (Reso
 		return resource.Attributes[i].AttributeCode < resource.Attributes[j].AttributeCode
 	})
 	return resource, nil
+}
+
+func (c ResourceCatalog) validateActiveChain(scope ResourceScope, naturalUnit string, attributes map[string]ResourceAttribute, values map[string]ResourceAttributeValue) error {
+	if !c.activeSemanticsEnabled() {
+		return nil
+	}
+	scope = scope.canonicalize()
+	for _, class := range c.Classes {
+		if canonical(class.Code) == scope.ClassCode && !class.Active {
+			return validationReference("class %q is inactive", scope.ClassCode)
+		}
+	}
+	for _, family := range c.Families {
+		if canonical(family.ClassCode) == scope.ClassCode && canonical(family.Code) == scope.FamilyCode && !family.Active {
+			return validationReference("family %q is inactive", scope.FamilyCode)
+		}
+	}
+	for _, typ := range c.Types {
+		if canonical(typ.ClassCode) == scope.ClassCode && canonical(typ.FamilyCode) == scope.FamilyCode && canonical(typ.Code) == scope.TypeCode && !typ.Active {
+			return validationReference("type %q is inactive", scope.TypeCode)
+		}
+	}
+	unit := canonical(naturalUnit)
+	unitActive := false
+	for _, candidate := range c.Units {
+		if canonical(candidate.Code) == unit {
+			unitActive = candidate.Active
+			break
+		}
+	}
+	if !unitActive {
+		return validationReference("unit %q is inactive", unit)
+	}
+	policyActive := false
+	for _, policy := range c.UnitPolicies {
+		if canonical(policy.ClassCode) == scope.ClassCode && canonical(policy.FamilyCode) == scope.FamilyCode && canonical(policy.UnitCode) == unit && policy.Allowed {
+			policyActive = policy.Active
+			break
+		}
+	}
+	if !policyActive {
+		return validationReference("unit policy for %q is inactive or unavailable", unit)
+	}
+	for code, attribute := range attributes {
+		definitionActive := attribute.Definition.Active
+		for _, definition := range c.Definitions {
+			if canonicalAttribute(definition.Code) == code {
+				definitionActive = definition.Active
+				break
+			}
+		}
+		if !attribute.Active || !definitionActive {
+			return validationReference("attribute %q is inactive", code)
+		}
+		if !c.activeOptionSet(attribute.OptionSet) {
+			return validationReference("option set for attribute %q is inactive", code)
+		}
+		for _, rule := range attribute.Rules {
+			if !rule.Active {
+				return validationReference("rule for attribute %q is inactive", code)
+			}
+		}
+		if value, ok := values[code]; ok && value.Type == ValueTypeControlledOption {
+			for _, option := range c.Options {
+				if canonicalAttribute(option.AttributeCode) == code && canonicalOptionSet(option.OptionSet) == attribute.setKey() && option.Code == value.OptionCode {
+					if !option.Active {
+						return validationReference("option %q for attribute %q is inactive", option.Code, code)
+					}
+					break
+				}
+			}
+		}
+	}
+	for _, relation := range c.Relations {
+		from, to := canonicalAttribute(relation.FromAttribute), canonicalAttribute(relation.ToAttribute)
+		if _, fromOK := attributes[from]; !fromOK {
+			continue
+		}
+		if _, toOK := attributes[to]; !toOK {
+			continue
+		}
+		set := canonicalOptionSet(relation.OptionSet)
+		if set == attributes[from].setKey() && set == attributes[to].setKey() && !relation.Active {
+			return validationReference("relation between %q and %q is inactive", from, to)
+		}
+	}
+	return nil
+}
+
+func validationReference(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrResourceReference, fmt.Sprintf(format, args...))
 }
 
 // hasFamily reports whether scope's FamilyCode is defined within scope's

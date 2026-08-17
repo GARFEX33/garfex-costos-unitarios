@@ -46,5 +46,6 @@ func cloneResourceCatalog(c ResourceCatalog) ResourceCatalog {
 		next.Attributes[i].Rules = append([]AttributeRule(nil), c.Attributes[i].Rules...)
 	}
 	next.Options, next.Relations = append([]AttributeOption(nil), c.Options...), append([]AttributeOptionRelation(nil), c.Relations...)
+	next.OptionSets = append([]ResourceOptionSet(nil), c.OptionSets...)
 	return next
 }

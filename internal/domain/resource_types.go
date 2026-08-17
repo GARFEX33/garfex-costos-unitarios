@@ -47,6 +47,7 @@ type PresentationField struct {
 	TypeCode      string
 	AttributeCode string
 	Position      int
+	Active        bool
 }
 
 // NotApplicableText is the sentinel domain.ResourceAttributeValue.Text value
@@ -70,6 +71,7 @@ type AttributeDefinition struct {
 	ValueType                   AttributeValueType
 	Dimension                   string
 	DefaultIdentityParticipates bool
+	Active                      bool
 }
 
 type AttributeCondition struct {
@@ -82,6 +84,7 @@ type AttributeRule struct {
 	Mode                 AttributeMode
 	IdentityParticipates bool
 	NotApplicable        bool
+	Active               bool
 }
 
 // AttributeOption is one controlled value. OptionSet (design D3) names the
@@ -152,6 +155,7 @@ type Resource struct {
 	NaturalUnit string
 	Attributes  []ResourceAttributeValue
 	IdentityKey string
+	Active      bool
 	canonical   bool
 }
 
@@ -176,6 +180,7 @@ type ResourceSnapshot struct {
 	NaturalUnit string
 	Attributes  []ResourceAttributeValue
 	IdentityKey string
+	Active      bool
 }
 
 func HydrateResource(snapshot ResourceSnapshot) (Resource, error) {
@@ -185,7 +190,7 @@ func HydrateResource(snapshot ResourceSnapshot) (Resource, error) {
 	if !strings.HasPrefix(snapshot.IdentityKey, "v1|") {
 		return Resource{}, validation("resource snapshot identity is not v1")
 	}
-	return Resource{ID: snapshot.ID, ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode, NaturalUnit: snapshot.NaturalUnit, Attributes: append([]ResourceAttributeValue(nil), snapshot.Attributes...), IdentityKey: snapshot.IdentityKey, canonical: true}, nil
+	return Resource{ID: snapshot.ID, ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode, NaturalUnit: snapshot.NaturalUnit, Attributes: append([]ResourceAttributeValue(nil), snapshot.Attributes...), IdentityKey: snapshot.IdentityKey, Active: snapshot.Active, canonical: true}, nil
 }
 
 func (r Resource) ValidateForPersistence() error {
@@ -239,6 +244,7 @@ type AttributeOptionRelation struct {
 	FromOption    string
 	ToAttribute   string
 	ToOption      string
+	Active        bool
 }
 
 // ResourceCatalog is the unified Clase/Familia/Tipo/Atributo catalog
@@ -258,4 +264,11 @@ type ResourceCatalog struct {
 	Attributes         []ResourceAttribute
 	Options            []AttributeOption
 	Relations          []AttributeOptionRelation
+	OptionSets         []ResourceOptionSet
+}
+
+type ResourceOptionSet struct {
+	Code   string
+	Name   string
+	Active bool
 }

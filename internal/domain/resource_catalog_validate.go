@@ -52,6 +52,7 @@ type ResourceAttribute struct {
 	Mode                            AttributeMode
 	IdentityParticipates            bool
 	Rules                           []AttributeRule
+	Active                          bool
 }
 
 // ResourceUnitPolicy is the class/family-scoped analogue of the retired
@@ -59,6 +60,7 @@ type ResourceAttribute struct {
 type ResourceUnitPolicy struct {
 	ClassCode, FamilyCode, UnitCode string
 	Allowed, Suggested              bool
+	Active                          bool
 }
 
 // Validate reports every structural defect in the catalog at once via
@@ -119,6 +121,21 @@ func (c ResourceCatalog) hasOptionSet(optionSet string) bool {
 	}
 	return false
 }
+
+func (c ResourceCatalog) activeOptionSet(optionSet string) bool {
+	if !c.activeSemanticsEnabled() {
+		return true
+	}
+	set := canonicalOptionSet(optionSet)
+	for _, optionSet := range c.OptionSets {
+		if canonicalOptionSet(optionSet.Code) == set {
+			return optionSet.Active
+		}
+	}
+	return false
+}
+
+func (c ResourceCatalog) activeSemanticsEnabled() bool { return len(c.OptionSets) > 0 }
 
 func (c ResourceCatalog) hasUnitCode(unitCode string) bool {
 	unitCode = canonical(unitCode)

@@ -128,3 +128,75 @@ func TestLoadResourceCatalogIntegration(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadResourceCatalogPreservesEveryActiveFlag(t *testing.T) {
+	dsn := os.Getenv("GARFEX_ADMIN_TEST_DSN")
+	if dsn == "" {
+		t.Skip("GARFEX_ADMIN_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	updates := []string{
+		`UPDATE resource_classes SET active=false WHERE code='MATERIAL'`,
+		`UPDATE resource_option_sets SET active=false WHERE code='DEFAULT'`,
+		`UPDATE resource_families SET active=false WHERE code='CONDUCTORES'`,
+		`UPDATE resource_types SET active=false WHERE code='CABLE'`,
+		`UPDATE unit_definitions SET active=false WHERE code='M'`,
+		`UPDATE resource_unit_policies p SET active=false FROM resource_families f, unit_definitions u WHERE p.family_id=f.id AND p.unit_id=u.id AND f.code='CONDUCTORES' AND u.code='M'`,
+		`UPDATE attribute_definitions SET active=false WHERE code='gauge'`,
+		`UPDATE resource_attributes ra SET active=false FROM attribute_definitions d WHERE ra.definition_id=d.id AND d.code='gauge'`,
+		`UPDATE resource_attribute_rules rr SET active=false FROM resource_attributes ra JOIN attribute_definitions d ON d.id=ra.definition_id WHERE rr.resource_attribute_id=ra.id AND d.code='color'`,
+		`UPDATE attribute_options SET active=false WHERE attribute_definition_id=(SELECT id FROM attribute_definitions WHERE code='conductor_material') AND code='COBRE'`,
+		`UPDATE attribute_option_relations SET active=false WHERE id=(SELECT min(id) FROM attribute_option_relations)`,
+		`UPDATE resource_type_presentation_fields pf SET active=false FROM resource_types t WHERE pf.type_id=t.id AND t.code='CABLE' AND pf.position=1`,
+	}
+	for _, query := range updates {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatalf("deactivate catalog flag with %q: %v", query, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, table := range []string{"resource_classes", "resource_option_sets", "resource_families", "resource_types", "unit_definitions", "resource_unit_policies", "attribute_definitions", "resource_attributes", "resource_attribute_rules", "attribute_options", "attribute_option_relations", "resource_type_presentation_fields"} {
+			if _, err := pool.Exec(ctx, "UPDATE "+table+" SET active=true"); err != nil {
+				t.Errorf("restore %s active flags: %v", table, err)
+			}
+		}
+	})
+	catalog, err := LoadResourceCatalog(ctx, pool)
+	if err != nil {
+		t.Fatalf("LoadResourceCatalog() error = %v", err)
+	}
+	if catalog.Classes[0].Active || catalog.OptionSets[0].Active || catalog.Families[0].Active || catalog.Types[0].Active || catalog.Units[0].Active {
+		t.Fatalf("parent active flags were not preserved: class=%t option-set=%t family=%t type=%t unit=%t", catalog.Classes[0].Active, catalog.OptionSets[0].Active, catalog.Families[0].Active, catalog.Types[0].Active, catalog.Units[0].Active)
+	}
+	for _, policy := range catalog.UnitPolicies {
+		if policy.FamilyCode == "CONDUCTORES" && policy.UnitCode == "M" && policy.Active {
+			t.Fatal("unit policy active flag was not preserved")
+		}
+	}
+	for _, definition := range catalog.Definitions {
+		if definition.Code == "gauge" && definition.Active {
+			t.Fatal("definition active flag was not preserved")
+		}
+	}
+	for _, attribute := range catalog.Attributes {
+		if attribute.Definition.Code == "gauge" && attribute.Active {
+			t.Fatal("attribute binding active flag was not preserved")
+		}
+		if attribute.Definition.Code == "color" && attribute.Rules[0].Active {
+			t.Fatal("rule active flag was not preserved")
+		}
+	}
+	for _, option := range catalog.Options {
+		if option.AttributeCode == "conductor_material" && option.Code == "COBRE" && option.Active {
+			t.Fatal("option active flag was not preserved")
+		}
+	}
+	if catalog.Relations[0].Active || catalog.PresentationFields[0].Active {
+		t.Fatal("relation or presentation active flag was not preserved")
+	}
+}
