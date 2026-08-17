@@ -1,7 +1,6 @@
-// Package recursos provides application use cases for the unified resource
-// master read model (materials, mano de obra, equipos/herramientas — design
-// §4). It renames and supersedes the retired internal/app/materiales
-// package: same thin passthrough shape, class-scoped lookups (design R1).
+// Package recursos provides the application use cases for the unified
+// Resource Master. It owns construction and validation before repository
+// calls, and exposes class-scoped reads plus explicit lifecycle transitions.
 package recursos
 
 import (
@@ -22,8 +21,8 @@ type Service struct {
 	authority *domain.CatalogAuthority
 }
 
-// NewService returns a Service backed by repo, using catalog to resolve
-// catalog-controlled concerns such as canonical presentation.
+// NewService returns a Service whose catalog authority constructs and validates
+// write candidates before the domain repository is called.
 func NewService(repo domain.ResourceRepository, catalog domain.ResourceCatalog) *Service {
 	return NewServiceWithCatalogAuthority(repo, domain.NewCatalogAuthority(catalog))
 }
@@ -151,7 +150,8 @@ func (s *Service) Deactivate(ctx context.Context, id int64) (domain.LifecycleRes
 	return result, nil
 }
 
-// Delete keeps the existing TUI compile-safe until PR6B.
+// Delete is a compatibility alias for Deactivate. It never physically removes
+// a resource; new callers should use the explicit lifecycle method.
 func (s *Service) Delete(ctx context.Context, id int64) error {
 	_, err := s.Deactivate(ctx, id)
 	if err == nil || errors.Is(err, ErrInvalidArgument) || errors.Is(err, domain.ErrResourceNotFound) {

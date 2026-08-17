@@ -537,7 +537,7 @@ func (a *ResourcesWorkspaceAdapter) attributeQuestion(attribute domain.ResourceA
 }
 
 // answerAttribute handles the answer for state.attributes[state.nextIndex]
-// during CREATE's/EDIT's legacy sequential walkthrough (advanceEditor).
+// during the create/edit sequential walkthrough (advanceEditor).
 func (a *ResourcesWorkspaceAdapter) answerAttribute(value string) InteractionResponse {
 	state := a.editor
 	attribute := state.attributes[state.nextIndex]

@@ -12,10 +12,9 @@ import (
 
 type resourceRepository struct{ pool *pgxpool.Pool }
 
-// NewResourceRepository returns a repository for the unified Resource Master
-// schema (recursos-maestro; formerly Materials Master). Every query is
-// scoped by the owning class (design R1): Get's first argument is a class
-// code, not a family code — the two are never interchangeable.
+// NewResourceRepository returns the PostgreSQL implementation of the Resource
+// repository port. Reads remain class-scoped and include inactive historical
+// rows; writes require canonical resources and active catalog references.
 func NewResourceRepository(pool *pgxpool.Pool) domain.ResourceRepository {
 	return &resourceRepository{pool: pool}
 }

@@ -29,7 +29,7 @@ const (
 )
 
 // ErrResourceValidation and ErrResourceReference are declared in
-// resource_catalog_validate.go (added in PR1) — do not redeclare here.
+// resource_catalog_validate.go.
 var (
 	ErrDuplicateResource = errors.New("duplicate resource")
 	ErrResourceNotFound  = errors.New("resource not found")
@@ -230,16 +230,13 @@ func (r Resource) ValidateForPersistence() error {
 	return nil
 }
 
-// SearchCriteria narrows a Search over the resource catalog. All fields
-// combine with AND; a zero-value criteria matches every active resource.
+// SearchCriteria narrows a Resource search. All fields combine with AND; a
+// zero-value criteria matches every active resource. SearchPage normalizes the
+// bounded page fields before they reach the repository.
 type SearchCriteria struct {
 	// Text, when non-empty, is matched case-insensitively as a partial
 	// substring against the resource identity key or its family code/name.
 	//
-	// This is the initial textual implementation over the existing schema,
-	// not a permanent guarantee of the public SearchMaterials contract
-	// shape: a future change may swap in a dedicated search layer without
-	// changing this Go signature.
 	Text       string
 	ClassCode  string
 	FamilyCode string
@@ -277,17 +274,18 @@ type ResourcePage struct {
 	HasNext     bool
 }
 
-// ResourceRepository persists and retrieves the complete technical
-// aggregate. NaturalUnit is stored metadata; IdentityKey is the deterministic
-// lookup key. Get's first argument is the owning class code
-// (design R1): IdentityKey already encodes class|family|type, so class+key
-// is the minimal complete lookup.
+// ResourceRepository is the domain port for canonical Resource persistence and
+// historical reads. The application service constructs canonical resources;
+// implementations preserve the stored ID on update, scope lookups by class,
+// and expose explicit lifecycle transitions. IdentityKey is the v1 lookup key
+// and already encodes class|family|type, so class+key is the minimal lookup.
 type ResourceRepository interface {
 	Create(context.Context, Resource) error
 	Get(context.Context, string, string) (Resource, error)
 	Search(context.Context, SearchCriteria) ([]Resource, error)
 	Update(context.Context, Resource) error
-	// SetActive temporarily keeps the pre-lifecycle TUI compile-safe for PR6B.
+	// SetActive remains a compatibility alias; callers use Deactivate or
+	// Reactivate for explicit lifecycle intent.
 	SetActive(context.Context, int64, bool) error
 	Deactivate(context.Context, int64) (LifecycleResult, error)
 	Reactivate(context.Context, int64, string) (LifecycleResult, error)
@@ -310,12 +308,11 @@ type AttributeOptionRelation struct {
 	Active        bool
 }
 
-// ResourceCatalog is the unified Clase/Familia/Tipo/Atributo catalog
-// (design §2). ResourceClass, ResourceFamily, ResourceType,
+// ResourceCatalog is the unified Clase/Familia/Tipo/Atributo catalog.
+// ResourceClass, ResourceFamily, ResourceType,
 // ResourceAttribute, ResourceUnitPolicy, and Validate()/its helpers are
-// declared in resource_class.go / resource_scope.go / resource_catalog_validate.go
-// (PR1) — extended here with the remaining design §2 fields rather than
-// redeclared.
+// declared in resource_class.go, resource_scope.go, and
+// resource_catalog_validate.go.
 type ResourceCatalog struct {
 	Classes            []ResourceClass
 	Families           []ResourceFamily

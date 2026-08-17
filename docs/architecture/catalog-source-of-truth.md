@@ -1,44 +1,93 @@
-# Catalog Source of Truth
+# Resource Master Source of Truth
 
-PostgreSQL is the canonical runtime source for catalog *structure* — Clase, Familia, Tipo, Característica, Conjunto de Opciones, Opción, Unidad, Política de Unidad, Aplicabilidad/Identidad, and Presentación. This deliberately **supersedes `recursos-maestro`'s D10 decision** ("Code is the referential-integrity join key only, never rendered — the Go literal stays the runtime source of truth for names/order/aliases/keywords").
+This guide records the decisions reviewers and operators must use when tracing Resource Master writes, reads, lifecycle, and search. Supplier Master is a separate bounded context.
 
-## Boundary at a glance
+## Decisions first
 
-| Concern | Before (D10) | After (this ADR) |
-| --- | --- | --- |
-| Catalog structure at boot | `domain.NewResourceCatalog()` Go literal | `postgres.LoadResourceCatalog` hydrates `domain.ResourceCatalog` from PostgreSQL |
-| PostgreSQL's role for structure | Referential integrity only; Code columns joined by repositories/tests, never rendered | Canonical source; every field (names, order, aliases, keywords) is authoritative |
-| Extending the catalog | Requires a Go code change, a build, and a deploy | Staff-authored from the app (`Configuración`); no code change |
-| Boot failure surface | Invalid catalog only | DB unreachable / catálogo vacío / catálogo inválido — three distinct Spanish diagnostics |
-| Resource *instances* (Material/Mano de obra/Equipo-Herramienta records) | PostgreSQL-backed (`recursos-maestro`) | Unchanged — already canonical before this change |
-| `domain.ResourceCatalog` Go type | The in-memory shape `Validate()` and the query API operate on | Unchanged — same type, same validation role |
+| Concern | Authoritative decision | Concrete boundary |
+|---|---|---|
+| Construction | The application owns canonical Resource construction and validation. The TUI submits intent; it does not establish validity. | `internal/app/recursos/service.go`, `internal/domain/resource_validation.go` |
+| Identity | A v1 key is derived from class, family, type, and identity-participating canonical attributes. Natural unit, display data, and non-identity attributes do not change it. | `internal/domain/resource_validation.go`, `internal/domain/resource_types.go` |
+| Persistence | PostgreSQL is the source of truth for Resource instances and attribute values. The repository is reached through the domain port. | `internal/domain/resource_types.go`, `internal/postgres/resource_repository_crud.go` |
+| Lifecycle | Deactivation is non-destructive. `Deactivate` and `Reactivate` are explicit transitions; historical rows remain readable. | `internal/app/recursos/service.go`, `internal/postgres/resource_repository_crud.go` |
+| Search | Active resources are the default. Inactive discovery is explicit. Search pages are bounded, stable, filter-preserving, and set-hydrated. | `internal/domain/resource_types.go`, `internal/postgres/resource_repository_search.go`, `internal/tui/resources_workspace_dispatch.go` |
+| Supplier | Supplier data and behavior are not Resource Master authority. Do not infer a shared model or workflow. | `internal/modules/suppliers/` |
+
+## Authority boundaries
 
 ```text
-before (D10):  NewResourceCatalog() [Go literal, runtime source] ──> ResourceCatalog ──> Validate()
-
-after:         PostgreSQL [canonical] ──LoadResourceCatalog──> ResourceCatalog ──> Validate()
-                     ^
-                     └── staff writes via Configuración (internal/app/catalogo, validate-before-persist)
+TUI intent
+  -> internal/app/recursos.Service
+  -> internal/domain.NewResource / ResourceRepository port
+  -> PostgreSQL recursos + resource_attribute_values
 ```
 
-## What changed
+- `Service.Create` and `Service.Update` load the current `CatalogAuthority`, call `domain.NewResource`, and only then invoke the repository. The caller-provided update ID is the stable storage identity; the v1 `IdentityKey` is re-derived.
+- `domain.HydrateResource` accepts repository snapshots only when the stored identity is v1 and the required resource fields are present. `SeedResourceCatalog` is fixture/seed data, not a replacement for persisted Resource rows.
+- The TUI uses application contracts for create, update, get, lifecycle, and `SearchPage`. `ResourcesWorkspaceAdapter.searchPage` rejects a legacy collection-only dependency instead of fabricating page metadata.
 
-PostgreSQL becomes canonical for catalog *structure*: the ~10 administrable concepts named above. `postgres.LoadResourceCatalog` hydrates the existing `domain.ResourceCatalog` at boot, from PostgreSQL, inside one read-only transaction. Admin writes flow through `internal/app/catalogo.Service`, which validates a proposed mutation against `ResourceCatalog.Validate()` **before** persisting anything, then refreshes the in-process snapshot only on success.
+## Write and read flow
 
-`NewResourceCatalog()` is renamed `SeedResourceCatalog()` and demoted to a non-production seed/fixture: it continues to back unit-test fixtures (many tests already depend on it) and an optional dev command, but `cmd/garfex/main.go` never calls it. The canonical initial catalog data is authored as SQL migrations — this was already true as of `migrations/000002_resource_master.up.sql`, which independently seeds content matching `NewResourceCatalog()`'s literal. This change therefore does not require a re-seed migration, only the schema gaps (`active`/audit columns, ordering, multi-rule support, and `garfex_app` write grants) that let that already-seeded data become writable and staff-administrable.
+| Flow | Steps | Failure boundary |
+|---|---|---|
+| Create/update | TUI intent → application catalog validation → canonical domain Resource → repository transaction → PostgreSQL | Invalid or forged input fails before persistence; scoped target/cardinality failures roll back the transaction. |
+| Get | Class + v1 identity → PostgreSQL base row → shared effective-value loader → domain hydration | Inactive catalog references do not hide a historical Resource; effective-attribute ambiguity or effective-value metadata/decode/required-value integrity failures return `ErrResourceIntegrity`. Malformed base snapshots may return domain validation errors. |
+| SearchPage | Normalized criteria → bounded base/filter query → one set-based effective-value query → canonical page | No partial page is returned when an effective winner is ambiguous or effective-value metadata, decode, or required-value integrity is inconsistent. Malformed base snapshots may return domain validation errors. |
 
-## What did not change
+## Identity and effective values
 
-- **`domain.ResourceCatalog` the Go type is unchanged.** It is still what `Validate()` and the query API (`FamiliesFor`, `TypesFor`, `OptionsFor`, `NaturalUnitsFor`, ...) operate on. What changed is *where the values inside it come from* — PostgreSQL via `LoadResourceCatalog`, loaded fresh at boot — not its shape or its role in validation.
-- **Resource instances are unaffected.** Actual Material/Mano de obra/Equipo-Herramienta records (`recursos`, `resource_attribute_values`) were already PostgreSQL-backed before this change (`recursos-maestro`). This ADR is scoped to catalog *structure* only — it does not reopen or change how resource instances are stored, searched, or identified.
-- **Boot still fails fast.** Crash-fast on startup with no degraded mode and no Go-literal fallback remains the contract; the failure surface simply gains a distinct "catálogo de recursos vacío: ejecuta las migraciones" case, since an empty database is now a different failure mode from a structurally invalid one.
+### v1 identity
 
-## Rollout
+`NewResource` canonicalizes the class/family/type scope and accepted values, sorts identity attributes by code, and prefixes the result with `v1|`. Only attributes marked `IdentityParticipates` contribute. On update, the application preserves the database ID while deriving the new key from the submitted canonical intent.
 
-Reversible in one line: `SeedResourceCatalog()` is retained, so reverting `cmd/garfex/main.go`'s boot wiring to call it directly restores pre-ADR behavior exactly. Every schema migration in this change ships a `.down.sql`.
+### Type over family
 
-## Current scope
+For each `(resource_id, definition code)`, PostgreSQL computes one effective value:
 
-This ADR documents the D10 reversal and its exact boundary. `migrations/000003_catalog_admin.{up,down}.sql` (the schema gaps: `active`/audit columns, class aliases/keywords, display-order columns, the `resource_attribute_rules` table, and `garfex_app` write grants) shipped alongside it in the same PR (PR1).
+| Candidate | Scope rank | Result |
+|---|---:|---|
+| Family-wide attribute (`type_id IS NULL`) | 0 | Fallback when no type-specific candidate exists. |
+| Type-specific attribute | 1 | Overrides the family-wide value and hides it from Get, Search, filters, and rule hydration. |
 
-**Chain complete.** All 10 PRs of `catalogo-configuracion` have landed: the loader (`postgres.LoadResourceCatalog`, PR2), the domain descriptor registry and soft-delete support (`internal/domain/catalog_kind.go`/`catalog_record.go`/`catalog_mutation.go`, PR3), the generic Postgres admin repository (`internal/postgres/catalog_admin_repository.go`, PR4), the `internal/app/catalogo.Service` application layer (PR5), the descriptor-driven TUI admin engine and `Configuración` menu (`internal/tui/catalog_admin.go`/`catalog_admin_dispatch.go`, PR6), lifecycle actions and Código-immutability UI (PR7), reuse-before-create wiring (PR8), the guided wizard (`internal/tui/catalog_wizard.go`, PR9), and the AC #21 end-to-end proof (`internal/tui/catalog_admin_e2e_test.go`, PR10) — every claim in this ADR (validate-before-persist, snapshot-refresh-on-success-only, staff-authored structure with zero code changes) is now exercised end to end against a real PostgreSQL instance, driving the unmodified `recursos-maestro` resource-instance create flow on top of admin-authored structure. No divergence from this ADR's stated boundary was found while implementing PR2-PR10; deviations from the *design* document (shape/signature-level, not boundary-level) are recorded in the change's own apply-progress history.
+The shared CTE and loader live in `internal/postgres/resource_repository_attributes.go` and are used by both Get and Search. An ambiguous effective winner, effective-value metadata mismatch, decode failure, or missing required value is an integrity failure—not a reason to silently select one row.
+
+## Lifecycle and pagination
+
+### Lifecycle checklist
+
+- [ ] Default search uses `LifecycleScopeActive`.
+- [ ] Inactive discovery explicitly uses `LifecycleScopeInactive`.
+- [ ] `Deactivate` changes `recursos.active` without deleting the row, identity, or attributes.
+- [ ] `Reactivate` rechecks current class/family/type/unit/policy eligibility and the expected identity.
+- [ ] A failed reactivation leaves the Resource inactive.
+
+### Page guarantees
+
+- `SearchCriteria.Normalize` supplies a default size of 50 when `Limit` is zero, rejects `Limit > 50` with `ErrInvalidSearch` rather than capping it, rejects negative bounds, and validates lifecycle scope.
+- PostgreSQL fetches `limit + 1` rows and reports `HasNext`; `HasPrevious` is true only when the normalized offset is positive.
+- Ordering is `identity_key ASC, id ASC`, so equal display values have a stable tie-breaker.
+- `ResourcePage.Criteria` retains text, class, family, attribute filters, lifecycle scope, limit, and offset. TUI next/previous changes only the offset and retains that context.
+- A boundary request is a no-op. A navigation failure retains the current page and selection context.
+
+## Integrity failures
+
+| Symptom | Expected result | Where to inspect |
+|---|---|---|
+| Invalid/forged write | Validation error; repository is not called. | `internal/app/recursos/service.go`, domain tests |
+| Zero or multiple `(class, family, type, definition)` targets | `ErrResourceIntegrity`; transaction rolls back. | `internal/postgres/resource_repository_crud.go` |
+| Ambiguous effective winner, effective-value metadata/decode/required-value failure | `ErrResourceIntegrity`; Get/SearchPage returns no partial Resource/page. Malformed base snapshots may instead return a domain validation error. | `internal/postgres/resource_repository_attributes.go`, `resource_repository_search.go` |
+| Legacy TUI search dependency | Deterministic error; no fabricated page or navigation state. | `internal/tui/resources_workspace_dispatch.go` |
+
+## Operator path: verify, troubleshoot, rollback
+
+1. Confirm the branch and clean scope: `git status --short --branch` and `git diff --stat`.
+2. Run static checks: `gofmt -l .`, `go vet ./...`, and `golangci-lint run ./...`.
+3. Run focused tests, then the full suite: `go test ./internal/domain ./internal/app/recursos ./internal/postgres ./internal/tui -count=1` and `go test ./... -count=1`.
+4. For PostgreSQL evidence, treat `sh scripts/db/integration_test.sh` only as the isolated harness/migration-lifecycle check: its database has no host port, so the script neither exposes a host DSN nor runs Resource tests. Resource-focused evidence comes from the recorded isolated CI run (migrations 000001–000007, with separate app/admin DSNs), or an equivalently isolated database; with `GARFEX_TEST_DSN` and `GARFEX_ADMIN_TEST_DSN` pointed there, run `go test ./internal/postgres -run 'TestResourceRepository(LifecycleIntegration|AttributeCardinalityIntegration|SearchSetHydrationIntegration|Integration)$' -count=1`. Never point these tests at the normal `garfex_pgdata` volume.
+5. Check the CLI with `go run ./cmd/garfex version` and `go run ./cmd/garfex config check` after loading all required `GARFEX_DB_*` variables. Run `go run ./cmd/garfex` for the documented non-destructive TUI smoke.
+
+Rollback for this documentation slice is limited to the changed comments and this guide. Reverting it does not alter Resource behavior, schema, migrations, PostgreSQL data, Supplier code, `.atl`, or pagination/lifecycle implementation. For a runtime integrity incident, preserve the failing evidence, stop writes if necessary, and roll back the owning code slice—not by deleting catalog or Resource rows.
+
+## Supplier separation
+
+Supplier Master remains under `internal/modules/suppliers/` with its own domain, application, and PostgreSQL packages. This guide intentionally does not define Supplier identity, lifecycle, catalog authority, search, pagination, or persistence semantics. Future master catalogs must establish their own authority boundary rather than extending Resource comments or contracts by implication.
