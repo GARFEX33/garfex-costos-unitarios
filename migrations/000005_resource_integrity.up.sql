@@ -15,7 +15,7 @@ RETURNS TEXT LANGUAGE SQL IMMUTABLE STRICT AS $$
     SELECT octet_length(convert_to(value, 'UTF8'))::TEXT || ':' || value
 $$;
 
-CREATE TEMP TABLE resource_integrity_identity_audit ON COMMIT DROP AS
+CREATE TABLE public.resource_integrity_identity_audit AS
 WITH source AS (
     SELECT r.id, r.class_id, r.identity_key,
            upper(regexp_replace(btrim(cl.code), '\s+', ' ', 'g')) AS class_code,
@@ -61,10 +61,10 @@ SELECT id, class_id, identity_key AS legacy_identity_key,
 
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM resource_integrity_identity_audit WHERE legacy_identity_key LIKE 'v1|%') THEN
+    IF EXISTS (SELECT 1 FROM public.resource_integrity_identity_audit WHERE legacy_identity_key LIKE 'v1|%') THEN
         RAISE EXCEPTION 'resource integrity migration found mixed identity encodings';
     END IF;
-    IF EXISTS (SELECT 1 FROM resource_integrity_identity_audit GROUP BY class_id, v1_identity_key HAVING count(*) > 1) THEN
+    IF EXISTS (SELECT 1 FROM public.resource_integrity_identity_audit GROUP BY class_id, v1_identity_key HAVING count(*) > 1) THEN
         RAISE EXCEPTION 'resource integrity migration found canonical identity collisions';
     END IF;
     IF EXISTS (
@@ -103,7 +103,9 @@ END $$;
 INSERT INTO public.resource_integrity_identity_map
     (resource_id, class_id, legacy_identity_key, v1_identity_key)
 SELECT id, class_id, legacy_identity_key, v1_identity_key
-  FROM resource_integrity_identity_audit;
+  FROM public.resource_integrity_identity_audit;
+
+DROP TABLE public.resource_integrity_identity_audit;
 
 ALTER TABLE public.resource_integrity_identity_map OWNER TO garfex_admin;
 ALTER FUNCTION public.resource_identity_component(TEXT) OWNER TO garfex_admin;
