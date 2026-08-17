@@ -1,3 +1,3 @@
-// Package domain contains the canonical Resource Master business model
-// (recursos-maestro; formerly Materials Master).
+// Package domain contains the canonical Resource Master business model and
+// repository contracts.
 package domain

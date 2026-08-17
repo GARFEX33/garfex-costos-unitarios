@@ -24,10 +24,8 @@ type ResourceFamily struct {
 	ClassCode string
 	Code      string
 	Name      string
-	// Active mirrors ResourceClass.Active (design Risk#3): a deactivated
-	// Familia is hidden from FamiliesFor's filtered result but keeps
-	// existing resources under it readable — see catalog_admin_repository.go
-	// (a later PR) for the IncludeInactive escape hatch.
+	// Active mirrors ResourceClass.Active: a deactivated Familia is hidden from
+	// active catalog choices while existing resources under it remain readable.
 	Active bool
 }
 
@@ -55,8 +53,8 @@ type ResourceAttribute struct {
 	Active                          bool
 }
 
-// ResourceUnitPolicy is the class/family-scoped analogue of the retired
-// FamilyUnitPolicy (design §2) — management units only, no identity flag.
+// ResourceUnitPolicy is class/family-scoped management-unit policy; it does
+// not participate in resource identity.
 type ResourceUnitPolicy struct {
 	ClassCode, FamilyCode, UnitCode string
 	Allowed, Suggested              bool
@@ -219,12 +217,9 @@ func (c ResourceCatalog) validateAttributes() []error {
 	return errs
 }
 
-// validateAttributeRules enforces design D4's invariant, now expressed over
-// the Rules slice rather than the retired inline condition_* columns:
-// Mode==CONDITIONAL if and only if the attribute carries at least one
-// AttributeRule. Both directions are checked — a CONDITIONAL attribute with
-// zero rules can never resolve an effective mode, and a REQUIRED/OPTIONAL/
-// FORBIDDEN attribute carrying rules is dead, never-evaluated data.
+// validateAttributeRules enforces that CONDITIONAL attributes have rules and
+// other modes do not carry rules. Both directions are checked so every
+// attribute has an effective mode.
 func (c ResourceCatalog) validateAttributeRules() []error {
 	var errs []error
 	for _, attribute := range c.Attributes {

@@ -1,16 +1,8 @@
 package domain
 
-// SeedResourceCatalog returns the approved generic catalog data (was
-// NewMaterialsCatalog) — same CONDUCTORES/CANALIZACIONES seed content as
-// before the recursos-maestro rename, class-scoped under ClassCode
-// "MATERIAL" per design §2/D1, with every user-visible Name/Plural rendered
-// in Spanish (proposal §Approach step 1, D2) and MANO_DE_OBRA /
-// EQUIPO_HERRAMIENTA seeded as active classes with no family/type/attribute
-// data yet (proposal In Scope #1/#2 — the platform must be right, real
-// content is a later, out-of-scope phase). Only .Name/.Label/.Plural
-// changed in this pass; every .Code is byte-for-byte unchanged — see
-// TestKnownResourceCodesAreNeverRenderedOrTranslated (resource_codes_test.go).
-// The engine below contains no family-specific branch; each family is data.
+// SeedResourceCatalog returns the deterministic fixture catalog used by tests
+// and development seed flows. It contains class-scoped data and keeps
+// catalog behavior data-driven rather than branching on a family code.
 func SeedResourceCatalog() ResourceCatalog {
 	definitions := catalogDefinitions()
 	catalog := ResourceCatalog{

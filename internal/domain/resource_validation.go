@@ -6,10 +6,8 @@ import (
 	"strings"
 )
 
-// NewResource validates values against catalog for scope's class/family/type
-// and naturalUnit, and returns the canonical Resource — including its
-// deterministic IdentityKey, now class-prefixed (design: "class|family|type|
-// sorted(code=canonicalValue...)").
+// NewResource validates application write intent against the catalog and
+// returns a canonical Resource with a deterministic v1 identity.
 func NewResource(catalog ResourceCatalog, scope ResourceScope, naturalUnit string, values []ResourceAttributeValue) (Resource, error) {
 	return newResource(catalog, scope, naturalUnit, values, true)
 }

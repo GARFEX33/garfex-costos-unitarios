@@ -38,8 +38,8 @@ type resourceSearchBase struct {
 	corrupt     bool
 }
 
-// Search returns resources in the requested lifecycle scope. It first selects
-// the bounded result set, then hydrates all matching attributes in one query.
+// Search returns resources in the requested lifecycle scope through the same
+// bounded, set-hydrated page path used by SearchPage.
 func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
 	page, err := r.SearchPage(ctx, criteria)
 	return page.Resources, err

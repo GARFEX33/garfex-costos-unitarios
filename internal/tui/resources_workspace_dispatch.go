@@ -8,18 +8,9 @@ import (
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 )
 
-// This file completes ResourcesWorkspaceAdapter (started in
-// resource_editor.go by recursos-maestro PR6, which implemented only the
-// create/edit/duplicate editor state machine) by adding the full workspace
-// dispatch: Greeting/Respond, text search, the search-result detail view,
-// and the lifecycle confirmation flow. It retires the older,
-// Materials-only/unfiltered-only MaterialsWorkspaceAdapter
-// (materials_workspace_adapter.go, deleted by this same PR) — every method
-// below is that file's Resource-typed, classFilter-aware equivalent, so the
-// SAME adapter type now serves both the unfiltered "/recursos" workspace
-// (classFilter == "") and every class-scoped workspace like "/materiales"
-// (classFilter == "MATERIAL") — one adapter TYPE, reused per workspace slot
-// (recursos-maestro design D4), rather than one adapter per catalog.
+// ResourcesWorkspaceAdapter is the TUI boundary for Resource Master search,
+// detail, editor, and lifecycle interactions. It calls application contracts;
+// it does not construct persistence state or access PostgreSQL directly.
 
 const resourcesGreeting = "Recursos Maestros está conectado al catálogo real (PostgreSQL)."
 
@@ -122,7 +113,8 @@ func (a *ResourcesWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 	return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: resourcesGreeting}}}, nil
 }
 
-// searchResponse runs the real Search for text, scoped to a.classFilter (""
+// searchResponse runs the application SearchPage contract for text, scoped to
+// a.classFilter (""
 // leaves it unfiltered across every class — the unfiltered "/recursos"
 // workspace; a non-empty class code narrows it — a class-scoped workspace
 // like "/materiales"), and renders the result as a selectable
@@ -248,10 +240,8 @@ func (a *ResourcesWorkspaceAdapter) detailResponse(ctx context.Context, value st
 	}, nil
 }
 
-// detailActionsRequest builds the "¿Qué querés hacer?" menu offered from a
-// resource's detail view — shared by detailResponse (first opening it) and
-// the "No, cancelar" path of the delete confirmation (returning to the same
-// detail after declining).
+// detailActionsRequest builds the action menu offered from a resource detail;
+// lifecycle actions are explicit Deactivate/Reactivate transitions.
 func (a *ResourcesWorkspaceAdapter) detailActionsRequest() ActionRequest {
 	active := resourceIsActive(a.lastDetail)
 	lifecycleID, lifecycleLabel := reactivateActionID, "Reactivar"
