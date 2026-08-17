@@ -51,23 +51,12 @@ func (r *resourceRepository) Create(ctx context.Context, resource domain.Resourc
 		return mapRepositoryError(fmt.Errorf("insert resource: %w", err))
 	}
 	for _, value := range resource.Attributes {
-		payload, err := encodeValue(value)
-		if err != nil {
-			return fmt.Errorf("encode attribute %q: %w", value.AttributeCode, err)
+		if err := persistAttributeValue(ctx, tx, resource, resourceID, value); err != nil {
+			return err
 		}
-		_, err = tx.Exec(ctx, `
-			INSERT INTO public.resource_attribute_values
-			(resource_id, family_id, resource_attribute_id, attribute_definition_id, option_set, value_state,
-			 option_code, integer_value, decimal_value, quantity_value, quantity_unit_id, boolean_value, text_value)
-			SELECT $1, f.id, ra.id, d.id, ra.option_set, $4, $5, $6, $7, $8, qu.id, $9, $10
-			FROM public.resource_families f
-			JOIN public.resource_attributes ra ON ra.family_id = f.id
-			JOIN public.attribute_definitions d ON d.id = ra.definition_id AND d.code = $3
-			LEFT JOIN public.unit_definitions qu ON qu.code = $11
-			WHERE f.code = $2`, resourceID, resource.FamilyCode, value.AttributeCode, payload.state, nullableString(payload.option), payload.integer, payload.decimal, nullableQuantity(payload), payload.boolean, nullableString(payload.text), payload.quantityUnit)
-		if err != nil {
-			return mapRepositoryError(fmt.Errorf("insert resource attribute %q: %w", value.AttributeCode, err))
-		}
+	}
+	if err := verifyAttributeCount(ctx, tx, resourceID, len(resource.Attributes)); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit resource create: %w", err)
@@ -176,26 +165,104 @@ func (r *resourceRepository) Update(ctx context.Context, resource domain.Resourc
 		return fmt.Errorf("clear resource attributes: %w", err)
 	}
 	for _, value := range resource.Attributes {
-		payload, err := encodeValue(value)
-		if err != nil {
-			return fmt.Errorf("encode attribute %q: %w", value.AttributeCode, err)
+		if err := persistAttributeValue(ctx, tx, resource, resource.ID, value); err != nil {
+			return err
 		}
-		_, err = tx.Exec(ctx, `
-			INSERT INTO public.resource_attribute_values
-			(resource_id, family_id, resource_attribute_id, attribute_definition_id, option_set, value_state,
-			 option_code, integer_value, decimal_value, quantity_value, quantity_unit_id, boolean_value, text_value)
-			SELECT $1, f.id, ra.id, d.id, ra.option_set, $4, $5, $6, $7, $8, qu.id, $9, $10
-			FROM public.resource_families f
-			JOIN public.resource_attributes ra ON ra.family_id = f.id
-			JOIN public.attribute_definitions d ON d.id = ra.definition_id AND d.code = $3
-			LEFT JOIN public.unit_definitions qu ON qu.code = $11
-			WHERE f.code = $2`, resource.ID, resource.FamilyCode, value.AttributeCode, payload.state, nullableString(payload.option), payload.integer, payload.decimal, nullableQuantity(payload), payload.boolean, nullableString(payload.text), payload.quantityUnit)
-		if err != nil {
-			return mapRepositoryError(fmt.Errorf("insert resource attribute %q: %w", value.AttributeCode, err))
-		}
+	}
+	if err := verifyAttributeCount(ctx, tx, resource.ID, len(resource.Attributes)); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit resource update: %w", err)
+	}
+	return nil
+}
+
+type resourceAttributeTarget struct {
+	familyID            int64
+	resourceAttributeID int64
+	definitionID        int64
+	optionSet           string
+	quantityUnitID      *int64
+}
+
+func resolveAttributeTarget(ctx context.Context, tx pgx.Tx, resource domain.Resource, value domain.ResourceAttributeValue) (resourceAttributeTarget, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT f.id, ra.id, d.id, ra.option_set, qu.id
+		FROM public.resource_classes cl
+		JOIN public.resource_families f ON f.class_id = cl.id AND f.code = $2
+		JOIN public.resource_types t ON t.class_id = cl.id AND t.family_id = f.id AND t.code = $3
+		JOIN public.resource_attributes ra ON ra.class_id = cl.id AND ra.family_id = f.id
+			AND (ra.type_id = t.id OR ra.type_id IS NULL)
+		JOIN public.attribute_definitions d ON d.id = ra.definition_id
+			AND d.code = $4 AND d.value_type = $5
+		LEFT JOIN public.unit_definitions qu ON qu.code = $6 AND qu.active
+		WHERE cl.code = $1 AND cl.active AND f.active AND t.active AND ra.active AND d.active`,
+		resource.ClassCode, resource.FamilyCode, resource.TypeCode, value.AttributeCode, value.Type, quantityUnitCode(value))
+	if err != nil {
+		return resourceAttributeTarget{}, fmt.Errorf("resolve attribute %q: %w", value.AttributeCode, err)
+	}
+	defer rows.Close()
+	var targets []resourceAttributeTarget
+	for rows.Next() {
+		var target resourceAttributeTarget
+		if err := rows.Scan(&target.familyID, &target.resourceAttributeID, &target.definitionID, &target.optionSet, &target.quantityUnitID); err != nil {
+			return resourceAttributeTarget{}, fmt.Errorf("scan attribute target %q: %w", value.AttributeCode, err)
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		return resourceAttributeTarget{}, fmt.Errorf("read attribute targets %q: %w", value.AttributeCode, err)
+	}
+	if len(targets) != 1 {
+		return resourceAttributeTarget{}, fmt.Errorf("%w: attribute %q resolved to %d targets", domain.ErrResourceIntegrity, value.AttributeCode, len(targets))
+	}
+	if value.Type == domain.ValueTypeQuantity && targets[0].quantityUnitID == nil {
+		return resourceAttributeTarget{}, fmt.Errorf("%w: quantity attribute %q has no active unit %q", domain.ErrResourceIntegrity, value.AttributeCode, value.Quantity.UnitCode)
+	}
+	return targets[0], nil
+}
+
+func quantityUnitCode(value domain.ResourceAttributeValue) string {
+	if value.Type == domain.ValueTypeQuantity && value.Quantity != nil {
+		return value.Quantity.UnitCode
+	}
+	return ""
+}
+
+func persistAttributeValue(ctx context.Context, tx pgx.Tx, resource domain.Resource, resourceID int64, value domain.ResourceAttributeValue) error {
+	payload, err := encodeValue(value)
+	if err != nil {
+		return fmt.Errorf("encode attribute %q: %w", value.AttributeCode, err)
+	}
+	target, err := resolveAttributeTarget(ctx, tx, resource, value)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO public.resource_attribute_values
+		(resource_id, family_id, resource_attribute_id, attribute_definition_id, option_set, value_state,
+		 option_code, integer_value, decimal_value, quantity_value, quantity_unit_id, boolean_value, text_value)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		resourceID, target.familyID, target.resourceAttributeID, target.definitionID, target.optionSet, payload.state,
+		nullableString(payload.option), payload.integer, payload.decimal, nullableQuantity(payload), target.quantityUnitID,
+		payload.boolean, nullableString(payload.text))
+	if err != nil {
+		return mapRepositoryError(fmt.Errorf("insert resource attribute %q: %w", value.AttributeCode, err))
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: attribute %q write affected %d rows", domain.ErrResourceIntegrity, value.AttributeCode, tag.RowsAffected())
+	}
+	return nil
+}
+
+func verifyAttributeCount(ctx context.Context, tx pgx.Tx, resourceID int64, expected int) error {
+	var persisted int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM public.resource_attribute_values WHERE resource_id=$1`, resourceID).Scan(&persisted); err != nil {
+		return fmt.Errorf("count resource attributes: %w", err)
+	}
+	if persisted != expected {
+		return fmt.Errorf("%w: resource %d persisted %d attributes, expected %d", domain.ErrResourceIntegrity, resourceID, persisted, expected)
 	}
 	return nil
 }

@@ -33,6 +33,7 @@ const (
 var (
 	ErrDuplicateResource = errors.New("duplicate resource")
 	ErrResourceNotFound  = errors.New("resource not found")
+	ErrResourceIntegrity = errors.New("resource persistence integrity failure")
 )
 
 // PresentationField is one entry of a ResourceType's catalog-controlled
