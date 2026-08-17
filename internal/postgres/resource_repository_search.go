@@ -35,18 +35,26 @@ type resourceSearchBase struct {
 	naturalUnit string
 	identityKey string
 	active      bool
+	corrupt     bool
 }
 
 // Search returns resources in the requested lifecycle scope. It first selects
 // the bounded result set, then hydrates all matching attributes in one query.
 func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
+	page, err := r.SearchPage(ctx, criteria)
+	return page.Resources, err
+}
+
+func (r *resourceRepository) SearchPage(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error) {
 	if r.pool == nil {
-		return nil, errors.New("resource repository: nil pool")
+		return domain.ResourcePage{}, errors.New("resource repository: nil pool")
 	}
-	if criteria.LifecycleScope != domain.LifecycleScopeActive && criteria.LifecycleScope != domain.LifecycleScopeInactive {
-		return nil, fmt.Errorf("search resources: invalid lifecycle scope %d", criteria.LifecycleScope)
+	normalized, err := criteria.Normalize()
+	if err != nil {
+		return domain.ResourcePage{}, fmt.Errorf("search resources: %w", err)
 	}
-	limit, offset := clampLimitOffset(criteria.Limit, criteria.Offset)
+	criteria = normalized
+	limit, offset := criteria.Limit, criteria.Offset
 
 	var conditions []string
 	var args []any
@@ -73,12 +81,12 @@ func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchC
 	for _, filter := range criteria.Filters {
 		condition, err := effectiveValueFilter(filter, arg)
 		if err != nil {
-			return nil, fmt.Errorf("encode search filter %q: %w", filter.AttributeCode, err)
+			return domain.ResourcePage{}, fmt.Errorf("encode search filter %q: %w", filter.AttributeCode, err)
 		}
 		conditions = append(conditions, condition)
 	}
 
-	limitArg, offsetArg := arg(limit), arg(offset)
+	limitArg, offsetArg := arg(limit+1), arg(offset)
 	query := fmt.Sprintf(effectiveValuesCTE+`
 		SELECT r.id, cl.code, f.code, t.code, u.code, r.identity_key, r.active
 			, EXISTS (SELECT 1 FROM effective_values ev WHERE ev.resource_id = r.id AND ev.scope_count > 1)
@@ -88,12 +96,12 @@ func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchC
 		JOIN public.resource_types t ON t.id = r.type_id
 		JOIN public.unit_definitions u ON u.id = r.natural_unit_id
 		WHERE %s
-		ORDER BY r.identity_key ASC
-		LIMIT %s OFFSET %s`, strings.Join(conditions, " AND "), limitArg, offsetArg)
+			ORDER BY r.identity_key ASC, r.id ASC
+			LIMIT %s OFFSET %s`, strings.Join(conditions, " AND "), limitArg, offsetArg)
 
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("search resources: %w", err)
+		return domain.ResourcePage{}, fmt.Errorf("search resources: %w", err)
 	}
 	defer rows.Close()
 
@@ -101,28 +109,34 @@ func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchC
 	var resourceIDs []int64
 	for rows.Next() {
 		var base resourceSearchBase
-		var corrupt bool
-		if err := rows.Scan(&base.id, &base.classCode, &base.familyCode, &base.typeCode, &base.naturalUnit, &base.identityKey, &base.active, &corrupt); err != nil {
-			return nil, fmt.Errorf("scan search result: %w", err)
-		}
-		if corrupt {
-			return nil, integrityError("resource %d has duplicate effective attribute values", base.id)
+		if err := rows.Scan(&base.id, &base.classCode, &base.familyCode, &base.typeCode, &base.naturalUnit, &base.identityKey, &base.active, &base.corrupt); err != nil {
+			return domain.ResourcePage{}, fmt.Errorf("scan search result: %w", err)
 		}
 		bases = append(bases, base)
 		resourceIDs = append(resourceIDs, base.id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read search results: %w", err)
+		return domain.ResourcePage{}, fmt.Errorf("read search results: %w", err)
 	}
+	hasNext := len(bases) > limit
+	if hasNext {
+		bases = bases[:limit]
+		resourceIDs = resourceIDs[:limit]
+	}
+	for _, base := range bases {
+		if base.corrupt {
+			return domain.ResourcePage{}, integrityError("resource %d has duplicate effective attribute values", base.id)
+		}
+	}
+	page := domain.ResourcePage{Criteria: criteria, HasPrevious: offset > 0, HasNext: hasNext}
 	if len(bases) == 0 {
-		return nil, nil
+		return page, nil
 	}
 
 	attributes, err := r.loadEffectiveAttributes(ctx, resourceIDs)
 	if err != nil {
-		return nil, fmt.Errorf("hydrate search results: %w", err)
+		return domain.ResourcePage{}, fmt.Errorf("hydrate search results: %w", err)
 	}
-	results := make([]domain.Resource, 0, len(bases))
 	for _, base := range bases {
 		values := attributes[base.id]
 		resource, err := domain.HydrateResource(domain.ResourceSnapshot{
@@ -131,9 +145,9 @@ func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchC
 			Attributes: values, IdentityKey: base.identityKey, Active: base.active,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("hydrate matched resource %s/%s: %w", base.classCode, base.identityKey, err)
+			return domain.ResourcePage{}, fmt.Errorf("hydrate matched resource %s/%s: %w", base.classCode, base.identityKey, err)
 		}
-		results = append(results, resource)
+		page.Resources = append(page.Resources, resource)
 	}
-	return results, nil
+	return page, nil
 }

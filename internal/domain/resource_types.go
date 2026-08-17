@@ -34,6 +34,7 @@ var (
 	ErrDuplicateResource = errors.New("duplicate resource")
 	ErrResourceNotFound  = errors.New("resource not found")
 	ErrResourceIntegrity = errors.New("resource persistence integrity failure")
+	ErrInvalidSearch     = errors.New("invalid resource search criteria")
 )
 
 type ResourceLifecycleScope uint8
@@ -251,6 +252,31 @@ type SearchCriteria struct {
 	Offset         int
 }
 
+const (
+	DefaultSearchPageSize = 50
+	MaxSearchPageSize     = 50
+)
+
+func (c SearchCriteria) Normalize() (SearchCriteria, error) {
+	if c.Limit < 0 || c.Limit > MaxSearchPageSize || c.Offset < 0 {
+		return SearchCriteria{}, ErrInvalidSearch
+	}
+	if c.Limit == 0 {
+		c.Limit = DefaultSearchPageSize
+	}
+	if c.LifecycleScope != LifecycleScopeActive && c.LifecycleScope != LifecycleScopeInactive {
+		return SearchCriteria{}, ErrInvalidSearch
+	}
+	return c, nil
+}
+
+type ResourcePage struct {
+	Criteria    SearchCriteria
+	Resources   []Resource
+	HasPrevious bool
+	HasNext     bool
+}
+
 // ResourceRepository persists and retrieves the complete technical
 // aggregate. NaturalUnit is stored metadata; IdentityKey is the deterministic
 // lookup key. Get's first argument is the owning class code
@@ -265,6 +291,10 @@ type ResourceRepository interface {
 	SetActive(context.Context, int64, bool) error
 	Deactivate(context.Context, int64) (LifecycleResult, error)
 	Reactivate(context.Context, int64, string) (LifecycleResult, error)
+}
+
+type ResourcePageRepository interface {
+	SearchPage(context.Context, SearchCriteria) (ResourcePage, error)
 }
 
 // AttributeOptionRelation narrows one attribute's valid options by another

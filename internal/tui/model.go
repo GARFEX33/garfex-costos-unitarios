@@ -571,6 +571,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) respond(input InteractionInput) {
+	previousResourceSelection := m.resourceSelectionValue()
 	response := m.engine.Respond(context.Background(), input)
 	if m.presentationPolicy() == presentationActiveFrame {
 		m.history = nil
@@ -593,11 +594,33 @@ func (m *Model) respond(input InteractionInput) {
 	m.choiceIndex = 0
 	m.choiceSelected = nil
 	m.syncChoiceFields()
+	m.restoreResourceSelection(previousResourceSelection, response.Pending)
 	m.refreshCatalogIfChanged()
 	if response.Pending == nil && m.activeWorkspace != "" {
 		m.openWorkspaceDefault()
 	}
 	m.refreshViewport()
+}
+
+func (m Model) resourceSelectionValue() string {
+	request, ok := m.pending.(QuestionRequest)
+	if !ok || request.Key != searchResultsKey || m.choiceIndex >= len(request.Options) {
+		return ""
+	}
+	return request.Options[m.choiceIndex].Value
+}
+func (m *Model) restoreResourceSelection(value string, pending InteractionMessage) {
+	request, ok := pending.(QuestionRequest)
+	if !ok || request.Key != searchResultsKey {
+		return
+	}
+	for i, option := range request.Options {
+		if value != "" && option.Value == value {
+			m.choiceIndex = i
+			return
+		}
+	}
+	m.choiceIndex = 0
 }
 
 // presentationPolicy keeps the Assistant conversational while every
@@ -675,6 +698,16 @@ func (m *Model) startResourceSearch() {
 
 func (m *Model) handleAdministrativeKey(msg tea.KeyPressMsg) bool {
 	key := msg.String()
+	if m.hasDirectResourceSearchResults() {
+		switch key {
+		case "p":
+			m.respond(InteractionInput{Kind: InputAction, ActionID: previousPageActionID, Value: previousPageActionID, Target: ActionTargetAgent})
+			return true
+		case "n":
+			m.respond(InteractionInput{Kind: InputAction, ActionID: nextPageActionID, Value: nextPageActionID, Target: ActionTargetAgent})
+			return true
+		}
+	}
 	if key == "?" {
 		m.helpVisible = !m.helpVisible
 		return true

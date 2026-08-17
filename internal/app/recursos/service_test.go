@@ -26,6 +26,8 @@ type fakeRepo struct {
 	gotCriteria domain.SearchCriteria
 	resources   []domain.Resource
 	searchErr   error
+	page        domain.ResourcePage
+	pageErr     error
 
 	gotUpdate domain.Resource
 	updateErr error
@@ -57,6 +59,10 @@ func (f *fakeRepo) Get(_ context.Context, classCode, identityKey string) (domain
 func (f *fakeRepo) Search(_ context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
 	f.gotCriteria = criteria
 	return f.resources, f.searchErr
+}
+func (f *fakeRepo) SearchPage(_ context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error) {
+	f.gotCriteria = criteria
+	return f.page, f.pageErr
 }
 
 func (f *fakeRepo) Update(_ context.Context, resource domain.Resource) error {
