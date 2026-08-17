@@ -69,6 +69,16 @@ func (f *fakeRepo) SetActive(_ context.Context, id int64, active bool) error {
 	return f.setActiveErr
 }
 
+func (f *fakeRepo) Deactivate(_ context.Context, id int64) (domain.LifecycleResult, error) {
+	f.gotSetActiveID, f.gotSetActiveValue = id, false
+	return domain.LifecycleResult{}, f.setActiveErr
+}
+
+func (f *fakeRepo) Reactivate(_ context.Context, id int64, _ string) (domain.LifecycleResult, error) {
+	f.gotSetActiveID, f.gotSetActiveValue = id, true
+	return domain.LifecycleResult{}, f.setActiveErr
+}
+
 // TestServiceGetScopesByClassCode is the mandatory R1 carve-out (design
 // §Open Risks R1, tasks 5.1): Service.Get(ctx, classCode, identityKey) keeps
 // a (string, string) arity, so a call site accidentally passing a family

@@ -36,6 +36,18 @@ var (
 	ErrResourceIntegrity = errors.New("resource persistence integrity failure")
 )
 
+type ResourceLifecycleScope uint8
+
+const (
+	LifecycleScopeActive ResourceLifecycleScope = iota
+	LifecycleScopeInactive
+)
+
+type LifecycleResult struct {
+	Resource Resource
+	Changed  bool
+}
+
 // PresentationField is one entry of a ResourceType's catalog-controlled
 // canonical presentation: an explicitly ordered subset of its attributes,
 // used to compose a human-readable title (see ResourceCatalog.Describe).
@@ -160,6 +172,22 @@ type Resource struct {
 	canonical   bool
 }
 
+func (r *Resource) Deactivate() bool {
+	if !r.Active {
+		return false
+	}
+	r.Active = false
+	return true
+}
+
+func (r *Resource) Reactivate() bool {
+	if r.Active {
+		return false
+	}
+	r.Active = true
+	return true
+}
+
 type CreateCommand struct {
 	Scope       ResourceScope
 	NaturalUnit string
@@ -217,9 +245,10 @@ type SearchCriteria struct {
 	// Filters requires an exact, canonical match per attribute: each entry
 	// is ANDed as its own existence check against the resource's attribute
 	// values.
-	Filters []ResourceAttributeValue
-	Limit   int
-	Offset  int
+	Filters        []ResourceAttributeValue
+	LifecycleScope ResourceLifecycleScope
+	Limit          int
+	Offset         int
 }
 
 // ResourceRepository persists and retrieves the complete technical
@@ -232,7 +261,10 @@ type ResourceRepository interface {
 	Get(context.Context, string, string) (Resource, error)
 	Search(context.Context, SearchCriteria) ([]Resource, error)
 	Update(context.Context, Resource) error
+	// SetActive temporarily keeps the pre-lifecycle TUI compile-safe for PR6B.
 	SetActive(context.Context, int64, bool) error
+	Deactivate(context.Context, int64) (LifecycleResult, error)
+	Reactivate(context.Context, int64, string) (LifecycleResult, error)
 }
 
 // AttributeOptionRelation narrows one attribute's valid options by another

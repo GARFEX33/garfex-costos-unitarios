@@ -33,6 +33,12 @@ func (fakeResourceRepository) Search(context.Context, domain.SearchCriteria) ([]
 }
 func (fakeResourceRepository) Update(context.Context, domain.Resource) error { return nil }
 func (fakeResourceRepository) SetActive(context.Context, int64, bool) error  { return nil }
+func (fakeResourceRepository) Deactivate(context.Context, int64) (domain.LifecycleResult, error) {
+	return domain.LifecycleResult{}, nil
+}
+func (fakeResourceRepository) Reactivate(context.Context, int64, string) (domain.LifecycleResult, error) {
+	return domain.LifecycleResult{}, nil
+}
 
 // fakeInfraBuilder is a successful infraBuilder that never touches a real
 // Postgres instance: nil pool (ignored by the stub catalogLoader used

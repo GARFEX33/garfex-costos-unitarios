@@ -121,6 +121,25 @@ func (r *resourceRepository) Get(ctx context.Context, classCode, identityKey str
 	})
 }
 
+func (r *resourceRepository) GetByID(ctx context.Context, id int64) (domain.Resource, error) {
+	if r.pool == nil {
+		return domain.Resource{}, errors.New("resource repository: nil pool")
+	}
+	var classCode, identityKey string
+	err := r.pool.QueryRow(ctx, `
+		SELECT cl.code, r.identity_key
+		FROM public.recursos r
+		JOIN public.resource_classes cl ON cl.id = r.class_id
+		WHERE r.id = $1`, id).Scan(&classCode, &identityKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Resource{}, fmt.Errorf("%w: resource id %d", domain.ErrResourceNotFound, id)
+	}
+	if err != nil {
+		return domain.Resource{}, fmt.Errorf("find resource %d: %w", id, err)
+	}
+	return r.Get(ctx, classCode, identityKey)
+}
+
 func (r *resourceRepository) Update(ctx context.Context, resource domain.Resource) error {
 	if err := resource.ValidateForPersistence(); err != nil {
 		return err
@@ -267,16 +286,86 @@ func verifyAttributeCount(ctx context.Context, tx pgx.Tx, resourceID int64, expe
 	return nil
 }
 
+func (r *resourceRepository) Deactivate(ctx context.Context, id int64) (domain.LifecycleResult, error) {
+	return r.setLifecycle(ctx, id, false, "")
+}
+
+func (r *resourceRepository) Reactivate(ctx context.Context, id int64, identityKey string) (domain.LifecycleResult, error) {
+	return r.setLifecycle(ctx, id, true, identityKey)
+}
+
 func (r *resourceRepository) SetActive(ctx context.Context, id int64, active bool) error {
+	if active {
+		_, err := r.setLifecycle(ctx, id, true, "")
+		return err
+	}
+	_, err := r.Deactivate(ctx, id)
+	return err
+}
+
+func (r *resourceRepository) setLifecycle(ctx context.Context, id int64, active bool, expectedIdentityKey string) (domain.LifecycleResult, error) {
 	if r.pool == nil {
-		return errors.New("resource repository: nil pool")
+		return domain.LifecycleResult{}, errors.New("resource repository: nil pool")
 	}
-	tag, err := r.pool.Exec(ctx, `UPDATE public.recursos SET active = $2, updated_at = NOW() WHERE id = $1`, id, active)
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return mapRepositoryError(fmt.Errorf("set resource active: %w", err))
+		return domain.LifecycleResult{}, fmt.Errorf("begin resource lifecycle: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("%w: resource id %d", domain.ErrResourceNotFound, id)
+	defer func() { _ = tx.Rollback(ctx) }()
+	var classCode, identityKey string
+	var currentActive bool
+	err = tx.QueryRow(ctx, `
+		SELECT cl.code, r.identity_key, r.active
+		FROM public.recursos r
+		JOIN public.resource_classes cl ON cl.id = r.class_id
+		WHERE r.id = $1 FOR UPDATE`, id).Scan(&classCode, &identityKey, &currentActive)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.LifecycleResult{}, fmt.Errorf("%w: resource id %d", domain.ErrResourceNotFound, id)
 	}
-	return nil
+	if err != nil {
+		return domain.LifecycleResult{}, fmt.Errorf("load resource lifecycle %d: %w", id, err)
+	}
+	if expectedIdentityKey != "" && expectedIdentityKey != identityKey {
+		return domain.LifecycleResult{}, domain.ErrResourceIntegrity
+	}
+	if currentActive == active {
+		if err := tx.Commit(ctx); err != nil {
+			return domain.LifecycleResult{}, fmt.Errorf("commit resource lifecycle no-op: %w", err)
+		}
+		resource, err := r.Get(ctx, classCode, identityKey)
+		return domain.LifecycleResult{Resource: resource}, err
+	}
+	query := `UPDATE public.recursos SET active = $2, updated_at = NOW() WHERE id = $1`
+	args := []any{id, active}
+	if active {
+		query = `UPDATE public.recursos r SET active = TRUE, updated_at = NOW()
+			FROM public.resource_classes cl, public.resource_families f, public.resource_types t,
+				public.unit_definitions u, public.resource_unit_policies p
+			WHERE r.id = $1 AND cl.id = r.class_id AND cl.active AND f.id = r.family_id AND f.active
+				AND t.id = r.type_id AND t.active AND u.id = r.natural_unit_id AND u.active
+				AND p.family_id = f.id AND p.unit_id = u.id AND p.allowed AND p.active`
+		args = []any{id}
+	}
+	tag, err := tx.Exec(ctx, query, args...)
+	if err != nil {
+		return domain.LifecycleResult{}, mapRepositoryError(fmt.Errorf("set resource active: %w", err))
+	}
+	if tag.RowsAffected() != 1 {
+		if active {
+			var conflict bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM public.recursos WHERE active AND identity_key = $1 AND id <> $2)`, identityKey, id).Scan(&conflict); err == nil && conflict {
+				return domain.LifecycleResult{}, domain.ErrDuplicateResource
+			}
+			return domain.LifecycleResult{}, domain.ErrResourceReference
+		}
+		return domain.LifecycleResult{}, fmt.Errorf("%w: resource id %d", domain.ErrResourceNotFound, id)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.LifecycleResult{}, fmt.Errorf("commit resource lifecycle: %w", err)
+	}
+	resource, err := r.Get(ctx, classCode, identityKey)
+	if err != nil {
+		return domain.LifecycleResult{}, err
+	}
+	return domain.LifecycleResult{Resource: resource, Changed: true}, nil
 }

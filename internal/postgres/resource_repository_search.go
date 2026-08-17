@@ -27,7 +27,7 @@ func clampLimitOffset(limit, offset int) (int, int) {
 	return limit, offset
 }
 
-// Search returns active resources matching criteria. It reuses Get per
+// Search returns resources in the requested lifecycle scope. It reuses Get per
 // matched row to reconstruct the full domain.Resource with attributes,
 // instead of duplicating attribute-reconstruction SQL. This N+1-style
 // pattern is an intentional v1 simplicity choice, bounded by Limit
@@ -35,6 +35,9 @@ func clampLimitOffset(limit, offset int) (int, int) {
 func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
 	if r.pool == nil {
 		return nil, errors.New("resource repository: nil pool")
+	}
+	if criteria.LifecycleScope != domain.LifecycleScopeActive && criteria.LifecycleScope != domain.LifecycleScopeInactive {
+		return nil, fmt.Errorf("search resources: invalid lifecycle scope %d", criteria.LifecycleScope)
 	}
 	limit, offset := clampLimitOffset(criteria.Limit, criteria.Offset)
 
@@ -45,7 +48,11 @@ func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchC
 		return fmt.Sprintf("$%d", len(args))
 	}
 
-	conditions = append(conditions, "r.active")
+	if criteria.LifecycleScope == domain.LifecycleScopeInactive {
+		conditions = append(conditions, "NOT r.active")
+	} else {
+		conditions = append(conditions, "r.active")
+	}
 	if criteria.ClassCode != "" {
 		conditions = append(conditions, "cl.code = "+arg(criteria.ClassCode))
 	}
