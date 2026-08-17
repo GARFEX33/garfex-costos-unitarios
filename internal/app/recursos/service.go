@@ -16,7 +16,7 @@ import (
 // ErrInvalidArgument is returned when a resource lookup key is incomplete.
 var ErrInvalidArgument = errors.New("resource lookup argument is required")
 
-// Service implements read-only resource use cases.
+// Service implements Resource Master use cases.
 type Service struct {
 	repo      domain.ResourceRepository
 	authority *domain.CatalogAuthority
@@ -123,18 +123,74 @@ func (s *Service) Update(ctx context.Context, command domain.UpdateCommand) (dom
 	return resource, nil
 }
 
-// Delete soft-deletes a resource by its stable ID (toggles active=false —
-// never a hard delete, per project decision: preserves future referential
-// integrity once other modules start referencing resources).
-func (s *Service) Delete(ctx context.Context, id int64) error {
-	if id == 0 {
-		return ErrInvalidArgument
+// Deactivate marks a resource inactive without removing its identity or data.
+func (s *Service) Deactivate(ctx context.Context, id int64) (domain.LifecycleResult, error) {
+	if id <= 0 {
+		return domain.LifecycleResult{}, ErrInvalidArgument
 	}
-	if err := s.repo.SetActive(ctx, id, false); err != nil {
+	result, err := s.repo.Deactivate(ctx, id)
+	if err != nil {
 		if errors.Is(err, domain.ErrResourceNotFound) {
-			return domain.ErrResourceNotFound
+			return domain.LifecycleResult{}, domain.ErrResourceNotFound
 		}
-		return fmt.Errorf("delete resource %d: %w", id, err)
+		return domain.LifecycleResult{}, fmt.Errorf("deactivate resource %d: %w", id, err)
 	}
-	return nil
+	return result, nil
+}
+
+// Delete keeps the existing TUI compile-safe until PR6B.
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	_, err := s.Deactivate(ctx, id)
+	if err == nil || errors.Is(err, ErrInvalidArgument) || errors.Is(err, domain.ErrResourceNotFound) {
+		return err
+	}
+	return fmt.Errorf("delete resource %d: %w", id, err)
+}
+
+// Reactivate validates the current active catalog and identity before asking
+// the repository to perform its transactional guarded transition.
+func (s *Service) Reactivate(ctx context.Context, id int64) (domain.LifecycleResult, error) {
+	if id <= 0 {
+		return domain.LifecycleResult{}, ErrInvalidArgument
+	}
+	finder, ok := s.repo.(interface {
+		GetByID(context.Context, int64) (domain.Resource, error)
+	})
+	if !ok {
+		return domain.LifecycleResult{}, errors.New("resource repository cannot load lifecycle identity")
+	}
+	current, err := finder.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrResourceNotFound) {
+			return domain.LifecycleResult{}, domain.ErrResourceNotFound
+		}
+		return domain.LifecycleResult{}, fmt.Errorf("load resource %d for reactivation: %w", id, err)
+	}
+	if current.Active {
+		return domain.LifecycleResult{Resource: current}, nil
+	}
+	catalog, _ := s.authority.Current()
+	values := make([]domain.ResourceAttributeValue, 0, len(current.Attributes))
+	for _, value := range current.Attributes {
+		if value.Text != domain.NotApplicableText {
+			values = append(values, value)
+		}
+	}
+	candidate, err := domain.NewResource(catalog, domain.ResourceScope{
+		ClassCode: current.ClassCode, FamilyCode: current.FamilyCode, TypeCode: current.TypeCode,
+	}, current.NaturalUnit, values)
+	if err != nil {
+		return domain.LifecycleResult{Resource: current}, err
+	}
+	if candidate.IdentityKey != current.IdentityKey {
+		return domain.LifecycleResult{Resource: current}, domain.ErrResourceIntegrity
+	}
+	result, err := s.repo.Reactivate(ctx, id, candidate.IdentityKey)
+	if err != nil {
+		if errors.Is(err, domain.ErrResourceNotFound) || errors.Is(err, domain.ErrDuplicateResource) || errors.Is(err, domain.ErrResourceReference) || errors.Is(err, domain.ErrResourceIntegrity) {
+			return domain.LifecycleResult{Resource: current}, err
+		}
+		return domain.LifecycleResult{Resource: current}, fmt.Errorf("reactivate resource %d: %w", id, err)
+	}
+	return result, nil
 }
