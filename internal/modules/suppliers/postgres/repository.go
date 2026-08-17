@@ -37,6 +37,8 @@ func limit(value int) int {
 	return value
 }
 
+func limitPlusOne(value int) int { return limit(value) + 1 }
+
 func offset(value int) int {
 	if value < 0 {
 		return 0
