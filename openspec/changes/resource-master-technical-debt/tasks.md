@@ -40,7 +40,7 @@ Every PR targets `main`; PR N starts only after PR N-1 merges. Each stays under 
 - [x] 2.1 **PR 2**: Test and enforce forged-input rejection, controlled construction, canonical identity, and stable update IDs in `internal/domain/*` and `internal/app/recursos/service.go`; atomically switch writers, rewrite admitted legacy keys, and add the v1 constraint only after writers emit v1 (debts 1, 7, 8).
 - [x] 3.1 **PR 3**: Test and enforce active-chain eligibility with historical reads in `internal/postgres/catalog_loader.go` and `resource_repository_crud.go` (debt 4); release gate before refactors.
 - [x] 4.1 **PR 4**: Test exact class/family/type/definition resolution and atomic cardinality in `internal/postgres/resource_repository_crud.go` (debts 2, 3).
-- [ ] 5.1 **PR 5**: Characterize then extract state, transitions, persistence mapping, and presentation across `internal/tui/resource_editor*.go`, preserving behavior (debt 10).
+- [x] 5.1 **PR 5**: Characterize then extract state, transitions, persistence mapping, and presentation across `internal/tui/resource_editor*.go`, preserving behavior (debt 10).
 - [ ] 6.1 **PR 6**: Add explicit `Deactivate`/`Reactivate`, inactive discovery, active-only defaults, and visible state in app, CRUD, and TUI dispatch (debts 5, 6).
 - [ ] 7.1 **PR 7**: Replace per-row reads with bounded set hydration in `internal/postgres/resource_repository_search.go`; prove query-count and parity scenarios (debt 9).
 - [ ] 8.1 **PR 8**: Add `SearchCriteria`/`ResourcePage` navigation and TUI filter/selection preservation in domain, app, repository ports, and TUI (debt 12).
@@ -48,4 +48,4 @@ Every PR targets `main`; PR N starts only after PR N-1 merges. Each stays under 
 
 ### Current apply slice
 
-PR 4 / checkbox 4.1 is complete in this apply run after PR 3 merged; PR 5+ remain ordered follow-ups and are out of scope.
+PR 5 / checkbox 5.1 is complete after PR 4 merged; PR 6+ remain ordered follow-ups and are out of scope.

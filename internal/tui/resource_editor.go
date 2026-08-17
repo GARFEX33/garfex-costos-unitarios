@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
@@ -88,60 +87,6 @@ const (
 	editorModeEdit
 	editorModeDuplicate
 )
-
-// resourceEditorState is the in-progress "nuevo recurso"/"Editar" flow's
-// cross-turn state (see ResourcesWorkspaceAdapter.editor). It is entirely
-// catalog-driven: nothing here branches on a specific Clase/Familia/Tipo.
-type resourceEditorState struct {
-	mode resourceEditorMode
-	step resourceEditorStep
-	// class is the resource's ResourceScope.ClassCode — set from
-	// a.classFilter (filtered workspaces) or answerClass (unfiltered
-	// workspaces), or copied from the source resource for Edit/Duplicate.
-	class    string
-	family   string
-	itemType string
-	// attributes are resolved once class+family+itemType are all known, in
-	// catalog declaration order.
-	attributes []domain.ResourceAttribute
-	// nextIndex is the index into attributes for the next question to ask.
-	// Used only by the CREATE/legacy-sequential walkthrough (advanceEditor);
-	// the loop-edit flow uses editingCode instead (see below).
-	nextIndex int
-	// editingCode is the ResourceAttribute.Definition.Code currently being
-	// asked about during editorStepAttributeEdit — the loop-edit flow's
-	// counterpart to nextIndex, set by answerAttributePicker and read by
-	// answerSingleAttributeEdit.
-	editingCode string
-	// editedCodes accumulates the attribute codes (and
-	// editNaturalUnitFieldCode, if the unit was changed) the user actually
-	// edited this session, in the order first touched — used only to build
-	// the final confirmation summary. Re-editing the same field later does
-	// not add a second entry; the summary always looks up the CURRENT value
-	// from state.values/currentUnit at confirm time regardless, so this is
-	// purely about "what to list", not "what value to show".
-	editedCodes []string
-	values      []domain.ResourceAttributeValue
-	// originalID/originalValues/originalUnit are populated only in
-	// editorModeEdit: originalID is the stable Resource.ID Update() targets
-	// (independent of IdentityKey, which editing may change);
-	// originalValues/originalUnit are read-only references used solely to
-	// default each question's cursor to the resource's current value — they
-	// are never written back directly, `values` is still built the exact
-	// same way editorModeCreate already builds it (appended as each
-	// question is answered), so there is no separate "replace if already
-	// present" logic to get wrong.
-	originalID     int64
-	originalValues []domain.ResourceAttributeValue
-	originalUnit   string
-	// currentUnit is editorModeEdit's mutable counterpart to originalUnit: it
-	// starts as a copy of the resource's NaturalUnit and gets overwritten if
-	// the user actually edits it during this session. finishEditor must be
-	// called with currentUnit (possibly changed), not necessarily the unit
-	// from the most-recently-answered question, since NaturalUnit might not
-	// be the last field the user selected.
-	currentUnit string
-}
 
 // resourceSearcher is the minimal surface a resources workspace needs from
 // the application service to search the real catalog.
@@ -351,57 +296,6 @@ func (a *ResourcesWorkspaceAdapter) startDuplicateEditor() (InteractionResponse,
 		currentUnit:    resource.NaturalUnit,
 	}
 	return a.attributePickerQuestion(), nil
-}
-
-// respondToEditor handles one InteractionInput while a.editor is
-// in-progress. The returned bool reports whether input actually belonged to
-// the editor (its own Key, or a cancellation) — when false, the caller
-// (Respond) must fall through to its normal handling instead of this
-// method silently swallowing unrelated input.
-func (a *ResourcesWorkspaceAdapter) respondToEditor(ctx context.Context, input InteractionInput) (InteractionResponse, bool) {
-	if input.Kind == InputCancel {
-		mode := a.editor.mode
-		a.editor = nil
-		if mode == editorModeEdit || mode == editorModeDuplicate {
-			return a.detailOriginResponse(TextMessage{Text: "Se canceló la operación."}), true
-		}
-		return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: "Se canceló la operación."}}}, true
-	}
-	if input.Key != resourceEditorKey {
-		return InteractionResponse{}, false
-	}
-
-	state := a.editor
-	switch state.step {
-	case editorStepClase:
-		return a.answerClass(input.Value), true
-	case editorStepFamily:
-		state.family = input.Value
-		state.step = editorStepType
-		return a.typeQuestion(), true
-	case editorStepType:
-		state.itemType = input.Value
-		state.attributes = a.catalog.AttributesFor(domain.ResourceScope{ClassCode: state.class, FamilyCode: state.family, TypeCode: state.itemType})
-		state.nextIndex = 0
-		state.step = editorStepAttribute
-		return a.advanceEditor(), true
-	case editorStepAttribute:
-		return a.answerAttribute(input.Value), true
-	case editorStepAttributePicker:
-		return a.answerAttributePicker(input.Value), true
-	case editorStepAttributeEdit:
-		return a.answerSingleAttributeEdit(input.Value), true
-	case editorStepUnit:
-		if state.mode == editorModeEdit || state.mode == editorModeDuplicate {
-			state.currentUnit = input.Value
-			state.editedCodes = appendUnique(state.editedCodes, editNaturalUnitFieldCode)
-			return a.attributePickerQuestion(), true
-		}
-		return a.finishEditor(ctx, input.Value), true
-	case editorStepConfirm:
-		return a.answerEditConfirmation(ctx, input.Value), true
-	}
-	return InteractionResponse{}, true
 }
 
 // classQuestion builds the create flow's first wizard step — asked only for
@@ -976,36 +870,6 @@ func (a *ResourcesWorkspaceAdapter) answerEditConfirmation(ctx context.Context, 
 	return a.finishEditor(ctx, state.currentUnit)
 }
 
-// filterApplicableValues drops any value whose attribute no longer resolves
-// to applicable (per ResourceAttribute.Effective given the FULL final
-// values) before a candidate is built. This is a real no-op for CREATE/the
-// legacy sequential walkthrough: advanceEditor already skips
-// ModeForbidden/notApplicable attributes, so state.values never accumulates
-// one of those in the first place there. It is NOT a no-op for the
-// loop-edit flow: state.values starts as a copy of the resource's full
-// pre-existing Attributes, so replacing just ONE (e.g. insulation THW ->
-// DESNUDO) can leave a now-forbidden OTHER value (color/voltage) still
-// sitting in the slice — passing that straight into domain.NewResource would
-// reject the whole edit ("attribute %q is forbidden"). Applied
-// unconditionally so there is exactly one final-validation code path for
-// both flows.
-func filterApplicableValues(attributes []domain.ResourceAttribute, values []domain.ResourceAttributeValue) []domain.ResourceAttributeValue {
-	applicable := map[string]bool{}
-	for _, attribute := range attributes {
-		mode, _, notApplicable := attribute.Effective(values)
-		if mode != domain.ModeForbidden && !notApplicable {
-			applicable[attribute.Definition.Code] = true
-		}
-	}
-	var filtered []domain.ResourceAttributeValue
-	for _, value := range values {
-		if applicable[value.AttributeCode] {
-			filtered = append(filtered, value)
-		}
-	}
-	return filtered
-}
-
 // finishEditor builds the candidate Resource from the fully-answered editor
 // state and persists it (Update targeting the original Resource.ID for
 // editorModeEdit; Create — never carrying an ID — for both editorModeCreate
@@ -1015,8 +879,8 @@ func filterApplicableValues(attributes []domain.ResourceAttribute, values []doma
 func (a *ResourcesWorkspaceAdapter) finishEditor(ctx context.Context, unit string) InteractionResponse {
 	state := a.editor
 	state.currentUnit = unit
-	values := filterApplicableValues(state.attributes, state.values)
-	scope := domain.ResourceScope{ClassCode: state.class, FamilyCode: state.family, TypeCode: state.itemType}
+	values := state.persistenceValues()
+	scope := domainScope(state)
 	var resource domain.Resource
 	var opErr error
 	switch state.mode {
@@ -1086,46 +950,6 @@ func (a *ResourcesWorkspaceAdapter) detailOriginResponse(messages ...Interaction
 	title, fields := a.resourcePresentation(a.lastDetail)
 	messages = append(messages, StructuredResult{Title: title, Fields: fields})
 	return InteractionResponse{Messages: messages, Pending: detailActionsRequest()}
-}
-
-// resourcePresentation builds the shared "one resource" presentation used
-// both as a compact selectable-list Option.Label and as the detail view's
-// own Title/Fields — built once, reused twice by the full workspace
-// dispatch (not yet added to this struct, see the type doc comment) and by
-// finishEditor's own success/duplicate-collision paths. IdentityKey (a
-// technical composite key) is deliberately never surfaced. NOT_APPLICABLE
-// attributes are omitted: a blank field is noise, not information.
-//
-// The title is the catalog-controlled canonical presentation resolved via
-// describer (see resourceDescriber): it is never an automatic dump of every
-// attribute, and it never falls back to one when a Tipo has no presentation
-// configured (a.describer.Describe returning "" simply leaves the title as
-// the bare FamilyCode).
-func (a *ResourcesWorkspaceAdapter) resourcePresentation(resource domain.Resource) (title string, fields []Field) {
-	attributes := append([]domain.ResourceAttributeValue(nil), resource.Attributes...)
-	sort.SliceStable(attributes, func(i, j int) bool { return attributes[i].AttributeCode < attributes[j].AttributeCode })
-
-	fields = []Field{{Label: "Unidad natural", Value: resource.NaturalUnit}}
-	for _, attribute := range attributes {
-		if attribute.Text == notApplicableAttributeText {
-			continue
-		}
-		label, value := a.resourceAttributePresentation(resource, attribute)
-		fields = append(fields, Field{Label: label, Value: value})
-	}
-
-	title = resourceCatalogIdentity(a.catalog, resource)
-	if presentation := a.describer.Describe(resource); presentation != "" {
-		title += " — " + presentation
-	}
-	// task 7.3: mark a resource whose Clase is inactive wherever this shared
-	// title renders — search results (searchResponse's Option.Label) and the
-	// detail view (detailResponse's StructuredResult.Title) both go through
-	// this one function, so marking it here covers both surfaces at once.
-	if !a.classIsActive(resource.ClassCode) {
-		title += " (Clase inactiva)"
-	}
-	return title, fields
 }
 
 func (a *ResourcesWorkspaceAdapter) resourceAttributePresentation(resource domain.Resource, value domain.ResourceAttributeValue) (string, string) {
