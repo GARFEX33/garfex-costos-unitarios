@@ -29,6 +29,15 @@ func (f *fakeResourceSearcher) Search(_ context.Context, criteria domain.SearchC
 	return f.results, f.err
 }
 
+func (f *fakeResourceSearcher) SearchPage(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error) {
+	normalized, err := criteria.Normalize()
+	if err != nil {
+		return domain.ResourcePage{}, err
+	}
+	resources, err := f.Search(ctx, normalized)
+	return domain.ResourcePage{Criteria: normalized, Resources: resources, HasPrevious: normalized.Offset > 0, HasNext: len(resources) > normalized.Limit}, err
+}
+
 // fakeResourceDeleter is the fake resourceLifecycle used by the lifecycle
 // flow tests in this file.
 type fakeResourceDeleter struct {
@@ -137,8 +146,8 @@ func TestResourcesWorkspaceAdapterRespondSendsLimitEleven(t *testing.T) {
 	if _, err := adapter.Respond(context.Background(), InteractionInput{Kind: InputText, Value: "cemento"}); err != nil {
 		t.Fatalf("Respond() error = %v, want nil", err)
 	}
-	if fake.gotCriteria.Limit != 11 {
-		t.Fatalf("gotCriteria.Limit = %d, want 11", fake.gotCriteria.Limit)
+	if fake.gotCriteria.Limit != searchResultPageSize {
+		t.Fatalf("gotCriteria.Limit = %d, want %d", fake.gotCriteria.Limit, searchResultPageSize)
 	}
 }
 

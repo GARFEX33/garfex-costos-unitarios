@@ -52,16 +52,29 @@ func (s *Service) Get(ctx context.Context, classCode, identityKey string) (domai
 	return r, nil
 }
 
-// Search returns resources matching criteria. Empty Text/ClassCode/
-// FamilyCode/Filters are valid "match everything" inputs, so no argument
-// validation is needed here — Limit/Offset clamping is a SQL-correctness
-// concern handled by the repository.
 func (s *Service) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
 	resources, err := s.repo.Search(ctx, criteria)
 	if err != nil {
 		return nil, fmt.Errorf("search resources: %w", err)
 	}
 	return resources, nil
+}
+
+func (s *Service) SearchPage(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error) {
+	normalized, err := criteria.Normalize()
+	if err != nil {
+		return domain.ResourcePage{}, err
+	}
+	paged, ok := s.repo.(domain.ResourcePageRepository)
+	if !ok {
+		return domain.ResourcePage{}, errors.New("resource repository does not support paged search")
+	}
+	page, err := paged.SearchPage(ctx, normalized)
+	if err != nil {
+		return domain.ResourcePage{}, fmt.Errorf("search resources: %w", err)
+	}
+	page.Criteria = normalized
+	return page, nil
 }
 
 // Describe resolves the canonical presentation of resource using the

@@ -157,6 +157,7 @@ type ResourcesWorkspaceAdapter struct {
 	// result list deterministically, without a separate cache of results.
 	lastQuery      string
 	lifecycleScope domain.ResourceLifecycleScope
+	lastPage       domain.ResourcePage
 	// lastDetail remembers the resource currently shown in the detail view
 	// so a later "Editar"/"Duplicar" selection knows which one to act on.
 	lastDetail domain.Resource

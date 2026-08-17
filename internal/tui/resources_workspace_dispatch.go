@@ -29,11 +29,9 @@ const resourcesGreeting = "Recursos Maestros está conectado al catálogo real (
 // activePaletteActions). It starts the "nuevo recurso" create flow.
 const createResourceActionID = "create-resource"
 
-// searchResultLimit requests one row beyond the visible page (10) so the
-// adapter can tell "exactly 10 results" apart from "at least 11 results
-// exist" without a separate count query.
-const searchResultLimit = 11
 const searchResultPageSize = 10
+
+const previousPageActionID, nextPageActionID = "previous-resource-page", "next-resource-page"
 
 // searchResultsKey identifies the selectable search-results QuestionRequest;
 // selecting one of its Options opens that resource's detail view.
@@ -97,13 +95,15 @@ func (a *ResourcesWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 		return a.startCreateEditor()
 	case input.Kind == InputText:
 		a.lifecycleScope = domain.LifecycleScopeActive
-		return a.searchResponse(ctx, input.Value, a.lifecycleScope)
+		return a.searchResponse(ctx, domain.SearchCriteria{Text: input.Value, ClassCode: a.classFilter, LifecycleScope: a.lifecycleScope, Limit: searchResultPageSize})
 	case input.Kind == InputAction && input.ActionID == searchResourcesActionID:
 		a.lifecycleScope = domain.LifecycleScopeActive
 		return InteractionResponse{}, nil
 	case input.Kind == InputAction && input.ActionID == inactiveDiscoveryActionID:
 		a.lifecycleScope = domain.LifecycleScopeInactive
-		return a.searchResponse(ctx, a.lastQuery, a.lifecycleScope)
+		return a.searchResponse(ctx, domain.SearchCriteria{Text: a.lastQuery, ClassCode: a.classFilter, LifecycleScope: a.lifecycleScope, Limit: searchResultPageSize})
+	case input.Kind == InputAction && (input.ActionID == previousPageActionID || input.ActionID == nextPageActionID):
+		return a.navigatePage(ctx, input.ActionID)
 	case input.Kind == InputSelection && input.Key == searchResultsKey:
 		return a.detailResponse(ctx, input.Value)
 	case input.Kind == InputAction && input.ActionID == editActionID:
@@ -117,7 +117,7 @@ func (a *ResourcesWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 	case input.Kind == InputSelection && input.Key == resourcesLifecycleConfirmKey:
 		return a.answerLifecycleConfirmation(ctx, input.Value)
 	case input.Kind == InputAction && input.ActionID == backActionID:
-		return a.searchResponse(ctx, a.lastQuery, a.lifecycleScope)
+		return a.searchResponse(ctx, a.lastPage.Criteria)
 	}
 	return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: resourcesGreeting}}}, nil
 }
@@ -130,30 +130,73 @@ func (a *ResourcesWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 // ErrorMessage). It is shared between the initial InputText search and the
 // "volver a los resultados" action, which re-runs the identical
 // deterministic search instead of caching results.
-func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text string, scope domain.ResourceLifecycleScope) (InteractionResponse, error) {
-	criteria := domain.SearchCriteria{Text: text, ClassCode: a.classFilter, LifecycleScope: scope, Limit: searchResultLimit}
-	results, err := a.resources.Search(ctx, criteria)
+func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, criteria domain.SearchCriteria) (InteractionResponse, error) {
+	page, err := a.searchPage(ctx, criteria)
 	if err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
 			ErrorMessage{Text: "No pude completar la búsqueda. Probá de nuevo en un momento."},
 		}}, nil
 	}
+	return a.renderSearchPage(page), nil
+}
+
+func (a *ResourcesWorkspaceAdapter) navigatePage(ctx context.Context, actionID string) (InteractionResponse, error) {
+	page := a.lastPage
+	if actionID == previousPageActionID && !page.HasPrevious || actionID == nextPageActionID && !page.HasNext {
+		return a.renderSearchPage(page), nil
+	}
+	criteria := page.Criteria
+	if actionID == previousPageActionID {
+		criteria.Offset -= criteria.Limit
+		if criteria.Offset < 0 {
+			criteria.Offset = 0
+		}
+	} else {
+		criteria.Offset += criteria.Limit
+	}
+	next, err := a.searchPage(ctx, criteria)
+	if err != nil {
+		current := a.renderSearchPage(page)
+		return InteractionResponse{Messages: []InteractionMessage{
+			ErrorMessage{Text: "No pude completar la búsqueda. Probá de nuevo en un momento."},
+		}, Pending: current.Pending}, nil
+	}
+	return a.renderSearchPage(next), nil
+}
+
+func (a *ResourcesWorkspaceAdapter) searchPage(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error) {
+	searcher, ok := a.resources.(interface {
+		SearchPage(context.Context, domain.SearchCriteria) (domain.ResourcePage, error)
+	})
+	if !ok {
+		return domain.ResourcePage{}, fmt.Errorf("resource workspace requires paged resource search")
+	}
+	return searcher.SearchPage(ctx, criteria)
+}
+
+func (a *ResourcesWorkspaceAdapter) renderSearchPage(page domain.ResourcePage) InteractionResponse {
+	a.lastPage = page
+	a.lastQuery = page.Criteria.Text
+	results := page.Resources
 
 	if len(results) == 0 {
 		return InteractionResponse{Messages: []InteractionMessage{
-			TextMessage{Text: fmt.Sprintf("No encontré recursos que coincidan con %q.", text)},
-		}}, nil
+			TextMessage{Text: fmt.Sprintf("No encontré recursos que coincidan con %q.", page.Criteria.Text)},
+		}}
 	}
 
-	hasMore := len(results) == searchResultLimit
+	hasMore := page.HasNext
 	visible := results
-	if hasMore {
+	if len(visible) > searchResultPageSize {
 		visible = results[:searchResultPageSize]
 	}
 
 	prompt := fmt.Sprintf("%d recurso(s) encontrado(s)", len(visible))
 	if hasMore {
-		prompt += " (hay más — refiná tu búsqueda para acotar)"
+		prompt += " · n siguiente (hay más)"
+	}
+	if page.HasPrevious {
+		prompt += " · p anterior"
 	}
 	prompt += ":"
 
@@ -168,8 +211,6 @@ func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text str
 		}
 	}
 
-	a.lastQuery = text
-
 	return InteractionResponse{Pending: QuestionRequest{
 		ID:            searchResultsKey,
 		Key:           searchResultsKey,
@@ -177,7 +218,7 @@ func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text str
 		Question:      prompt,
 		SelectionMode: SelectionSingle,
 		Options:       options,
-	}}, nil
+	}}
 }
 
 // detailResponse opens the full detail of the resource encoded in value

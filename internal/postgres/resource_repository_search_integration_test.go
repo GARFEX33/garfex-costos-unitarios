@@ -35,11 +35,20 @@ func TestResourceRepositorySearchSetHydrationIntegration(t *testing.T) {
 		}
 		counter.count.Store(0)
 		for _, limit := range []int{1, 10, 50} {
-			got := mustSearch(t, ctx, repo, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Limit: limit})
-			if len(got) != limit || counter.count.Swap(0) != 2 {
-				t.Fatalf("Search(%d) = %d rows, %d queries", limit, len(got), counter.count.Load())
+			page, err := repo.(domain.ResourcePageRepository).SearchPage(ctx, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Limit: limit})
+			if err != nil || len(page.Resources) != limit || page.HasPrevious || page.HasNext != (limit < 50) || counter.count.Swap(0) != 2 {
+				t.Fatalf("Search(%d) = %d rows, previous:%v next:%v, %d queries; error %v", limit, len(page.Resources), page.HasPrevious, page.HasNext, counter.count.Load(), err)
 			}
 		}
+		boundary, err := repo.(domain.ResourcePageRepository).SearchPage(ctx, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Limit: 10, Offset: 40})
+		if err != nil || len(boundary.Resources) != 10 || !boundary.HasPrevious || boundary.HasNext {
+			t.Fatalf("exact-boundary page = %+v, %v; want full final page with previous only", boundary, err)
+		}
+		empty, err := repo.(domain.ResourcePageRepository).SearchPage(ctx, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Limit: 10, Offset: 50})
+		if err != nil || len(empty.Resources) != 0 || !empty.HasPrevious || empty.HasNext {
+			t.Fatalf("empty final page = %+v, %v; want empty previous-only boundary", empty, err)
+		}
+		counter.count.Store(0)
 		if got := mustSearch(t, ctx, repo, domain.SearchCriteria{FamilyCode: "CONDUCTORES", Text: "no-such-resource"}); len(got) != 0 || counter.count.Load() != 1 {
 			t.Fatalf("empty Search() = %d rows, %d queries", len(got), counter.count.Load())
 		}
