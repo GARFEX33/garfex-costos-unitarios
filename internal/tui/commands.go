@@ -220,6 +220,7 @@ func workspaceActions(d WorkspaceDescriptor) []assistantAction {
 	return []assistantAction{
 		{id: createResourceActionID, label: d.CreateLabel},
 		{id: searchResourcesActionID, label: "Buscar recursos"},
+		{id: inactiveDiscoveryActionID, label: "Buscar recursos inactivos"},
 	}
 }
 

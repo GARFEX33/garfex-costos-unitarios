@@ -23,6 +23,7 @@ func (a *ResourcesWorkspaceAdapter) resourcePresentation(resource domain.Resourc
 	if presentation := a.describer.Describe(resource); presentation != "" {
 		title += " — " + presentation
 	}
+	title += " (" + resourceStatus(resource) + ")"
 	if !a.classIsActive(resource.ClassCode) {
 		title += " (Clase inactiva)"
 	}

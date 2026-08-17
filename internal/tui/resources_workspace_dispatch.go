@@ -12,7 +12,7 @@ import (
 // resource_editor.go by recursos-maestro PR6, which implemented only the
 // create/edit/duplicate editor state machine) by adding the full workspace
 // dispatch: Greeting/Respond, text search, the search-result detail view,
-// and the delete confirmation flow. It retires the older,
+// and the lifecycle confirmation flow. It retires the older,
 // Materials-only/unfiltered-only MaterialsWorkspaceAdapter
 // (materials_workspace_adapter.go, deleted by this same PR) — every method
 // below is that file's Resource-typed, classFilter-aware equivalent, so the
@@ -40,7 +40,7 @@ const searchResultPageSize = 10
 const searchResultsKey = "resources-search-results"
 
 // resourcesDetailActionsKey identifies the ActionRequest offered after a
-// detail view: Editar/Duplicar/Eliminar/volver a los resultados.
+// detail view: Editar/Duplicar/lifecycle/volver a los resultados.
 const resourcesDetailActionsKey = "resources-detail-actions"
 
 // backActionID is the Action.ID/InteractionInput.ActionID for "volver a los
@@ -56,15 +56,13 @@ const editActionID = "edit-resource"
 // "Duplicar" from the detail view (startDuplicateEditor, resource_editor.go).
 const duplicateActionID = "duplicate-resource"
 
-// deleteActionID is the Action.ID/InteractionInput.ActionID for "Eliminar"
-// from the detail view. It shows a confirmation naming the resource before
-// doing anything — see startDeleteConfirmation/answerDeleteConfirmation
-// below.
-const deleteActionID = "delete-resource"
+const (
+	deactivateActionID        = "deactivate-resource"
+	reactivateActionID        = "reactivate-resource"
+	inactiveDiscoveryActionID = "discover-inactive-resources"
+)
 
-// resourcesDeleteConfirmKey identifies the ConfirmationRequest shown before
-// soft-deleting a resource.
-const resourcesDeleteConfirmKey = "resources-delete-confirm"
+const resourcesLifecycleConfirmKey = "resources-lifecycle-confirm"
 
 // notApplicableAttributeText mirrors internal/postgres's notApplicableState
 // sentinel ("NOT_APPLICABLE"), the literal domain.ResourceAttributeValue.Text
@@ -98,19 +96,28 @@ func (a *ResourcesWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 	case input.Kind == InputAction && input.ActionID == createResourceActionID:
 		return a.startCreateEditor()
 	case input.Kind == InputText:
-		return a.searchResponse(ctx, input.Value)
+		a.lifecycleScope = domain.LifecycleScopeActive
+		return a.searchResponse(ctx, input.Value, a.lifecycleScope)
+	case input.Kind == InputAction && input.ActionID == searchResourcesActionID:
+		a.lifecycleScope = domain.LifecycleScopeActive
+		return InteractionResponse{}, nil
+	case input.Kind == InputAction && input.ActionID == inactiveDiscoveryActionID:
+		a.lifecycleScope = domain.LifecycleScopeInactive
+		return a.searchResponse(ctx, a.lastQuery, a.lifecycleScope)
 	case input.Kind == InputSelection && input.Key == searchResultsKey:
 		return a.detailResponse(ctx, input.Value)
 	case input.Kind == InputAction && input.ActionID == editActionID:
 		return a.startEditEditor()
 	case input.Kind == InputAction && input.ActionID == duplicateActionID:
 		return a.startDuplicateEditor()
-	case input.Kind == InputAction && input.ActionID == deleteActionID:
-		return a.startDeleteConfirmation()
-	case input.Kind == InputSelection && input.Key == resourcesDeleteConfirmKey:
-		return a.answerDeleteConfirmation(ctx, input.Value)
+	case input.Kind == InputAction && input.ActionID == deactivateActionID:
+		return a.startLifecycleConfirmation(false)
+	case input.Kind == InputAction && input.ActionID == reactivateActionID:
+		return a.startLifecycleConfirmation(true)
+	case input.Kind == InputSelection && input.Key == resourcesLifecycleConfirmKey:
+		return a.answerLifecycleConfirmation(ctx, input.Value)
 	case input.Kind == InputAction && input.ActionID == backActionID:
-		return a.searchResponse(ctx, a.lastQuery)
+		return a.searchResponse(ctx, a.lastQuery, a.lifecycleScope)
 	}
 	return InteractionResponse{Messages: []InteractionMessage{TextMessage{Text: resourcesGreeting}}}, nil
 }
@@ -123,8 +130,8 @@ func (a *ResourcesWorkspaceAdapter) Respond(ctx context.Context, input Interacti
 // ErrorMessage). It is shared between the initial InputText search and the
 // "volver a los resultados" action, which re-runs the identical
 // deterministic search instead of caching results.
-func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text string) (InteractionResponse, error) {
-	criteria := domain.SearchCriteria{Text: text, ClassCode: a.classFilter, Limit: searchResultLimit}
+func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text string, scope domain.ResourceLifecycleScope) (InteractionResponse, error) {
+	criteria := domain.SearchCriteria{Text: text, ClassCode: a.classFilter, LifecycleScope: scope, Limit: searchResultLimit}
 	results, err := a.resources.Search(ctx, criteria)
 	if err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
@@ -152,9 +159,11 @@ func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text str
 
 	options := make([]Option, len(visible))
 	for i, resource := range visible {
+		label := a.describer.Describe(resource)
+		label += " · " + resourceStatus(resource)
 		options[i] = Option{
 			ID:    fmt.Sprintf("%d", i),
-			Label: a.describer.Describe(resource),
+			Label: label,
 			Value: resource.ClassCode + "|" + resource.IdentityKey,
 		}
 	}
@@ -174,7 +183,7 @@ func (a *ResourcesWorkspaceAdapter) searchResponse(ctx context.Context, text str
 // detailResponse opens the full detail of the resource encoded in value
 // (ClassCode + "|" + IdentityKey, see resourcePresentation/searchResponse —
 // design R1: Get's first argument is a CLASS code, never a family code) and
-// offers Editar/Duplicar/Eliminar/"volver a los resultados".
+// offers Editar/Duplicar, the requested lifecycle transition, and "volver a los resultados".
 func (a *ResourcesWorkspaceAdapter) detailResponse(ctx context.Context, value string) (InteractionResponse, error) {
 	classCode, identityKey, ok := strings.Cut(value, "|")
 	if !ok {
@@ -194,7 +203,7 @@ func (a *ResourcesWorkspaceAdapter) detailResponse(ctx context.Context, value st
 	title, fields := a.resourcePresentation(resource)
 	return InteractionResponse{
 		Messages: []InteractionMessage{StructuredResult{Title: title, Fields: fields}},
-		Pending:  detailActionsRequest(),
+		Pending:  a.detailActionsRequest(),
 	}, nil
 }
 
@@ -202,7 +211,12 @@ func (a *ResourcesWorkspaceAdapter) detailResponse(ctx context.Context, value st
 // resource's detail view — shared by detailResponse (first opening it) and
 // the "No, cancelar" path of the delete confirmation (returning to the same
 // detail after declining).
-func detailActionsRequest() ActionRequest {
+func (a *ResourcesWorkspaceAdapter) detailActionsRequest() ActionRequest {
+	active := resourceIsActive(a.lastDetail)
+	lifecycleID, lifecycleLabel := reactivateActionID, "Reactivar"
+	if active {
+		lifecycleID, lifecycleLabel = deactivateActionID, "Desactivar"
+	}
 	return ActionRequest{
 		ID:       resourcesDetailActionsKey,
 		Key:      resourcesDetailActionsKey,
@@ -210,48 +224,68 @@ func detailActionsRequest() ActionRequest {
 		Actions: []Action{
 			{ID: editActionID, Label: "Editar", Value: editActionID, Target: ActionTargetAgent},
 			{ID: duplicateActionID, Label: "Duplicar", Value: duplicateActionID, Target: ActionTargetAgent},
-			{ID: deleteActionID, Label: "Eliminar", Value: deleteActionID, Target: ActionTargetAgent},
+			{ID: lifecycleID, Label: lifecycleLabel, Value: lifecycleID, Target: ActionTargetAgent},
 			{ID: backActionID, Label: "Volver a los resultados", Value: backActionID, Target: ActionTargetAgent},
 		},
 	}
 }
 
-// startDeleteConfirmation shows a confirmation naming the resource currently
-// in the detail view (a.lastDetail) before doing anything destructive —
-// nothing is deleted yet at this point.
-func (a *ResourcesWorkspaceAdapter) startDeleteConfirmation() (InteractionResponse, error) {
+func (a *ResourcesWorkspaceAdapter) startLifecycleConfirmation(reactivate bool) (InteractionResponse, error) {
+	a.lifecycleTarget = reactivate
 	title, _ := a.resourcePresentation(a.lastDetail)
-	question := fmt.Sprintf("Eliminar recurso\n\n%s\n\n¿Seguro que querés eliminar este recurso?", title)
+	verb := "Desactivar"
+	if reactivate {
+		verb = "Reactivar"
+	}
+	question := fmt.Sprintf("%s recurso\n\n%s\n\n¿Seguro que querés %s este recurso?", verb, title, strings.ToLower(verb))
 	return InteractionResponse{Pending: ConfirmationRequest{
-		ID:           resourcesDeleteConfirmKey,
-		Key:          resourcesDeleteConfirmKey,
+		ID:           resourcesLifecycleConfirmKey,
+		Key:          resourcesLifecycleConfirmKey,
 		Question:     question,
-		ConfirmLabel: "Sí, eliminar",
+		ConfirmLabel: "Sí, " + strings.ToLower(verb),
 		CancelLabel:  "No, cancelar",
 	}}, nil
 }
 
-// answerDeleteConfirmation handles the confirmation's answer: "no" returns
+// answerLifecycleConfirmation handles the confirmation's answer: "no" returns
 // the user to the SAME detail view they were looking at (not a bare
 // "cancelado" — they were just reading about a specific resource and said
-// not to delete it); "yes" soft-deletes it (resourceDeleter.Delete — never a
-// hard delete) and confirms what happened, or reports a generic failure
-// without leaking the raw error.
-func (a *ResourcesWorkspaceAdapter) answerDeleteConfirmation(ctx context.Context, value string) (InteractionResponse, error) {
+// not to change it); "yes" performs the requested lifecycle transition or
+// reports a generic failure without leaking the raw error.
+func (a *ResourcesWorkspaceAdapter) answerLifecycleConfirmation(ctx context.Context, value string) (InteractionResponse, error) {
 	if value != "yes" {
 		title, fields := a.resourcePresentation(a.lastDetail)
 		return InteractionResponse{
 			Messages: []InteractionMessage{StructuredResult{Title: title, Fields: fields}},
-			Pending:  detailActionsRequest(),
+			Pending:  a.detailActionsRequest(),
 		}, nil
 	}
-	title, _ := a.resourcePresentation(a.lastDetail)
-	if err := a.deleter.Delete(ctx, a.lastDetail.ID); err != nil {
+	reactivate := a.lifecycleTarget
+	verb := "desactivar"
+	transition := a.lifecycle.Deactivate
+	if reactivate {
+		verb, transition = "reactivar", a.lifecycle.Reactivate
+	}
+	result, err := transition(ctx, a.lastDetail.ID)
+	if err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
-			ErrorMessage{Text: "No pude eliminar el recurso. Probá de nuevo en un momento."},
+			ErrorMessage{Text: "No pude " + verb + " el recurso. Probá de nuevo en un momento."},
 		}}, nil
 	}
-	return InteractionResponse{Messages: []InteractionMessage{
-		TextMessage{Text: "Recurso eliminado: " + title},
-	}}, nil
+	if result.Resource.ID == 0 || result.Resource.ClassCode == "" {
+		result.Resource = a.lastDetail
+	}
+	result.Resource.Active = reactivate
+	a.lastDetail = result.Resource
+	title, fields := a.resourcePresentation(a.lastDetail)
+	return InteractionResponse{Messages: []InteractionMessage{StructuredResult{Title: title, Fields: fields}}, Pending: a.detailActionsRequest()}, nil
+}
+
+func resourceIsActive(resource domain.Resource) bool { return resource.ID <= 0 || resource.Active }
+
+func resourceStatus(resource domain.Resource) string {
+	if resourceIsActive(resource) {
+		return "Activo"
+	}
+	return "Inactivo"
 }

@@ -20,18 +20,33 @@ type fakeResourceSearcher struct {
 	err         error
 }
 
+const deleteActionID = deactivateActionID
+const resourcesDeleteConfirmKey = resourcesLifecycleConfirmKey
+
 func (f *fakeResourceSearcher) Search(_ context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
 	f.gotCriteria = criteria
 	f.callCount++
 	return f.results, f.err
 }
 
-// fakeResourceDeleter is the fake resourceDeleter used by the delete-flow
-// tests in this file.
+// fakeResourceDeleter is the fake resourceLifecycle used by the lifecycle
+// flow tests in this file.
 type fakeResourceDeleter struct {
 	callCount int
 	gotID     int64
 	err       error
+}
+
+func (f *fakeResourceDeleter) Deactivate(_ context.Context, id int64) (domain.LifecycleResult, error) {
+	f.callCount++
+	f.gotID = id
+	return domain.LifecycleResult{Resource: domain.Resource{ID: id, Active: false}, Changed: true}, f.err
+}
+
+func (f *fakeResourceDeleter) Reactivate(_ context.Context, id int64) (domain.LifecycleResult, error) {
+	f.callCount++
+	f.gotID = id
+	return domain.LifecycleResult{Resource: domain.Resource{ID: id, Active: true}, Changed: true}, f.err
 }
 
 func (f *fakeResourceDeleter) Delete(_ context.Context, id int64) error {
@@ -43,10 +58,10 @@ func (f *fakeResourceDeleter) Delete(_ context.Context, id int64) error {
 // newDispatchAdapter builds a ResourcesWorkspaceAdapter against the real
 // production catalog (domain.SeedResourceCatalog()) for the workspace
 // dispatch tests below — mirrors resource_editor_test.go's newTestAdapter
-// but wires every dependency (search/delete included), since Respond's full
+// but wires every dependency (search/lifecycle included), since Respond's full
 // dispatch (unlike the editor-only tests) exercises all of them.
-func newDispatchAdapter(searcher resourceSearcher, getter resourceGetter, describer resourceDescriber, creator resourceCreator, updater resourceUpdater, deleter resourceDeleter, classFilter string) *ResourcesWorkspaceAdapter {
-	return NewResourcesWorkspaceAdapter(searcher, getter, describer, creator, updater, deleter, domain.SeedResourceCatalog(), classFilter)
+func newDispatchAdapter(searcher resourceSearcher, getter resourceGetter, describer resourceDescriber, creator resourceCreator, updater resourceUpdater, lifecycle resourceLifecycle, classFilter string) *ResourcesWorkspaceAdapter {
+	return NewResourcesWorkspaceAdapter(searcher, getter, describer, creator, updater, lifecycle, domain.SeedResourceCatalog(), classFilter)
 }
 
 func TestResourcesWorkspaceAdapterGreeting(t *testing.T) {
@@ -234,7 +249,7 @@ func TestResourcesWorkspaceAdapterRespondOneResultReturnsSelectableQuestion(t *t
 		t.Fatalf("Pending.Options = %v, want exactly 1 option", request.Options)
 	}
 	option := request.Options[0]
-	wantLabel := "Cable THW-LS 10 AWG NEGRO"
+	wantLabel := "Cable THW-LS 10 AWG NEGRO · Activo"
 	if option.Label != wantLabel {
 		t.Fatalf("Options[0].Label = %q, want exactly %q", option.Label, wantLabel)
 	}
@@ -370,8 +385,8 @@ func TestResourcesWorkspaceAdapterRespondSelectResultOpensDetail(t *testing.T) {
 	if !ok {
 		t.Fatalf("Pending = %T, want ActionRequest", response.Pending)
 	}
-	if len(action.Actions) != 4 || action.Actions[0].ID != editActionID || action.Actions[1].ID != duplicateActionID || action.Actions[2].ID != deleteActionID || action.Actions[3].ID != backActionID {
-		t.Fatalf("Actions = %+v, want exactly [%q, %q, %q, %q] in that order", action.Actions, editActionID, duplicateActionID, deleteActionID, backActionID)
+	if len(action.Actions) != 4 || action.Actions[0].ID != editActionID || action.Actions[1].ID != duplicateActionID || action.Actions[2].ID != deactivateActionID || action.Actions[3].ID != backActionID {
+		t.Fatalf("Actions = %+v, want exactly [%q, %q, %q, %q] in that order", action.Actions, editActionID, duplicateActionID, deactivateActionID, backActionID)
 	}
 }
 
@@ -505,7 +520,7 @@ func TestResourcesWorkspaceAdapterRespondDetailUsesDescriberForTitle(t *testing.
 	if !ok {
 		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
 	}
-	want := "Cable · Material › Conductores — Cable THHN 12 AWG BLANCO"
+	want := "Cable · Material › Conductores — Cable THHN 12 AWG BLANCO (Activo)"
 	if result.Title != want {
 		t.Fatalf("Title = %q, want %q", result.Title, want)
 	}
@@ -517,6 +532,7 @@ func TestResourcesWorkspaceAdapterRespondDetailUsesDescriberForTitle(t *testing.
 // action.
 func openDeleteConfirmationDetail(t *testing.T, resource domain.Resource) (*ResourcesWorkspaceAdapter, *fakeResourceDeleter) {
 	t.Helper()
+	resource.Active = true
 	getter := &fakeResourceGetter{resource: resource}
 	deleter := &fakeResourceDeleter{}
 	adapter := newDispatchAdapter(&fakeResourceSearcher{}, getter, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, deleter, "")
@@ -585,18 +601,18 @@ func TestResourcesWorkspaceAdapterRespondDeleteConfirmYesCallsDelete(t *testing.
 	if deleter.gotID != 42 {
 		t.Fatalf("Delete gotID = %d, want %d", deleter.gotID, 42)
 	}
-	if response.Pending != nil {
-		t.Fatalf("Pending = %#v, want nil after a successful delete", response.Pending)
+	if response.Pending == nil {
+		t.Fatalf("Pending = %#v, want lifecycle actions after a successful deactivation", response.Pending)
 	}
 	if len(response.Messages) != 1 {
 		t.Fatalf("Messages = %v, want exactly one message", response.Messages)
 	}
-	message, ok := response.Messages[0].(TextMessage)
+	message, ok := response.Messages[0].(StructuredResult)
 	if !ok {
-		t.Fatalf("Messages[0] = %T, want TextMessage", response.Messages[0])
+		t.Fatalf("Messages[0] = %T, want StructuredResult", response.Messages[0])
 	}
-	if !strings.Contains(message.Text, "Conductores · Material") {
-		t.Fatalf("text = %q, want it to mention the deleted resource", message.Text)
+	if !strings.Contains(message.Title, "Conductores · Material") || !strings.Contains(message.Title, "Inactivo") {
+		t.Fatalf("title = %q, want the deactivated resource state", message.Title)
 	}
 }
 
