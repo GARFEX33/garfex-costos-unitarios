@@ -879,6 +879,10 @@ func (m *Model) handlePaletteKey(msg tea.KeyPressMsg) {
 				m.startResourceSearch()
 				return
 			}
+			if action.id == inactiveDiscoveryActionID {
+				m.respond(InteractionInput{Kind: InputAction, ActionID: action.id, Value: action.id, Target: ActionTargetAgent})
+				return
+			}
 			if _, ok := m.workspaces[action.id]; ok {
 				// A workspace's palette action id IS its registry slug
 				// (WorkspaceDescriptor.Slug). Close the palette itself, mode

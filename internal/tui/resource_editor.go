@@ -121,10 +121,9 @@ type resourceUpdater interface {
 	Update(ctx context.Context, command domain.UpdateCommand) (domain.Resource, error)
 }
 
-// resourceDeleter is the minimal surface the "Eliminar" flow needs to soft-
-// delete a resource by its stable ID (never a hard delete).
-type resourceDeleter interface {
-	Delete(ctx context.Context, id int64) error
+type resourceLifecycle interface {
+	Deactivate(ctx context.Context, id int64) (domain.LifecycleResult, error)
+	Reactivate(ctx context.Context, id int64) (domain.LifecycleResult, error)
 }
 
 // ResourcesWorkspaceAdapter is the production InteractionAgent shape for a
@@ -135,21 +134,16 @@ type resourceDeleter interface {
 // (e.g. a 4th class added purely as data) drive this exact adapter/editor
 // code in a test without any code change (recursos-maestro design §5).
 //
-// This PR (recursos-maestro PR6) implements only the create/edit/duplicate
-// editor state machine below (respondToEditor and everything it calls). The
-// full workspace behavior (Greeting/Respond dispatch, text search, detail
-// view, delete confirmation — currently still on the not-yet-renamed
-// MaterialsWorkspaceAdapter in materials_workspace_adapter.go) is added to
-// this same struct by a later PR once that file is retired; resources/
-// deleter/lastQuery already have their final field shape reserved here so
-// that PR only adds methods, it does not change this struct.
+// This adapter owns both the create/edit/duplicate editor state machine and
+// the full workspace behavior (search, detail, and lifecycle confirmation)
+// for filtered and unfiltered workspaces.
 type ResourcesWorkspaceAdapter struct {
 	resources       resourceSearcher
 	resourcesGetter resourceGetter
 	describer       resourceDescriber
 	creator         resourceCreator
 	updater         resourceUpdater
-	deleter         resourceDeleter
+	lifecycle       resourceLifecycle
 	// catalog is the injected domain.ResourceCatalog this adapter/editor
 	// reads every Clase/Familia/Tipo/Atributo/Unidad option from — see the
 	// struct doc comment above.
@@ -161,26 +155,29 @@ type ResourcesWorkspaceAdapter struct {
 	// lastQuery remembers the text of the most recent successful search so
 	// the "volver a los resultados" action can reproduce the identical
 	// result list deterministically, without a separate cache of results.
-	lastQuery string
+	lastQuery      string
+	lifecycleScope domain.ResourceLifecycleScope
 	// lastDetail remembers the resource currently shown in the detail view
 	// so a later "Editar"/"Duplicar" selection knows which one to act on.
 	lastDetail domain.Resource
+	// lifecycleTarget remembers the explicit transition awaiting confirmation.
+	lifecycleTarget bool
 	// editor holds the in-progress "nuevo recurso" create/edit flow, if any;
 	// nil means no create/edit flow is in progress. See this file.
 	editor *resourceEditorState
 }
 
 // NewResourcesWorkspaceAdapter returns a ResourcesWorkspaceAdapter for one
-// workspace slot. searcher, getter, describer, creator, updater and deleter
+// workspace slot. searcher, getter, describer, creator, updater and lifecycle
 // are satisfied structurally by *recursos.Service — composed for real in
 // cmd/garfex/main.go, once per active ResourceClass plus once for the
 // unfiltered "/recursos" workspace (classFilter == "" there).
 func NewResourcesWorkspaceAdapter(searcher resourceSearcher, getter resourceGetter, describer resourceDescriber,
-	creator resourceCreator, updater resourceUpdater, deleter resourceDeleter,
+	creator resourceCreator, updater resourceUpdater, lifecycle resourceLifecycle,
 	catalog domain.ResourceCatalog, classFilter string) *ResourcesWorkspaceAdapter {
 	return &ResourcesWorkspaceAdapter{
 		resources: searcher, resourcesGetter: getter, describer: describer,
-		creator: creator, updater: updater, deleter: deleter,
+		creator: creator, updater: updater, lifecycle: lifecycle,
 		catalog: catalog, classFilter: classFilter,
 	}
 }
@@ -245,7 +242,7 @@ func (a *ResourcesWorkspaceAdapter) startEditEditor() (InteractionResponse, erro
 	if !a.classIsActive(resource.ClassCode) {
 		return InteractionResponse{
 			Messages: []InteractionMessage{ErrorMessage{Text: "No se puede editar este recurso: su Clase está inactiva."}},
-			Pending:  detailActionsRequest(),
+			Pending:  a.detailActionsRequest(),
 		}, nil
 	}
 	scope := domain.ResourceScope{ClassCode: resource.ClassCode, FamilyCode: resource.FamilyCode, TypeCode: resource.TypeCode}
@@ -279,7 +276,7 @@ func (a *ResourcesWorkspaceAdapter) startDuplicateEditor() (InteractionResponse,
 	if !a.classIsActive(resource.ClassCode) {
 		return InteractionResponse{
 			Messages: []InteractionMessage{ErrorMessage{Text: "No se puede duplicar este recurso: su Clase está inactiva."}},
-			Pending:  detailActionsRequest(),
+			Pending:  a.detailActionsRequest(),
 		}, nil
 	}
 	scope := domain.ResourceScope{ClassCode: resource.ClassCode, FamilyCode: resource.FamilyCode, TypeCode: resource.TypeCode}
@@ -949,7 +946,7 @@ func resourceEditorPersistenceError(mode resourceEditorMode, err error) string {
 func (a *ResourcesWorkspaceAdapter) detailOriginResponse(messages ...InteractionMessage) InteractionResponse {
 	title, fields := a.resourcePresentation(a.lastDetail)
 	messages = append(messages, StructuredResult{Title: title, Fields: fields})
-	return InteractionResponse{Messages: messages, Pending: detailActionsRequest()}
+	return InteractionResponse{Messages: messages, Pending: a.detailActionsRequest()}
 }
 
 func (a *ResourcesWorkspaceAdapter) resourceAttributePresentation(resource domain.Resource, value domain.ResourceAttributeValue) (string, string) {

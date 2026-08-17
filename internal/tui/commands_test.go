@@ -172,7 +172,7 @@ func TestBuildCatalogAdminWorkspaceSetsSlugAndPaletteActions(t *testing.T) {
 func TestWorkspaceActionsFallsBackWhenPaletteActionsNil(t *testing.T) {
 	descriptor := WorkspaceDescriptor{Slug: "alphas", CreateLabel: "Crear alpha"}
 	actions := workspaceActions(descriptor)
-	if len(actions) != 2 || actions[0].label != "Crear alpha" || actions[1].id != searchResourcesActionID {
+	if len(actions) != 3 || actions[0].label != "Crear alpha" || actions[1].id != searchResourcesActionID || actions[2].id != inactiveDiscoveryActionID {
 		t.Fatalf("workspaceActions(%#v) = %#v, want Crear and Buscar", descriptor, actions)
 	}
 }
@@ -247,7 +247,7 @@ func TestBuildResourceActionsCarriesAliasesAndKeywords(t *testing.T) {
 func TestWorkspaceActionsUsesDescriptorCreateLabel(t *testing.T) {
 	descriptor := WorkspaceDescriptor{Slug: "alphas", Title: "GARFEX / ALPHAS", CreateLabel: "Crear alpha"}
 	actions := workspaceActions(descriptor)
-	if len(actions) != 2 || actions[0].label != "Crear alpha" || actions[0].id != createResourceActionID || actions[1].id != searchResourcesActionID {
+	if len(actions) != 3 || actions[0].label != "Crear alpha" || actions[0].id != createResourceActionID || actions[1].id != searchResourcesActionID || actions[2].id != inactiveDiscoveryActionID {
 		t.Fatalf("workspaceActions(%#v) = %#v, want Crear and Buscar actions", descriptor, actions)
 	}
 }
