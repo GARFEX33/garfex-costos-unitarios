@@ -1,7 +1,10 @@
 package postgres
 
 import (
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/modules/suppliers/domain"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func NewRepository(pool *pgxpool.Pool) *repository { return &repository{pool: pool} }
+var _ domain.Repository = (*repository)(nil)
+
+func NewRepository(pool *pgxpool.Pool) domain.Repository { return &repository{pool: pool} }
