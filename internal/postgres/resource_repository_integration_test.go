@@ -76,7 +76,7 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	if key != legacy || oldKey != legacy || mappedKey != "v1|8:MATERIAL11:CONDUCTORES5:CABLE18:conductor_material17:CONTROLLED_OPTION5:COBRE" {
 		t.Fatalf("identity mapping = %q/%q/%q, want unchanged legacy key %q and v1 mapping", key, oldKey, mappedKey, legacy)
 	}
-	if err := applyResourceIntegrityMigration(p, "000006_resource_identity_v1.up.sql"); err != nil {
+	if err := applyResourceIntegrityMigration(p, "000007_resource_identity_v1.up.sql"); err != nil {
 		t.Fatalf("apply v1 migration: %v", err)
 	}
 	const admitted = "v1|8:MATERIAL11:CONDUCTORES5:CABLE18:conductor_material17:CONTROLLED_OPTION5:COBRE"
@@ -87,7 +87,7 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	if err := NewResourceRepository(p).Create(ctx, created); err != nil {
 		t.Fatalf("post-up create: %v", err)
 	}
-	if err := applyResourceIntegrityMigration(p, "000006_resource_identity_v1.down.sql"); err != nil {
+	if err := applyResourceIntegrityMigration(p, "000007_resource_identity_v1.down.sql"); err != nil {
 		t.Fatalf("rollback v1 migration: %v", err)
 	}
 	var constraint bool
