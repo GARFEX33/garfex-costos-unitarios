@@ -85,6 +85,9 @@ func (s *Service) Create(ctx context.Context, command domain.CreateCommand) (dom
 		if errors.Is(err, domain.ErrResourceReference) {
 			return resource, domain.ErrResourceReference
 		}
+		if errors.Is(err, domain.ErrResourceIntegrity) {
+			return resource, domain.ErrResourceIntegrity
+		}
 		return resource, fmt.Errorf("create resource: %w", err)
 	}
 	return resource, nil
@@ -111,6 +114,9 @@ func (s *Service) Update(ctx context.Context, command domain.UpdateCommand) (dom
 		}
 		if errors.Is(err, domain.ErrResourceReference) {
 			return resource, domain.ErrResourceReference
+		}
+		if errors.Is(err, domain.ErrResourceIntegrity) {
+			return resource, domain.ErrResourceIntegrity
 		}
 		return resource, fmt.Errorf("update resource %d: %w", resource.ID, err)
 	}

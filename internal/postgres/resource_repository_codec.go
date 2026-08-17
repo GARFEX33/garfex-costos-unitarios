@@ -114,6 +114,9 @@ func mapRepositoryError(err error) error {
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "23505":
+			if pgErr.ConstraintName == "resource_attribute_values_resource_id_resource_attribute_id_key" {
+				return fmt.Errorf("%w: %s", domain.ErrResourceIntegrity, pgErr.ConstraintName)
+			}
 			return fmt.Errorf("%w: %s", domain.ErrDuplicateResource, pgErr.ConstraintName)
 		case "23503", "23514":
 			return fmt.Errorf("%w: %s", domain.ErrResourceReference, pgErr.Message)

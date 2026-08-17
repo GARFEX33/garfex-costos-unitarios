@@ -43,12 +43,15 @@ func TestMapRepositoryError(t *testing.T) {
 		name string
 		code string
 		want error
-	}{{name: "duplicate", code: "23505", want: domain.ErrDuplicateResource}, {name: "foreign key", code: "23503", want: domain.ErrResourceReference}, {name: "check violation", code: "23514", want: domain.ErrResourceReference}} {
+	}{{name: "duplicate", code: "23505", want: domain.ErrDuplicateResource}, {name: "attribute cardinality", code: "23505", want: domain.ErrResourceIntegrity}, {name: "foreign key", code: "23503", want: domain.ErrResourceReference}, {name: "check violation", code: "23514", want: domain.ErrResourceReference}} {
 		t.Run(tt.name, func(t *testing.T) {
 			constraint := "resources_test"
 			message := "generic violation"
 			if tt.code == "23505" {
 				constraint = "recursos_class_id_identity_key"
+				if tt.name == "attribute cardinality" {
+					constraint = "resource_attribute_values_resource_id_resource_attribute_id_key"
+				}
 			}
 			if tt.code == "23514" {
 				message = "SET CONTROLLED_OPTION values require an official option"
