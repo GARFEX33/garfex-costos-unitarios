@@ -10,12 +10,16 @@ type SupplierSearch struct {
 }
 
 type ListCriteria struct {
+	// Text is matched case-insensitively against the branch's searchable text fields.
+	Text   string
 	Active *bool
 	Limit  int
 	Offset int
 }
 
 type ContactListCriteria struct {
+	// Text is matched case-insensitively against the contact's searchable text fields.
+	Text     string
 	Active   *bool
 	BranchID *int64
 	Limit    int

@@ -17,8 +17,14 @@ const createBranchSQL = `INSERT INTO public.supplier_branches (supplier_id, name
 const getBranchSQL = `SELECT ` + branchColumns + ` FROM public.supplier_branches WHERE supplier_id = $1 AND id = $2`
 
 const listBranchesSQL = `SELECT ` + branchColumns + ` FROM public.supplier_branches
-	WHERE supplier_id = $1 AND ($2::BOOLEAN IS NULL OR active = $2)
-	ORDER BY lower(city), lower(name), id LIMIT $3 OFFSET $4`
+	WHERE supplier_id = $1
+	  AND ($2::BOOLEAN IS NULL OR active = $2)
+	  AND ($3 = '' OR name ILIKE '%' || $3 || '%' OR branch_reference ILIKE '%' || $3 || '%' OR city ILIKE '%' || $3 || '%' OR state ILIKE '%' || $3 || '%' OR country ILIKE '%' || $3 || '%' OR address ILIKE '%' || $3 || '%' OR general_phone ILIKE '%' || $3 || '%' OR general_email ILIKE '%' || $3 || '%' OR notes ILIKE '%' || $3 || '%')
+	ORDER BY lower(city), lower(name), id LIMIT $4 OFFSET $5`
+
+func buildListBranchesQuery(supplierID int64, criteria domain.ListCriteria) (string, []any) {
+	return listBranchesSQL, []any{supplierID, nullableBool(criteria.Active), criteria.Text, limitPlusOne(criteria.Limit), offset(criteria.Offset)}
+}
 
 func (r *repository) CreateBranch(ctx context.Context, value domain.Branch) (domain.Branch, error) {
 	if err := r.ready(); err != nil {
@@ -43,7 +49,8 @@ func (r *repository) ListBranches(ctx context.Context, supplierID int64, criteri
 	if err := r.ready(); err != nil {
 		return nil, err
 	}
-	rows, err := r.pool.Query(ctx, listBranchesSQL, supplierID, nullableBool(criteria.Active), limit(criteria.Limit), offset(criteria.Offset))
+	query, args := buildListBranchesQuery(supplierID, criteria)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list branches: %w", err)
 	}
