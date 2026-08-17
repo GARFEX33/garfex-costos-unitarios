@@ -40,8 +40,8 @@ func (r *resourceRepository) Create(ctx context.Context, resource domain.Resourc
 		FROM public.resource_classes cl
 		JOIN public.resource_families f ON f.class_id = cl.id AND f.code = $2
 		JOIN public.resource_types t ON t.family_id = f.id AND t.code = $3
-		JOIN public.resource_unit_policies p ON p.family_id = f.id AND p.allowed
-		JOIN public.unit_definitions u ON u.id = p.unit_id AND u.code = $4
+		JOIN public.unit_definitions u ON u.code = $4
+		JOIN public.resource_unit_policies p ON p.family_id = f.id AND p.unit_id = u.id AND p.allowed AND p.active
 		WHERE cl.code = $1 AND cl.active AND f.active AND t.active AND u.active
 		RETURNING id`, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit, resource.FamilyCode, resource.IdentityKey).Scan(&resourceID)
 	if err != nil {
@@ -81,13 +81,14 @@ func (r *resourceRepository) Get(ctx context.Context, classCode, identityKey str
 	}
 	var resourceID int64
 	var naturalUnit, storedClass, storedFamily, typeCode string
+	var active bool
 	err := r.pool.QueryRow(ctx, `
-		SELECT r.id, cl.code, f.code, t.code, u.code FROM public.recursos r
+		SELECT r.id, cl.code, f.code, t.code, u.code, r.active FROM public.recursos r
 		JOIN public.resource_classes cl ON cl.id = r.class_id
 		JOIN public.resource_families f ON f.id = r.family_id
 		JOIN public.resource_types t ON t.id = r.type_id
 		JOIN public.unit_definitions u ON u.id = r.natural_unit_id
-		WHERE cl.code = $1 AND r.identity_key = $2`, classCode, identityKey).Scan(&resourceID, &storedClass, &storedFamily, &typeCode, &naturalUnit)
+		WHERE cl.code = $1 AND r.identity_key = $2`, classCode, identityKey).Scan(&resourceID, &storedClass, &storedFamily, &typeCode, &naturalUnit, &active)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Resource{}, fmt.Errorf("%w: resource %s/%s", domain.ErrResourceNotFound, classCode, identityKey)
 	}
@@ -127,7 +128,7 @@ func (r *resourceRepository) Get(ctx context.Context, classCode, identityKey str
 	}
 	return domain.HydrateResource(domain.ResourceSnapshot{
 		ID: resourceID, ClassCode: storedClass, FamilyCode: storedFamily, TypeCode: typeCode,
-		NaturalUnit: naturalUnit, Attributes: attributes, IdentityKey: identityKey,
+		NaturalUnit: naturalUnit, Attributes: attributes, IdentityKey: identityKey, Active: active,
 	})
 }
 
@@ -150,8 +151,8 @@ func (r *resourceRepository) Update(ctx context.Context, resource domain.Resourc
 		FROM public.resource_classes cl
 		JOIN public.resource_families f ON f.class_id = cl.id AND f.code = $2
 		JOIN public.resource_types t ON t.family_id = f.id AND t.code = $3
-		JOIN public.resource_unit_policies p ON p.family_id = f.id AND p.allowed
-		JOIN public.unit_definitions u ON u.id = p.unit_id AND u.code = $4
+		JOIN public.unit_definitions u ON u.code = $4
+		JOIN public.resource_unit_policies p ON p.family_id = f.id AND p.unit_id = u.id AND p.allowed AND p.active
 		WHERE cl.code = $1 AND cl.active AND f.active AND t.active AND u.active`, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit).Scan(&classID, &familyID, &typeID, &unitID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

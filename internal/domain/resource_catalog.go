@@ -13,7 +13,7 @@ package domain
 // The engine below contains no family-specific branch; each family is data.
 func SeedResourceCatalog() ResourceCatalog {
 	definitions := catalogDefinitions()
-	return ResourceCatalog{
+	catalog := ResourceCatalog{
 		Classes: []ResourceClass{
 			{Code: "MATERIAL", Name: "Material", Plural: "Materiales", Slug: "materiales", Order: 1, Active: true},
 			{Code: "MANO_DE_OBRA", Name: "Mano de obra", Plural: "Mano de obra", Slug: "mano-de-obra", Order: 2, Active: true},
@@ -53,9 +53,30 @@ func SeedResourceCatalog() ResourceCatalog {
 			{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA", Definition: definition("diameter_inch"), Mode: ModeRequired, IdentityParticipates: true},
 			{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA", Definition: definition("diameter_mm"), Mode: ModeRequired, IdentityParticipates: false},
 		},
-		Options:   append(conductorOptions(), tuberiasOptions()...),
-		Relations: tuberiasRelations(),
+		Options:    append(conductorOptions(), tuberiasOptions()...),
+		Relations:  tuberiasRelations(),
+		OptionSets: []ResourceOptionSet{{Code: "DEFAULT", Name: "Conjunto por defecto", Active: true}},
 	}
+	for i := range catalog.PresentationFields {
+		catalog.PresentationFields[i].Active = true
+	}
+	for i := range catalog.Definitions {
+		catalog.Definitions[i].Active = true
+	}
+	for i := range catalog.Attributes {
+		catalog.Attributes[i].Active = true
+		catalog.Attributes[i].Definition.Active = true
+		for j := range catalog.Attributes[i].Rules {
+			catalog.Attributes[i].Rules[j].Active = true
+		}
+	}
+	for i := range catalog.UnitPolicies {
+		catalog.UnitPolicies[i].Active = true
+	}
+	for i := range catalog.Relations {
+		catalog.Relations[i].Active = true
+	}
+	return catalog
 }
 
 func definition(code string) AttributeDefinition {

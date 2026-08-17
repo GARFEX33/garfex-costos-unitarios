@@ -36,6 +36,10 @@ func LoadResourceCatalog(ctx context.Context, pool *pgxpool.Pool) (domain.Resour
 	if err != nil {
 		return domain.ResourceCatalog{}, err
 	}
+	optionSets, err := loadOptionSets(ctx, tx)
+	if err != nil {
+		return domain.ResourceCatalog{}, err
+	}
 	families, err := loadFamilies(ctx, tx)
 	if err != nil {
 		return domain.ResourceCatalog{}, err
@@ -92,6 +96,7 @@ func LoadResourceCatalog(ctx context.Context, pool *pgxpool.Pool) (domain.Resour
 		Attributes:         attributes,
 		Options:            options,
 		Relations:          relations,
+		OptionSets:         optionSets,
 	}
 	return catalog, classifyLoadedCatalog(catalog)
 }
@@ -124,6 +129,23 @@ func loadClasses(ctx context.Context, tx pgx.Tx) ([]domain.ResourceClass, error)
 		classes = append(classes, c)
 	}
 	return classes, rows.Err()
+}
+
+func loadOptionSets(ctx context.Context, tx pgx.Tx) ([]domain.ResourceOptionSet, error) {
+	rows, err := tx.Query(ctx, `SELECT code, name, active FROM public.resource_option_sets ORDER BY code`)
+	if err != nil {
+		return nil, fmt.Errorf("query resource_option_sets: %w", err)
+	}
+	defer rows.Close()
+	var sets []domain.ResourceOptionSet
+	for rows.Next() {
+		var set domain.ResourceOptionSet
+		if err := rows.Scan(&set.Code, &set.Name, &set.Active); err != nil {
+			return nil, fmt.Errorf("scan resource_option_sets: %w", err)
+		}
+		sets = append(sets, set)
+	}
+	return sets, rows.Err()
 }
 
 func loadFamilies(ctx context.Context, tx pgx.Tx) ([]domain.ResourceFamily, error) {
@@ -171,7 +193,7 @@ func loadTypes(ctx context.Context, tx pgx.Tx) ([]domain.ResourceType, error) {
 
 func loadPresentationFields(ctx context.Context, tx pgx.Tx) ([]domain.PresentationField, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT cl.code, f.code, t.code, d.code, pf.position
+		SELECT cl.code, f.code, t.code, d.code, pf.position, pf.active
 		FROM public.resource_type_presentation_fields pf
 		JOIN public.resource_types t ON t.id = pf.type_id
 		JOIN public.resource_families f ON f.id = t.family_id
@@ -185,7 +207,7 @@ func loadPresentationFields(ctx context.Context, tx pgx.Tx) ([]domain.Presentati
 	var fields []domain.PresentationField
 	for rows.Next() {
 		var f domain.PresentationField
-		if err := rows.Scan(&f.ClassCode, &f.FamilyCode, &f.TypeCode, &f.AttributeCode, &f.Position); err != nil {
+		if err := rows.Scan(&f.ClassCode, &f.FamilyCode, &f.TypeCode, &f.AttributeCode, &f.Position, &f.Active); err != nil {
 			return nil, fmt.Errorf("scan resource_type_presentation_fields: %w", err)
 		}
 		fields = append(fields, f)
@@ -212,7 +234,7 @@ func loadUnits(ctx context.Context, tx pgx.Tx) ([]domain.UnitDefinition, error) 
 
 func loadUnitPolicies(ctx context.Context, tx pgx.Tx) ([]domain.ResourceUnitPolicy, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT cl.code, f.code, u.code, p.allowed, p.suggested
+		SELECT cl.code, f.code, u.code, p.allowed, p.suggested, p.active
 		FROM public.resource_unit_policies p
 		JOIN public.resource_families f ON f.id = p.family_id
 		JOIN public.resource_classes cl ON cl.id = f.class_id
@@ -225,7 +247,7 @@ func loadUnitPolicies(ctx context.Context, tx pgx.Tx) ([]domain.ResourceUnitPoli
 	var policies []domain.ResourceUnitPolicy
 	for rows.Next() {
 		var p domain.ResourceUnitPolicy
-		if err := rows.Scan(&p.ClassCode, &p.FamilyCode, &p.UnitCode, &p.Allowed, &p.Suggested); err != nil {
+		if err := rows.Scan(&p.ClassCode, &p.FamilyCode, &p.UnitCode, &p.Allowed, &p.Suggested, &p.Active); err != nil {
 			return nil, fmt.Errorf("scan resource_unit_policies: %w", err)
 		}
 		policies = append(policies, p)
@@ -235,7 +257,7 @@ func loadUnitPolicies(ctx context.Context, tx pgx.Tx) ([]domain.ResourceUnitPoli
 
 func loadDefinitions(ctx context.Context, tx pgx.Tx) ([]domain.AttributeDefinition, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT code, name, value_type, dimension, default_identity_participates
+		SELECT code, name, value_type, dimension, default_identity_participates, active
 		FROM public.attribute_definitions
 		ORDER BY id`)
 	if err != nil {
@@ -247,7 +269,7 @@ func loadDefinitions(ctx context.Context, tx pgx.Tx) ([]domain.AttributeDefiniti
 		var d domain.AttributeDefinition
 		var valueType string
 		var dimension *string
-		if err := rows.Scan(&d.Code, &d.Name, &valueType, &dimension, &d.DefaultIdentityParticipates); err != nil {
+		if err := rows.Scan(&d.Code, &d.Name, &valueType, &dimension, &d.DefaultIdentityParticipates, &d.Active); err != nil {
 			return nil, fmt.Errorf("scan attribute_definitions: %w", err)
 		}
 		d.ValueType = domain.AttributeValueType(valueType)
@@ -262,7 +284,7 @@ func loadDefinitions(ctx context.Context, tx pgx.Tx) ([]domain.AttributeDefiniti
 // — attached to its ResourceAttribute by loadAttributes.
 func loadAttributeRules(ctx context.Context, tx pgx.Tx) (map[int64][]domain.AttributeRule, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT rr.resource_attribute_id, wd.code, rr.when_equals, rr.mode, rr.identity_participates, rr.not_applicable
+		SELECT rr.resource_attribute_id, wd.code, rr.when_equals, rr.mode, rr.identity_participates, rr.not_applicable, rr.active
 		FROM public.resource_attribute_rules rr
 		JOIN public.attribute_definitions wd ON wd.id = rr.when_definition_id
 		ORDER BY rr.resource_attribute_id, rr.display_order`)
@@ -274,8 +296,8 @@ func loadAttributeRules(ctx context.Context, tx pgx.Tx) (map[int64][]domain.Attr
 	for rows.Next() {
 		var attributeID int64
 		var whenCode, whenEquals, mode string
-		var identityParticipates, notApplicable bool
-		if err := rows.Scan(&attributeID, &whenCode, &whenEquals, &mode, &identityParticipates, &notApplicable); err != nil {
+		var identityParticipates, notApplicable, active bool
+		if err := rows.Scan(&attributeID, &whenCode, &whenEquals, &mode, &identityParticipates, &notApplicable, &active); err != nil {
 			return nil, fmt.Errorf("scan resource_attribute_rules: %w", err)
 		}
 		rules[attributeID] = append(rules[attributeID], domain.AttributeRule{
@@ -283,6 +305,7 @@ func loadAttributeRules(ctx context.Context, tx pgx.Tx) (map[int64][]domain.Attr
 			Mode:                 domain.AttributeMode(mode),
 			IdentityParticipates: identityParticipates,
 			NotApplicable:        notApplicable,
+			Active:               active,
 		})
 	}
 	return rules, rows.Err()
@@ -291,8 +314,8 @@ func loadAttributeRules(ctx context.Context, tx pgx.Tx) (map[int64][]domain.Attr
 func loadAttributes(ctx context.Context, tx pgx.Tx, rules map[int64][]domain.AttributeRule) ([]domain.ResourceAttribute, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT ra.id, cl.code, f.code, COALESCE(t.code, ''), ra.option_set,
-		       d.code, d.name, d.value_type, d.dimension, d.default_identity_participates,
-		       ra.mode, ra.identity_participates
+		       d.code, d.name, d.value_type, d.dimension, d.default_identity_participates, d.active,
+		       ra.mode, ra.identity_participates, ra.active
 		FROM public.resource_attributes ra
 		JOIN public.resource_families f ON f.id = ra.family_id
 		JOIN public.resource_classes cl ON cl.id = ra.class_id
@@ -312,7 +335,7 @@ func loadAttributes(ctx context.Context, tx pgx.Tx, rules map[int64][]domain.Att
 		var dimension *string
 		if err := rows.Scan(&id, &attribute.ClassCode, &attribute.FamilyCode, &attribute.TypeCode, &attribute.OptionSet,
 			&attribute.Definition.Code, &attribute.Definition.Name, &valueType, &dimension, &attribute.Definition.DefaultIdentityParticipates,
-			&mode, &attribute.IdentityParticipates); err != nil {
+			&attribute.Definition.Active, &mode, &attribute.IdentityParticipates, &attribute.Active); err != nil {
 			return nil, fmt.Errorf("scan resource_attributes: %w", err)
 		}
 		attribute.Definition.ValueType = domain.AttributeValueType(valueType)
@@ -347,7 +370,7 @@ func loadOptions(ctx context.Context, tx pgx.Tx) ([]domain.AttributeOption, erro
 
 func loadRelations(ctx context.Context, tx pgx.Tx) ([]domain.AttributeOptionRelation, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT ar.option_set, fd.code, ar.from_option_code, td.code, ar.to_option_code
+		SELECT ar.option_set, fd.code, ar.from_option_code, td.code, ar.to_option_code, ar.active
 		FROM public.attribute_option_relations ar
 		JOIN public.attribute_definitions fd ON fd.id = ar.from_attribute_definition_id
 		JOIN public.attribute_definitions td ON td.id = ar.to_attribute_definition_id
@@ -359,7 +382,7 @@ func loadRelations(ctx context.Context, tx pgx.Tx) ([]domain.AttributeOptionRela
 	var relations []domain.AttributeOptionRelation
 	for rows.Next() {
 		var r domain.AttributeOptionRelation
-		if err := rows.Scan(&r.OptionSet, &r.FromAttribute, &r.FromOption, &r.ToAttribute, &r.ToOption); err != nil {
+		if err := rows.Scan(&r.OptionSet, &r.FromAttribute, &r.FromOption, &r.ToAttribute, &r.ToOption, &r.Active); err != nil {
 			return nil, fmt.Errorf("scan attribute_option_relations: %w", err)
 		}
 		relations = append(relations, r)

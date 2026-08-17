@@ -54,3 +54,22 @@ func TestServiceCanonicalWritesAndStableUpdateID(t *testing.T) {
 		t.Fatalf("Update() = %#v, repository = %#v, error %v", updated, repo.gotUpdate, err)
 	}
 }
+
+func TestServiceRejectsInactiveCatalogBeforeCreateOrUpdate(t *testing.T) {
+	catalog := domain.SeedResourceCatalog()
+	catalog.Families[0].Active = false
+	repo := &fakeRepo{}
+	service := NewService(repo, catalog)
+	if _, err := service.Create(context.Background(), writeCommand()); !errors.Is(err, domain.ErrResourceReference) {
+		t.Fatalf("Create() error = %v, want ErrResourceReference", err)
+	}
+	if repo.gotCreate.IdentityKey != "" {
+		t.Fatalf("Create() called repository with %#v", repo.gotCreate)
+	}
+	if _, err := service.Update(context.Background(), domain.UpdateCommand{ID: 42, Scope: writeCommand().Scope, NaturalUnit: "M", Attributes: writeCommand().Attributes}); !errors.Is(err, domain.ErrResourceReference) {
+		t.Fatalf("Update() error = %v, want ErrResourceReference", err)
+	}
+	if repo.gotUpdate.IdentityKey != "" {
+		t.Fatalf("Update() called repository with %#v", repo.gotUpdate)
+	}
+}

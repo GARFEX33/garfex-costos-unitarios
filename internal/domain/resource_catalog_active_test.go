@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestSeedResourceCatalogAllEntriesActive is the landmine guard (tasks
 // reconciliation carve-out #3): adding Active bool to ResourceFamily/
@@ -37,5 +40,76 @@ func TestSeedResourceCatalogAllEntriesActive(t *testing.T) {
 		if !unit.Active {
 			t.Errorf("Unit %s has Active = false, want true", unit.Code)
 		}
+	}
+}
+
+func TestNewResourceRejectsEveryInactiveWriteDependency(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*ResourceCatalog)
+	}{
+		{"class", func(c *ResourceCatalog) { c.Classes[0].Active = false }},
+		{"family", func(c *ResourceCatalog) { c.Families[0].Active = false }},
+		{"type", func(c *ResourceCatalog) { c.Types[0].Active = false }},
+		{"unit", func(c *ResourceCatalog) { c.Units[0].Active = false }},
+		{"unit policy", func(c *ResourceCatalog) { c.UnitPolicies[0].Active = false }},
+		{"attribute binding", func(c *ResourceCatalog) { c.Attributes[0].Active = false }},
+		{"attribute definition", func(c *ResourceCatalog) { c.Definitions[0].Active = false }},
+		{"option set", func(c *ResourceCatalog) { c.OptionSets[0].Active = false }},
+		{"option", func(c *ResourceCatalog) { c.Options[0].Active = false }},
+		{"rule", func(c *ResourceCatalog) { c.Attributes[3].Rules[0].Active = false }},
+		{"relation", func(c *ResourceCatalog) { c.Relations[0].Active = false }},
+	}
+	for _, tt := range mutations {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := SeedResourceCatalog()
+			tt.mutate(&catalog)
+			scope, unit := conductoresScope, "M"
+			values := []ResourceAttributeValue{
+				OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "12 AWG"),
+				OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V"),
+			}
+			if tt.name == "relation" {
+				scope, unit = canalizacionesScope, "PZA"
+				values = []ResourceAttributeValue{OptionValue("tipo", "CONDUIT PARED DELGADA"), OptionValue("diameter_inch", `3/4"`), OptionValue("diameter_mm", "19 mm")}
+			}
+			_, err := NewResource(catalog, scope, unit, values)
+			if !errors.Is(err, ErrResourceReference) {
+				t.Fatalf("NewResource() error = %v, want ErrResourceReference", err)
+			}
+		})
+	}
+}
+
+func TestRehydrateResourcePreservesHistoryAfterCatalogDeactivation(t *testing.T) {
+	catalog := SeedResourceCatalog()
+	resource, err := NewResource(catalog, conductoresScope, "M", []ResourceAttributeValue{
+		OptionValue("conductor_material", "COBRE"), OptionValue("gauge", "12 AWG"),
+		OptionValue("insulation", "THW"), OptionValue("color", "NEGRO"), OptionValue("voltage", "600 V"),
+	})
+	if err != nil {
+		t.Fatalf("NewResource() error = %v", err)
+	}
+	for i := range catalog.Classes {
+		catalog.Classes[i].Active = false
+	}
+	for i := range catalog.Families {
+		catalog.Families[i].Active = false
+	}
+	for i := range catalog.Types {
+		catalog.Types[i].Active = false
+	}
+	for i := range catalog.Units {
+		catalog.Units[i].Active = false
+	}
+	got, err := RehydrateResource(catalog, ResourceSnapshot{
+		ID: 42, ClassCode: resource.ClassCode, FamilyCode: resource.FamilyCode, TypeCode: resource.TypeCode,
+		NaturalUnit: resource.NaturalUnit, Attributes: resource.Attributes, IdentityKey: resource.IdentityKey, Active: false,
+	})
+	if err != nil {
+		t.Fatalf("RehydrateResource() error = %v", err)
+	}
+	if got.ID != 42 || got.Active {
+		t.Fatalf("rehydrated historical resource = %#v, want ID 42 and inactive", got)
 	}
 }
