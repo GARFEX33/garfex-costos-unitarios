@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -13,6 +14,157 @@ import (
 
 var conductoresScope = domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"}
 var canalizacionesScope = domain.ResourceScope{ClassCode: "MATERIAL", FamilyCode: "CANALIZACIONES", TypeCode: "TUBERIA"}
+
+func TestResourceIntegrityMigrationIntegration(t *testing.T) {
+	dsn := os.Getenv("GARFEX_ADMIN_TEST_DSN")
+	if dsn == "" {
+		t.Skip("GARFEX_ADMIN_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	p := openUnitTestPool(t, dsn)
+	resetResourceIntegrityMigration(t, p)
+	t.Cleanup(func() {
+		resetResourceIntegrityMigration(t, p)
+		_, _ = p.Exec(ctx, `DELETE FROM public.recursos WHERE display_name LIKE 'TEST_RESOURCE_INTEGRITY%'`)
+		p.Close()
+	})
+
+	t.Run("blocks canonical collision", func(t *testing.T) {
+		first := insertIntegrityResource(t, p, "TEST_RESOURCE_INTEGRITY_LEGACY_A")
+		second := insertIntegrityResource(t, p, "TEST_RESOURCE_INTEGRITY_LEGACY_B")
+		insertIntegrityOption(t, p, first, "conductor_material", "COBRE")
+		insertIntegrityOption(t, p, second, "conductor_material", "COBRE")
+		if _, err := p.Exec(ctx, `UPDATE public.recursos SET active=FALSE WHERE id=$1`, second); err != nil {
+			t.Fatalf("deactivate collision fixture: %v", err)
+		}
+		if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.up.sql"); err == nil {
+			t.Fatal("migration accepted two resources with one canonical identity")
+		}
+		deleteIntegrityResources(t, p, first, second)
+	})
+
+	t.Run("blocks overlapping attribute applicability", func(t *testing.T) {
+		var id int64
+		err := p.QueryRow(ctx, `INSERT INTO public.resource_attributes
+			(class_id, family_id, definition_id, mode, identity_participates)
+			SELECT f.class_id, f.id, d.id, 'OPTIONAL', TRUE
+			FROM public.resource_families f JOIN public.attribute_definitions d ON d.code='gauge'
+			WHERE f.code='CONDUCTORES' RETURNING id`).Scan(&id)
+		if err != nil {
+			t.Fatalf("insert overlapping attribute: %v", err)
+		}
+		if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.up.sql"); err == nil {
+			t.Fatal("migration accepted family-wide and type-specific applicability")
+		}
+		if _, err := p.Exec(ctx, `DELETE FROM public.resource_attributes WHERE id=$1`, id); err != nil {
+			t.Fatalf("delete overlapping attribute: %v", err)
+		}
+	})
+
+	legacy := "TEST_RESOURCE_INTEGRITY_LEGACY_DRIFT"
+	id := insertIntegrityResource(t, p, legacy)
+	insertIntegrityOption(t, p, id, "conductor_material", "COBRE")
+	if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.up.sql"); err != nil {
+		t.Fatalf("apply integrity migration: %v", err)
+	}
+	postUpLegacy := "TEST_RESOURCE_INTEGRITY_LEGACY_POST_UP"
+	postUpID := insertIntegrityResource(t, p, postUpLegacy)
+	var key, oldKey, mappedKey string
+	if err := p.QueryRow(ctx, `SELECT r.identity_key, m.legacy_identity_key, m.v1_identity_key
+		FROM public.recursos r JOIN public.resource_integrity_identity_map m ON m.resource_id=r.id
+		WHERE r.id=$1`, id).Scan(&key, &oldKey, &mappedKey); err != nil {
+		t.Fatalf("read identity mapping: %v", err)
+	}
+	if key != legacy || oldKey != legacy || mappedKey != "v1|8:MATERIAL11:CONDUCTORES5:CABLE18:conductor_material17:CONTROLLED_OPTION5:COBRE" {
+		t.Fatalf("identity mapping = %q/%q/%q, want unchanged legacy key %q and v1 mapping", key, oldKey, mappedKey, legacy)
+	}
+	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, postUpID).Scan(&key); err != nil {
+		t.Fatalf("read post-up identity: %v", err)
+	}
+	if key != postUpLegacy {
+		t.Fatalf("post-up identity = %q, want unchanged legacy key %q", key, postUpLegacy)
+	}
+	if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.down.sql"); err != nil {
+		t.Fatalf("rollback integrity migration: %v", err)
+	}
+	var rolledBackKey, postUpRolledBackKey string
+	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, id).Scan(&rolledBackKey); err != nil {
+		t.Fatalf("read rolled-back identity: %v", err)
+	}
+	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, postUpID).Scan(&postUpRolledBackKey); err != nil {
+		t.Fatalf("read post-up rolled-back identity: %v", err)
+	}
+	if rolledBackKey != legacy || postUpRolledBackKey != postUpLegacy {
+		t.Fatalf("rolled-back identities = %q/%q, want %q/%q", rolledBackKey, postUpRolledBackKey, legacy, postUpLegacy)
+	}
+	var mapExists, functionExists bool
+	if err := p.QueryRow(ctx, `SELECT to_regclass('public.resource_integrity_identity_map') IS NOT NULL,
+		to_regprocedure('public.resource_identity_component(text)') IS NOT NULL`).Scan(&mapExists, &functionExists); err != nil {
+		t.Fatalf("inspect rolled-back integrity objects: %v", err)
+	}
+	if mapExists || functionExists {
+		t.Fatalf("rolled-back integrity objects remain: map=%t function=%t", mapExists, functionExists)
+	}
+}
+
+func applyResourceIntegrityMigration(pool *pgxpool.Pool, name string) error {
+	sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+	if err != nil {
+		return err
+	}
+	_, err = pool.Exec(context.Background(), string(sql))
+	return err
+}
+
+func resetResourceIntegrityMigration(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(context.Background(), `SELECT to_regclass('public.resource_integrity_identity_map') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatalf("inspect integrity migration: %v", err)
+	}
+	if exists {
+		if err := applyResourceIntegrityMigration(pool, "000005_resource_integrity.down.sql"); err != nil {
+			t.Fatalf("reset integrity migration: %v", err)
+		}
+	}
+}
+
+func insertIntegrityResource(t *testing.T, pool *pgxpool.Pool, legacy string) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(), `INSERT INTO public.recursos
+		(class_id, family_id, type_id, natural_unit_id, display_name, identity_key)
+		SELECT cl.id, f.id, ty.id, u.id, 'TEST_RESOURCE_INTEGRITY', $1
+		FROM public.resource_classes cl JOIN public.resource_families f ON f.class_id=cl.id AND f.code='CONDUCTORES'
+		JOIN public.resource_types ty ON ty.family_id=f.id AND ty.code='CABLE'
+		JOIN public.unit_definitions u ON u.code='M' WHERE cl.code='MATERIAL' RETURNING id`, legacy).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert integrity resource: %v", err)
+	}
+	return id
+}
+
+func insertIntegrityOption(t *testing.T, pool *pgxpool.Pool, resourceID int64, attribute, option string) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `INSERT INTO public.resource_attribute_values
+		(resource_id, family_id, resource_attribute_id, attribute_definition_id, option_code)
+		SELECT r.id, r.family_id, ra.id, d.id, $2 FROM public.recursos r
+		JOIN public.resource_attributes ra ON ra.family_id=r.family_id AND ra.type_id=r.type_id
+		JOIN public.attribute_definitions d ON d.id=ra.definition_id AND d.code=$3
+		WHERE r.id=$1`, resourceID, option, attribute)
+	if err != nil {
+		t.Fatalf("insert integrity option: %v", err)
+	}
+}
+
+func deleteIntegrityResources(t *testing.T, pool *pgxpool.Pool, ids ...int64) {
+	t.Helper()
+	for _, id := range ids {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM public.recursos WHERE id=$1`, id); err != nil {
+			t.Fatalf("delete integrity resource: %v", err)
+		}
+	}
+}
 
 func TestResourceRepositoryIntegration(t *testing.T) {
 	dsn := os.Getenv("GARFEX_TEST_DSN")
