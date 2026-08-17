@@ -21,6 +21,9 @@ func NewResourceRepository(pool *pgxpool.Pool) domain.ResourceRepository {
 }
 
 func (r *resourceRepository) Create(ctx context.Context, resource domain.Resource) error {
+	if err := resource.ValidateForPersistence(); err != nil {
+		return err
+	}
 	if r.pool == nil {
 		return errors.New("resource repository: nil pool")
 	}
@@ -103,7 +106,7 @@ func (r *resourceRepository) Get(ctx context.Context, classCode, identityKey str
 		return domain.Resource{}, fmt.Errorf("load resource attributes: %w", err)
 	}
 	defer rows.Close()
-	resource := domain.Resource{ID: resourceID, ClassCode: storedClass, FamilyCode: storedFamily, TypeCode: typeCode, NaturalUnit: naturalUnit, IdentityKey: identityKey}
+	var attributes []domain.ResourceAttributeValue
 	for rows.Next() {
 		var code, valueType, state string
 		var option, unit, text *string
@@ -117,15 +120,21 @@ func (r *resourceRepository) Get(ctx context.Context, classCode, identityKey str
 		if err != nil {
 			return domain.Resource{}, err
 		}
-		resource.Attributes = append(resource.Attributes, value)
+		attributes = append(attributes, value)
 	}
 	if err := rows.Err(); err != nil {
 		return domain.Resource{}, fmt.Errorf("read resource attributes: %w", err)
 	}
-	return resource, nil
+	return domain.HydrateResource(domain.ResourceSnapshot{
+		ID: resourceID, ClassCode: storedClass, FamilyCode: storedFamily, TypeCode: typeCode,
+		NaturalUnit: naturalUnit, Attributes: attributes, IdentityKey: identityKey,
+	})
 }
 
 func (r *resourceRepository) Update(ctx context.Context, resource domain.Resource) error {
+	if err := resource.ValidateForPersistence(); err != nil {
+		return err
+	}
 	if r.pool == nil {
 		return errors.New("resource repository: nil pool")
 	}

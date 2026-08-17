@@ -42,7 +42,7 @@ func NewResource(catalog ResourceCatalog, scope ResourceScope, naturalUnit strin
 	if err := catalog.validateRelations(attributes, byCode); err != nil {
 		return Resource{}, err
 	}
-	identity := make([]string, 0, len(attributes))
+	identity := make([]string, 0, len(attributes)*3)
 	canonicalValues := make([]ResourceAttributeValue, 0, len(byCode))
 	codes := make([]string, 0, len(attributes))
 	for code := range attributes {
@@ -68,20 +68,53 @@ func NewResource(catalog ResourceCatalog, scope ResourceScope, naturalUnit strin
 			}
 			canonicalValues = append(canonicalValues, value)
 			if participates {
-				identity = append(identity, code+"="+value.canonical(attribute.Definition))
+				identity = append(identity, identityComponent(code), identityComponent(string(value.Type)), identityComponent(value.canonical(attribute.Definition)))
 			}
 		}
 	}
 	sort.Slice(canonicalValues, func(i, j int) bool { return canonicalValues[i].AttributeCode < canonicalValues[j].AttributeCode })
-	sort.Strings(identity)
 	return Resource{
 		ClassCode:   scope.ClassCode,
 		FamilyCode:  scope.FamilyCode,
 		TypeCode:    scope.TypeCode,
 		NaturalUnit: naturalUnit,
 		Attributes:  canonicalValues,
-		IdentityKey: scope.ClassCode + "|" + scope.FamilyCode + "|" + scope.TypeCode + "|" + strings.Join(identity, "|"),
+		IdentityKey: "v1|" + identityComponent(scope.ClassCode) + identityComponent(scope.FamilyCode) + identityComponent(scope.TypeCode) + strings.Join(identity, ""),
+		canonical:   true,
 	}, nil
+}
+
+func identityComponent(value string) string {
+	return fmt.Sprintf("%d:%s", len([]byte(value)), value)
+}
+
+func RehydrateResource(catalog ResourceCatalog, snapshot ResourceSnapshot) (Resource, error) {
+	if snapshot.ID <= 0 {
+		return Resource{}, validation("resource snapshot ID must be positive")
+	}
+	var applicable []ResourceAttributeValue
+	for _, value := range snapshot.Attributes {
+		if value.Text != NotApplicableText {
+			applicable = append(applicable, value)
+		}
+	}
+	resource, err := NewResource(catalog, ResourceScope{ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode}, snapshot.NaturalUnit, applicable)
+	if err != nil {
+		return Resource{}, err
+	}
+	if snapshot.IdentityKey != resource.IdentityKey {
+		return Resource{}, validation("stored identity %q does not match canonical identity %q", snapshot.IdentityKey, resource.IdentityKey)
+	}
+	resource.ID = snapshot.ID
+	for _, value := range snapshot.Attributes {
+		if value.Text == NotApplicableText {
+			resource.Attributes = append(resource.Attributes, value)
+		}
+	}
+	sort.Slice(resource.Attributes, func(i, j int) bool {
+		return resource.Attributes[i].AttributeCode < resource.Attributes[j].AttributeCode
+	})
+	return resource, nil
 }
 
 // hasFamily reports whether scope's FamilyCode is defined within scope's

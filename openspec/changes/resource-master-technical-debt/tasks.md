@@ -37,7 +37,7 @@ Every PR targets `main`; PR N starts only after PR N-1 merges. Each stays under 
 
 - [x] 1.1 **PR 1 / foundation gate**: Test audit fixtures in `internal/postgres/resource_repository_integration_test.go`; add `migrations/<next>_resource_integrity.{up,down}.sql`; record legacy-to-v1 mappings and block identity/applicability ambiguity without rewriting keys or enforcing v1 (debts 2, 3, 8).
 
-- [ ] 2.1 **PR 2**: Test and enforce forged-input rejection, controlled construction, canonical identity, and stable update IDs in `internal/domain/*` and `internal/app/recursos/service.go`; atomically switch writers, rewrite admitted legacy keys, and add the v1 constraint only after writers emit v1 (debts 1, 7, 8).
+- [x] 2.1 **PR 2**: Test and enforce forged-input rejection, controlled construction, canonical identity, and stable update IDs in `internal/domain/*` and `internal/app/recursos/service.go`; atomically switch writers, rewrite admitted legacy keys, and add the v1 constraint only after writers emit v1 (debts 1, 7, 8).
 - [ ] 3.1 **PR 3**: Test and enforce active-chain eligibility with historical reads in `internal/postgres/catalog_loader.go` and `resource_repository_crud.go` (debt 4); release gate before refactors.
 - [ ] 4.1 **PR 4**: Test exact class/family/type/definition resolution and atomic cardinality in `internal/postgres/resource_repository_crud.go` (debts 2, 3).
 - [ ] 5.1 **PR 5**: Characterize then extract state, transitions, persistence mapping, and presentation across `internal/tui/resource_editor*.go`, preserving behavior (debt 10).

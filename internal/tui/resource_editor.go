@@ -165,16 +165,15 @@ type resourceDescriber interface {
 }
 
 // resourceCreator is the minimal surface the generic resource editor needs
-// to persist a newly-built candidate Resource.
+// to submit create intent to the application boundary.
 type resourceCreator interface {
-	Create(ctx context.Context, resource domain.Resource) error
+	Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
 }
 
 // resourceUpdater is the minimal surface the generic resource editor needs
-// to persist changes to an existing Resource (identified by its stable ID,
-// independent of IdentityKey, which editing can change — see Resource.ID).
+// to submit update intent with its stable ID; identity is application-owned.
 type resourceUpdater interface {
-	Update(ctx context.Context, resource domain.Resource) error
+	Update(ctx context.Context, command domain.UpdateCommand) (domain.Resource, error)
 }
 
 // resourceDeleter is the minimal surface the "Eliminar" flow needs to soft-
@@ -1018,30 +1017,28 @@ func (a *ResourcesWorkspaceAdapter) finishEditor(ctx context.Context, unit strin
 	state.currentUnit = unit
 	values := filterApplicableValues(state.attributes, state.values)
 	scope := domain.ResourceScope{ClassCode: state.class, FamilyCode: state.family, TypeCode: state.itemType}
-	resource, err := domain.NewResource(a.catalog, scope, unit, values)
-	if err != nil {
-		// NewResource's validation errors are deliberately human-decipherable
+	var resource domain.Resource
+	var opErr error
+	switch state.mode {
+	case editorModeEdit:
+		resource, opErr = a.updater.Update(ctx, domain.UpdateCommand{ID: state.originalID, Scope: scope, NaturalUnit: unit, Attributes: values})
+	default:
+		resource, opErr = a.creator.Create(ctx, domain.CreateCommand{Scope: scope, NaturalUnit: unit, Attributes: values})
+	}
+	if opErr != nil && errors.Is(opErr, domain.ErrResourceValidation) {
+		// Application validation errors are deliberately human-decipherable
 		// domain messages (e.g. "incoherent relation between \"diameter_inch\"
 		// and \"diameter_mm\""), not raw infrastructure failures — unlike a
 		// Postgres/network error, surfacing this one is the whole point: the
 		// user needs to know WHY the combination they just picked is invalid,
 		// not just that it is. Strip the generic ErrResourceValidation prefix
 		// so only the specific reason shows.
-		reason := strings.TrimPrefix(err.Error(), domain.ErrResourceValidation.Error()+": ")
+		reason := strings.TrimPrefix(opErr.Error(), domain.ErrResourceValidation.Error()+": ")
 		errorText := fmt.Sprintf("No pude crear el recurso: %s.", reason)
 		if state.mode == editorModeEdit {
 			errorText = fmt.Sprintf("No pude guardar los cambios: %s.", reason)
 		}
 		return a.recoverEditor(ErrorMessage{Text: errorText})
-	}
-
-	var opErr error
-	switch state.mode {
-	case editorModeEdit:
-		resource.ID = state.originalID
-		opErr = a.updater.Update(ctx, resource)
-	default: // editorModeCreate, editorModeDuplicate
-		opErr = a.creator.Create(ctx, resource)
 	}
 	if opErr != nil {
 		if errors.Is(opErr, domain.ErrDuplicateResource) {

@@ -123,7 +123,7 @@ func TestResourceEditorRecoverableFailuresPreserveDraft(t *testing.T) {
 				t.Fatalf("Update calls before retry confirmation = %d, want 1", updater.callCount)
 			}
 			response = answerConfirmation(t, adapter, response, "yes")
-			if updater.callCount != 2 || !strings.Contains(updater.gotResource.IdentityKey, "color=ROJO") || response.Pending != nil {
+			if updater.callCount != 2 || !strings.Contains(updater.gotResource.IdentityKey, "ROJO") || response.Pending != nil {
 				t.Fatalf("successful retry = calls %d, resource %#v, pending %T", updater.callCount, updater.gotResource, response.Pending)
 			}
 		})
