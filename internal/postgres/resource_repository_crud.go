@@ -84,40 +84,14 @@ func (r *resourceRepository) Get(ctx context.Context, classCode, identityKey str
 	if err != nil {
 		return domain.Resource{}, fmt.Errorf("load resource: %w", err)
 	}
-	rows, err := r.pool.Query(ctx, `
-		SELECT d.code, d.value_type, v.value_state, v.option_code, v.integer_value, v.decimal_value,
-		       v.quantity_value, qu.code, v.boolean_value, v.text_value
-		FROM public.resource_attribute_values v
-		JOIN public.resource_attributes ra ON ra.id = v.resource_attribute_id
-		JOIN public.attribute_definitions d ON d.id = ra.definition_id
-		LEFT JOIN public.unit_definitions qu ON qu.id = v.quantity_unit_id
-		WHERE v.resource_id = $1 ORDER BY d.code`, resourceID)
+	attributes, err := r.loadEffectiveAttributes(ctx, []int64{resourceID})
 	if err != nil {
 		return domain.Resource{}, fmt.Errorf("load resource attributes: %w", err)
 	}
-	defer rows.Close()
-	var attributes []domain.ResourceAttributeValue
-	for rows.Next() {
-		var code, valueType, state string
-		var option, unit, text *string
-		var integer *int64
-		var dec, quantity *string
-		var boolean *bool
-		if err := rows.Scan(&code, &valueType, &state, &option, &integer, &dec, &quantity, &unit, &boolean, &text); err != nil {
-			return domain.Resource{}, fmt.Errorf("scan resource attribute: %w", err)
-		}
-		value, err := decodeValue(code, domain.AttributeValueType(valueType), state, option, integer, dec, quantity, unit, boolean, text)
-		if err != nil {
-			return domain.Resource{}, err
-		}
-		attributes = append(attributes, value)
-	}
-	if err := rows.Err(); err != nil {
-		return domain.Resource{}, fmt.Errorf("read resource attributes: %w", err)
-	}
+	set := attributes[resourceID]
 	return domain.HydrateResource(domain.ResourceSnapshot{
 		ID: resourceID, ClassCode: storedClass, FamilyCode: storedFamily, TypeCode: typeCode,
-		NaturalUnit: naturalUnit, Attributes: attributes, IdentityKey: identityKey, Active: active,
+		NaturalUnit: naturalUnit, Attributes: set, IdentityKey: identityKey, Active: active,
 	})
 }
 

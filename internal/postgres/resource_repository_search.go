@@ -27,11 +27,18 @@ func clampLimitOffset(limit, offset int) (int, int) {
 	return limit, offset
 }
 
-// Search returns resources in the requested lifecycle scope. It reuses Get per
-// matched row to reconstruct the full domain.Resource with attributes,
-// instead of duplicating attribute-reconstruction SQL. This N+1-style
-// pattern is an intentional v1 simplicity choice, bounded by Limit
-// (default defaultSearchLimit).
+type resourceSearchBase struct {
+	id          int64
+	classCode   string
+	familyCode  string
+	typeCode    string
+	naturalUnit string
+	identityKey string
+	active      bool
+}
+
+// Search returns resources in the requested lifecycle scope. It first selects
+// the bounded result set, then hydrates all matching attributes in one query.
 func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchCriteria) ([]domain.Resource, error) {
 	if r.pool == nil {
 		return nil, errors.New("resource repository: nil pool")
@@ -64,43 +71,21 @@ func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchC
 		conditions = append(conditions, fmt.Sprintf("(r.identity_key ILIKE %s OR f.code ILIKE %s OR f.name ILIKE %s)", placeholder, placeholder, placeholder))
 	}
 	for _, filter := range criteria.Filters {
-		payload, err := encodeValue(filter)
+		condition, err := effectiveValueFilter(filter, arg)
 		if err != nil {
 			return nil, fmt.Errorf("encode search filter %q: %w", filter.AttributeCode, err)
 		}
-		codeArg := arg(filter.AttributeCode)
-		var valueCond string
-		switch filter.Type {
-		case domain.ValueTypeControlledOption:
-			valueCond = "v.option_code = " + arg(payload.option)
-		case domain.ValueTypeInteger:
-			valueCond = "v.integer_value = " + arg(payload.integer)
-		case domain.ValueTypeDecimal:
-			valueCond = "v.decimal_value = " + arg(payload.decimal)
-		case domain.ValueTypeQuantity:
-			valueCond = fmt.Sprintf("v.quantity_value = %s AND qu.code = %s", arg(payload.quantity), arg(payload.quantityUnit))
-		case domain.ValueTypeBoolean:
-			valueCond = "v.boolean_value = " + arg(payload.boolean)
-		case domain.ValueTypeControlledText:
-			valueCond = "v.text_value = " + arg(payload.text)
-		default:
-			return nil, fmt.Errorf("unsupported filter value type %q", filter.Type)
-		}
-		conditions = append(conditions, fmt.Sprintf(
-			`EXISTS (SELECT 1 FROM public.resource_attribute_values v
-			 JOIN public.resource_attributes ra ON ra.id = v.resource_attribute_id
-			 JOIN public.attribute_definitions d ON d.id = ra.definition_id
-			 LEFT JOIN public.unit_definitions qu ON qu.id = v.quantity_unit_id
-			 WHERE v.resource_id = r.id AND d.code = %s AND v.value_state = 'SET' AND %s)`,
-			codeArg, valueCond))
+		conditions = append(conditions, condition)
 	}
 
 	limitArg, offsetArg := arg(limit), arg(offset)
-	query := fmt.Sprintf(`
-		SELECT cl.code, u.code, r.identity_key
+	query := fmt.Sprintf(effectiveValuesCTE+`
+		SELECT r.id, cl.code, f.code, t.code, u.code, r.identity_key, r.active
+			, EXISTS (SELECT 1 FROM effective_values ev WHERE ev.resource_id = r.id AND ev.scope_count > 1)
 		FROM public.recursos r
 		JOIN public.resource_classes cl ON cl.id = r.class_id
 		JOIN public.resource_families f ON f.id = r.family_id
+		JOIN public.resource_types t ON t.id = r.type_id
 		JOIN public.unit_definitions u ON u.id = r.natural_unit_id
 		WHERE %s
 		ORDER BY r.identity_key ASC
@@ -112,20 +97,43 @@ func (r *resourceRepository) Search(ctx context.Context, criteria domain.SearchC
 	}
 	defer rows.Close()
 
-	var results []domain.Resource
+	var bases []resourceSearchBase
+	var resourceIDs []int64
 	for rows.Next() {
-		var classCode, naturalUnit, identityKey string
-		if err := rows.Scan(&classCode, &naturalUnit, &identityKey); err != nil {
+		var base resourceSearchBase
+		var corrupt bool
+		if err := rows.Scan(&base.id, &base.classCode, &base.familyCode, &base.typeCode, &base.naturalUnit, &base.identityKey, &base.active, &corrupt); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
-		resource, err := r.Get(ctx, classCode, identityKey)
-		if err != nil {
-			return nil, fmt.Errorf("load matched resource %s/%s: %w", classCode, identityKey, err)
+		if corrupt {
+			return nil, integrityError("resource %d has duplicate effective attribute values", base.id)
 		}
-		results = append(results, resource)
+		bases = append(bases, base)
+		resourceIDs = append(resourceIDs, base.id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read search results: %w", err)
+	}
+	if len(bases) == 0 {
+		return nil, nil
+	}
+
+	attributes, err := r.loadEffectiveAttributes(ctx, resourceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("hydrate search results: %w", err)
+	}
+	results := make([]domain.Resource, 0, len(bases))
+	for _, base := range bases {
+		values := attributes[base.id]
+		resource, err := domain.HydrateResource(domain.ResourceSnapshot{
+			ID: base.id, ClassCode: base.classCode, FamilyCode: base.familyCode,
+			TypeCode: base.typeCode, NaturalUnit: base.naturalUnit,
+			Attributes: values, IdentityKey: base.identityKey, Active: base.active,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("hydrate matched resource %s/%s: %w", base.classCode, base.identityKey, err)
+		}
+		results = append(results, resource)
 	}
 	return results, nil
 }
