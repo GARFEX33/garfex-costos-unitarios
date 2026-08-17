@@ -262,7 +262,12 @@ func (m Model) renderInteractionDock(width int) string {
 	width = max(1, width)
 	if m.interactionMode == interactionModeChat {
 		if m.activeWorkspace != "" {
-			return lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("Buscar: " + m.input + "▌")
+			composer := lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("Buscar: " + m.input + "▌")
+			if slot := m.workspaces[m.activeWorkspace]; slot != nil && slot.descriptor.SearchOnEnter {
+				hint := lipgloss.NewStyle().Foreground(secondaryText).Render("Ctrl+N " + slot.descriptor.CreateLabel)
+				return strings.Join([]string{composer, hint}, "\n")
+			}
+			return composer
 		}
 		if m.inputFocused {
 			return lipgloss.NewStyle().Foreground(primaryText).Background(surface).Padding(0, 1).Width(width).Render("❯ " + m.input + "▌")

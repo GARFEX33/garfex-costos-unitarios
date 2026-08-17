@@ -170,6 +170,9 @@ type WorkspaceDescriptor struct {
 	// CreateLabel is this workspace's scoped "/" palette leaf label (e.g.
 	// "Crear material").
 	CreateLabel string
+	// SearchOnEnter makes search the workspace's primary entry state. Resource
+	// descriptors set it from catalog data; administrative workspaces do not.
+	SearchOnEnter bool
 	// ClassCode narrows this workspace to one domain.ResourceClass.Code; ""
 	// means the unfiltered "/recursos" workspace.
 	ClassCode string
@@ -294,11 +297,11 @@ func (m *Model) enterWorkspace(slug string) bool {
 	if slot.saved != nil {
 		m.applyWorkspace(*slot.saved)
 		m.activeWorkspace = slug
-		if m.interactionMode == interactionModeMenu {
-			m.openWorkspaceMenu()
-		}
+		m.openWorkspaceDefault()
 		m.refreshViewport()
-		m.restoreViewportPosition(*slot.saved)
+		if !slot.descriptor.SearchOnEnter {
+			m.restoreViewportPosition(*slot.saved)
+		}
 		return true
 	}
 	m.engine = NewInteractionEngine(slot.agent)
@@ -318,7 +321,7 @@ func (m *Model) enterWorkspace(slug string) bool {
 		m.appendGARFEX(g.Greeting())
 	}
 	m.activeWorkspace = slug
-	m.openWorkspaceMenu()
+	m.openWorkspaceDefault()
 	m.refreshViewport()
 	return true
 }
@@ -592,7 +595,7 @@ func (m *Model) respond(input InteractionInput) {
 	m.syncChoiceFields()
 	m.refreshCatalogIfChanged()
 	if response.Pending == nil && m.activeWorkspace != "" {
-		m.openWorkspaceMenu()
+		m.openWorkspaceDefault()
 	}
 	m.refreshViewport()
 }
@@ -653,8 +656,19 @@ func (m *Model) openWorkspaceMenu() {
 	m.input, m.inputFocused = "", false
 }
 
+func (m *Model) openWorkspaceDefault() {
+	if slot := m.workspaces[m.activeWorkspace]; slot != nil && slot.descriptor.SearchOnEnter {
+		m.startResourceSearch()
+		return
+	}
+	m.openWorkspaceMenu()
+}
+
 func (m *Model) startResourceSearch() {
 	m.paletteActions, m.paletteQuery, m.paletteTitle = nil, "", ""
+	m.pending, m.workspacePending = nil, false
+	m.choiceIndex, m.choicePrompt, m.choiceOptions = 0, "", nil
+	m.searchQuery, m.choiceSelected = "", nil
 	m.interactionMode, m.inputFocused, m.input = interactionModeChat, true, ""
 	m.refreshViewport()
 }
@@ -667,15 +681,29 @@ func (m *Model) handleAdministrativeKey(msg tea.KeyPressMsg) bool {
 	}
 	if key == "/" && m.interactionMode != interactionModePalette {
 		actions := m.contextualActions()
+		if len(actions) == 0 {
+			actions = m.activePaletteActions()
+		}
 		if len(actions) > 0 {
 			m.paletteReturnMode = m.interactionMode
 			m.openPaletteWithActions(actions)
 		}
 		return true
 	}
+	if key == "ctrl+n" && (m.interactionMode == interactionModeChat || m.hasDirectResourceSearchResults()) {
+		if slot := m.workspaces[m.activeWorkspace]; slot != nil && slot.descriptor.SearchOnEnter && slot.descriptor.CreateLabel != "" {
+			m.input = ""
+			m.respond(InteractionInput{Kind: InputAction, ActionID: createResourceActionID, Value: createResourceActionID, Target: ActionTargetAgent})
+			return true
+		}
+	}
 	if key == "esc" {
 		if m.interactionMode == interactionModeChat {
-			m.openWorkspaceMenu()
+			if slot := m.workspaces[m.activeWorkspace]; slot != nil && slot.descriptor.SearchOnEnter {
+				m.leaveActiveWorkspace()
+			} else {
+				m.openWorkspaceMenu()
+			}
 			return true
 		}
 		if request, ok := m.pending.(ActionRequest); ok {
@@ -688,10 +716,14 @@ func (m *Model) handleAdministrativeKey(msg tea.KeyPressMsg) bool {
 		}
 		if request, ok := m.pending.(QuestionRequest); ok && (request.Key == searchResultsKey || request.Key == catalogStatusMenuKey || request.Key == catalogKindMenuKey) {
 			m.pending = nil
-			m.openWorkspaceMenu()
+			m.openWorkspaceDefault()
 			m.refreshViewport()
 			return true
 		}
+	}
+	if m.hasDirectResourceSearchResults() && msg.Text != "" && !strings.ContainsAny(msg.Text, "\x00\x1b") {
+		m.focusResourceSearchInput(msg.Text)
+		return true
 	}
 	if key == "b" && (m.interactionMode == interactionModeMenu || m.interactionMode == interactionModeAction) {
 		if slot := m.workspaces[m.activeWorkspace]; slot != nil && slot.descriptor.CreateLabel != "" {
@@ -1427,7 +1459,7 @@ func (m *Model) refreshViewport() {
 			lines = append(lines, m.renderActiveInteraction(m.pending, m.choiceIndex), "")
 		}
 	}
-	if len(lines) == 0 {
+	if len(lines) == 0 && !m.isDirectSearchWorkspace() {
 		lines = append(lines, "Todavía no hay mensajes. Iniciá una búsqueda para comenzar.")
 	}
 	m.viewport.SetContent(strings.Join(lines, "\n"))
@@ -1440,6 +1472,23 @@ func (m *Model) refreshViewport() {
 	if wasAtBottom {
 		m.viewport.GotoBottom()
 	}
+}
+
+func (m Model) isDirectSearchWorkspace() bool {
+	slot := m.workspaces[m.activeWorkspace]
+	return slot != nil && slot.descriptor.SearchOnEnter
+}
+
+func (m Model) hasDirectResourceSearchResults() bool {
+	request, ok := m.pending.(QuestionRequest)
+	return ok && request.Key == searchResultsKey && m.isDirectSearchWorkspace()
+}
+
+func (m *Model) focusResourceSearchInput(text string) {
+	m.pending, m.workspacePending = nil, false
+	m.interactionMode, m.inputFocused, m.input = interactionModeChat, true, text
+	m.promptHistoryCursor = -1
+	m.refreshViewport()
 }
 
 func (m Model) interactionDockLines(width int) int {

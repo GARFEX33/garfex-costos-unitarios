@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -123,11 +124,8 @@ func TestSyntheticFourthClassCreateFlowRendersItsOwnCatalogData(t *testing.T) {
 		t.Fatalf("enterWorkspace(%q) = false, want true (buildWorkspaceDescriptors must register the synthetic class)", syntheticSlug)
 	}
 
-	// Open the workspace-scoped "/" palette and confirm its single "Crear
-	// ..." leaf (workspaceActions) — this is startCreateEditor's real entry
-	// point, exactly as a user reaches it.
-	m, _ = update(t, m, key('/'))
-	m, _ = update(t, m, enter())
+	// Start the contextual create flow from the focused search.
+	m, _ = update(t, m, tea.KeyPressMsg(tea.Key{Code: 'n', Mod: tea.ModCtrl}))
 
 	// classFilter is pre-seeded (design §5's startCreateEditor pre-seed/skip
 	// trick), so the wizard starts one step later, directly at the Familia

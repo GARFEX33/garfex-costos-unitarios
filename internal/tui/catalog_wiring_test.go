@@ -80,7 +80,6 @@ func TestNewWithCatalogClassWorkspaceReachesItsOwnAgent(t *testing.T) {
 	if ok := m.enterWorkspace("materiales"); !ok {
 		t.Fatal(`enterWorkspace("materiales") = false, want true`)
 	}
-	m, _ = update(t, m, key('b'))
 	m = submitText(t, m, "hola")
 	if materials.calls != 1 {
 		t.Fatalf("materials agent calls = %d, want 1 (the real class-scoped agent must have been reached)", materials.calls)
@@ -117,7 +116,6 @@ func TestNewWithCatalogRegistersConfigurationWorkspace(t *testing.T) {
 	if ok := m.enterWorkspace(configuracionSlug); !ok {
 		t.Fatal(`enterWorkspace("configuracion") = false, want true`)
 	}
-	m, _ = update(t, m, enter())
 	m, _ = update(t, m, enter())
 	if catalogAgent.calls != 1 {
 		t.Fatalf("catalog admin agent calls = %d, want 1 (the real Configuración agent must have been reached)", catalogAgent.calls)

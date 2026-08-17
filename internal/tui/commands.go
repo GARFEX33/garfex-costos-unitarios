@@ -102,18 +102,20 @@ func BuildWorkspaceDescriptors(catalog domain.ResourceCatalog, agentFor func(cla
 func buildWorkspaceDescriptors(classes []domain.ResourceClass, agentFor func(classCode string) InteractionAgent) []WorkspaceDescriptor {
 	descriptors := make([]WorkspaceDescriptor, 0, len(classes)+1)
 	descriptors = append(descriptors, WorkspaceDescriptor{
-		Slug:        recursosSlug,
-		Title:       "GARFEX / RECURSOS",
-		CreateLabel: "Crear recurso",
-		Agent:       agentFor(""),
+		Slug:          recursosSlug,
+		Title:         "GARFEX / RECURSOS",
+		CreateLabel:   "Crear recurso",
+		SearchOnEnter: true,
+		Agent:         agentFor(""),
 	})
 	for _, class := range classes {
 		descriptors = append(descriptors, WorkspaceDescriptor{
-			Slug:        class.Slug,
-			Title:       "GARFEX / " + strings.ToUpper(class.Plural),
-			CreateLabel: "Crear " + strings.ToLower(class.Name),
-			ClassCode:   class.Code,
-			Agent:       agentFor(class.Code),
+			Slug:          class.Slug,
+			Title:         "GARFEX / " + strings.ToUpper(class.Plural),
+			CreateLabel:   "Crear " + strings.ToLower(class.Name),
+			SearchOnEnter: true,
+			ClassCode:     class.Code,
+			Agent:         agentFor(class.Code),
 		})
 	}
 	return descriptors
@@ -137,9 +139,10 @@ func catalogKindLeaf(byCode map[domain.CatalogKindCode]domain.CatalogKind, code 
 	return assistantAction{id: catalogOpenActionID(code), label: byCode[code].Plural}
 }
 
-// buildCatalogAdminActions builds the "Configuración" workspace's own scoped
-// "/" palette tree: "Catálogo de recursos" grouping every registered
-// CatalogKind into the original business-ask's proposed shape (Estructura /
+// buildCatalogAdminActions builds the catalog action hierarchy consumed by
+// the "Configuración" workspace. The workspace exposes its children directly;
+// the compatibility root only groups every registered CatalogKind into the
+// original business-ask's proposed shape (Estructura /
 // Características / Unidades / Configuración de tipos) — group/leaf labels
 // come from the registry's own Spanish Singular/Plural wherever a real kind
 // backs the leaf, never hardcoded per-kind strings, so this stays
@@ -192,23 +195,24 @@ func buildCatalogAdminActions(kinds []domain.CatalogKind) assistantAction {
 
 // buildCatalogAdminWorkspace builds the "Configuración" WorkspaceDescriptor
 // (design D13) — agent is the production CatalogAdminAdapter (or a fake in
-// tests), PaletteActions is the tree buildCatalogAdminActions builds.
+// tests), and PaletteActions exposes buildCatalogAdminActions' useful children
+// directly, without rendering its compatibility root.
 func buildCatalogAdminWorkspace(kinds []domain.CatalogKind, agent InteractionAgent) WorkspaceDescriptor {
+	actions := buildCatalogAdminActions(kinds)
 	return WorkspaceDescriptor{
 		Slug:           configuracionSlug,
 		Title:          "GARFEX / CONFIGURACIÓN",
 		Agent:          agent,
-		PaletteActions: []assistantAction{buildCatalogAdminActions(kinds)},
+		PaletteActions: actions.children,
 	}
 }
 
 // workspaceActions is the "/" palette's action tree while inside ANY
 // registered workspace slot (see Model.activePaletteActions). Design D13:
-// PaletteActions == nil falls back to today's single "Crear ..." leaf built
-// from CreateLabel (every pre-existing WorkspaceDescriptor construction site
-// — Resources' per-class descriptors included — leaves PaletteActions unset
-// and is completely unaffected); a non-nil PaletteActions (the
-// "Configuración" workspace) is returned as-is instead.
+// PaletteActions == nil falls back to the scoped Crear/Buscar actions built
+// from CreateLabel. Resource descriptors use that fallback for the command
+// palette while SearchOnEnter independently makes search their direct entry;
+// a non-nil PaletteActions (the "Configuración" workspace) is returned as-is.
 func workspaceActions(d WorkspaceDescriptor) []assistantAction {
 	if d.PaletteActions != nil {
 		return d.PaletteActions

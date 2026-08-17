@@ -21,7 +21,7 @@ import (
 // (classFilter == "MATERIAL") — one adapter TYPE, reused per workspace slot
 // (recursos-maestro design D4), rather than one adapter per catalog.
 
-const resourcesGreeting = "Recursos Maestros está conectado al catálogo real (PostgreSQL). Buscá un recurso o usá / para acciones."
+const resourcesGreeting = "Recursos Maestros está conectado al catálogo real (PostgreSQL)."
 
 // createResourceActionID is the Action.ID/InteractionInput.ActionID for the
 // "Crear ..." entry in a resources-workspace-scoped "/" palette (see

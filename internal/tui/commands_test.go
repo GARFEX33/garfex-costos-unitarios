@@ -150,7 +150,7 @@ func TestBuildCatalogAdminActionsUnregisteredKindNotExposed(t *testing.T) {
 
 // TestBuildCatalogAdminWorkspaceSetsSlugAndPaletteActions proves
 // buildCatalogAdminWorkspace wires the "Configuración" slug, the given
-// agent, and a single-root PaletteActions tree.
+// agent, and the useful catalog actions without an intermediate root.
 func TestBuildCatalogAdminWorkspaceSetsSlugAndPaletteActions(t *testing.T) {
 	agent := &fakeCatalogAgent{}
 	descriptor := buildCatalogAdminWorkspace(domain.NewCatalogRegistry().Kinds(), agent)
@@ -160,8 +160,8 @@ func TestBuildCatalogAdminWorkspaceSetsSlugAndPaletteActions(t *testing.T) {
 	if descriptor.Agent != InteractionAgent(agent) {
 		t.Fatalf("descriptor.Agent = %#v, want the given agent", descriptor.Agent)
 	}
-	if len(descriptor.PaletteActions) != 1 || descriptor.PaletteActions[0].label != "Catálogo de recursos" {
-		t.Fatalf("descriptor.PaletteActions = %#v, want the single Catálogo de recursos root", descriptor.PaletteActions)
+	if len(descriptor.PaletteActions) != 5 || descriptor.PaletteActions[0].label != "Crear estructura de recursos" {
+		t.Fatalf("descriptor.PaletteActions = %#v, want the five direct catalog actions", descriptor.PaletteActions)
 	}
 }
 
