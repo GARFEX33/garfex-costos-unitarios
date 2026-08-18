@@ -24,6 +24,8 @@ func (m SupplierModel) supplierView() string {
 		return branchDetailView(frame)
 	case ContactDetailFrame:
 		return contactDetailView(frame)
+	case ChildLifecycleFrame:
+		return childLifecycleView(frame)
 	default:
 		return ""
 	}
@@ -72,6 +74,14 @@ func supplierHelpView(frame SupplierHelpFrame) string {
 		lines = append(lines, "Ctrl+N crear · Enter detalle · ? ayuda")
 	case "detail":
 		lines = append(lines, "E editar · A estado · Esc volver · ? ayuda")
+	case "branch-manager":
+		lines = append(lines, "Ctrl+N crear sucursal · Enter detalle · E buscar · Esc volver · ? ayuda")
+	case "contact-manager":
+		lines = append(lines, "Ctrl+N crear contacto · Enter detalle · E buscar · Esc volver · ? ayuda")
+	case "branch-detail":
+		lines = append(lines, "C contactos de la sucursal · A estado · Esc volver · ? ayuda")
+	case "contact-detail":
+		lines = append(lines, "A estado · Esc volver · ? ayuda")
 	case "edit":
 		lines = append(lines, "Enter guardar · Esc: Cancelar")
 	default:
@@ -124,6 +134,18 @@ func contactDetailView(f ContactDetailFrame) string {
 	}
 	lines := []string{"Detalle del contacto", f.State.text(f.Error), "Nombre: " + f.Contact.Name, "Cargo: " + f.Contact.Role, "Sucursal: " + branch, "Móvil: " + f.Contact.Mobile, "Teléfono: " + f.Contact.Phone, "Email: " + f.Contact.Email, "Notas: " + f.Contact.Notes, "Estado: " + active}
 	return strings.Join(append(lines, supplierFooter("contact-detail")), "\n")
+}
+
+func childLifecycleView(f ChildLifecycleFrame) string {
+	entity := "la sucursal"
+	if f.Contact {
+		entity = "el contacto"
+	}
+	state, action := "Inactivo", "Reactivar"
+	if f.Active {
+		state, action = "Activo", "Desactivar"
+	}
+	return strings.Join([]string{"Cambiar estado de " + entity, "Estado actual: " + state, "Acción: " + action, supplierFooter("confirm")}, "\n")
 }
 
 var detailStates = map[bool]string{false: "Inactivo", true: "Activo"}

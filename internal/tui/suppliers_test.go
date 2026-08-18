@@ -885,3 +885,140 @@ func pr3BDetail(s *supplierListTestService, active bool) SupplierModel {
 	m.frame = SupplierDetailFrame{RouteID: 2, RequestID: 2, SupplierID: 8, Supplier: domain.Supplier{ID: 8, Active: active}, State: SupplierDetailStateReady}
 	return m
 }
+
+func TestSupplierPR4B2CreationPreselection(t *testing.T) {
+	branchID := int64(41)
+	for _, test := range []struct {
+		name        string
+		frame       any
+		wantContact bool
+		wantBranch  *int64
+	}{
+		{name: "branch manager", frame: BranchManagerFrame{SupplierID: 8, SearchFocused: true}},
+		{name: "supplier contacts", frame: ContactManagerFrame{SupplierID: 8, SearchFocused: true}, wantContact: true},
+		{name: "branch contacts", frame: ContactManagerFrame{SupplierID: 8, BranchID: &branchID, SearchFocused: true}, wantContact: true, wantBranch: &branchID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = test.frame
+			next, cmd := model.Update(supplierCtrlN())
+			if cmd != nil {
+				t.Fatal("child Ctrl+N returned a command; creation entry is synchronous")
+			}
+			model = next.(SupplierModel)
+			got, ok := model.PendingChildCreate()
+			if !ok || got.Contact != test.wantContact || got.SupplierID != 8 || !reflect.DeepEqual(got.BranchID, test.wantBranch) {
+				t.Fatalf("creation target = %#v/%v, want contact=%v supplier=8 branch=%v", got, ok, test.wantContact, test.wantBranch)
+			}
+		})
+	}
+}
+
+func TestSupplierPR4B2LifecycleScopeConfirmation(t *testing.T) {
+	branchID := int64(41)
+	for _, test := range []struct {
+		name        string
+		frame       any
+		wantContact bool
+		wantChild   int64
+		wantActive  bool
+		wantAction  string
+		wantState   string
+	}{
+		{name: "active branch", frame: BranchDetailFrame{SupplierID: 8, BranchID: branchID, Branch: domain.Branch{ID: branchID, Active: true}, State: SupplierDetailStateReady}, wantChild: branchID, wantActive: true, wantAction: "Desactivar", wantState: "Activo"},
+		{name: "inactive contact", frame: ContactDetailFrame{SupplierID: 8, ContactID: 31, BranchID: &branchID, Contact: domain.Contact{ID: 31, Active: false}, State: SupplierDetailStateReady}, wantContact: true, wantChild: 31, wantAction: "Reactivar", wantState: "Inactivo"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.stack = []any{SupplierManagerFrame{State: SupplierStateReady}}
+			model.frame = test.frame
+			next, cmd := model.Update(supplierKey('A'))
+			if cmd != nil {
+				t.Fatal("lifecycle confirmation returned a command; confirmation is synchronous")
+			}
+			model = next.(SupplierModel)
+			confirmation, ok := model.CurrentFrame().(ChildLifecycleFrame)
+			if !ok || confirmation.Contact != test.wantContact || confirmation.SupplierID != 8 || confirmation.ChildID != test.wantChild || confirmation.Active != test.wantActive {
+				t.Fatalf("confirmation = %#v, want contact=%v supplier=8 child=%d active=%v", model.CurrentFrame(), test.wantContact, test.wantChild, test.wantActive)
+			}
+			view := model.View().Content
+			for _, want := range []string{"Estado actual: " + test.wantState, "Acción: " + test.wantAction, "Cancelar"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("confirmation view = %q, missing %q", view, want)
+				}
+			}
+			model = supplierModelAfter(t, model, supplierKey(tea.KeyEscape))
+			if !reflect.DeepEqual(model.CurrentFrame(), test.frame) {
+				t.Fatalf("cancel restored = %#v, want %#v", model.CurrentFrame(), test.frame)
+			}
+		})
+	}
+}
+
+func TestSupplierPR4B2ContextualHelp(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		frame      any
+		origin     string
+		want       []string
+		unexpected string
+	}{
+		{name: "branch manager", frame: BranchManagerFrame{SupplierID: 8}, origin: "branch-manager", want: []string{"Ctrl+N crear sucursal", "Enter detalle"}, unexpected: "crear contacto"},
+		{name: "contact manager", frame: ContactManagerFrame{SupplierID: 8}, origin: "contact-manager", want: []string{"Ctrl+N crear contacto", "Enter detalle"}, unexpected: "crear sucursal"},
+		{name: "branch detail", frame: BranchDetailFrame{SupplierID: 8, BranchID: 41}, origin: "branch-detail", want: []string{"A estado", "C contactos de la sucursal"}, unexpected: "Ctrl+N crear"},
+		{name: "contact detail", frame: ContactDetailFrame{SupplierID: 8, ContactID: 31}, origin: "contact-detail", want: []string{"A estado", "Esc volver"}, unexpected: "C contactos de la sucursal"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = test.frame
+			next, cmd := model.Update(supplierKey('?'))
+			if cmd != nil {
+				t.Fatal("help returned a command; contextual help opens synchronously")
+			}
+			model = next.(SupplierModel)
+			help, ok := model.CurrentFrame().(SupplierHelpFrame)
+			if !ok || help.Origin != test.origin {
+				t.Fatalf("help frame = %#v, want origin %q", model.CurrentFrame(), test.origin)
+			}
+			view := model.View().Content
+			for _, want := range test.want {
+				if !strings.Contains(view, want) {
+					t.Fatalf("help view = %q, missing %q", view, want)
+				}
+			}
+			if strings.Contains(view, test.unexpected) {
+				t.Fatalf("help view = %q, contains route-inaccurate %q", view, test.unexpected)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name  string
+		frame any
+	}{
+		{name: "branch manager search", frame: BranchManagerFrame{SupplierID: 8, SearchFocused: true}},
+		{name: "contact manager search", frame: ContactManagerFrame{SupplierID: 8, SearchFocused: true}},
+	} {
+		t.Run(test.name+" keeps ? as focused input", func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = test.frame
+			next, cmd := model.Update(supplierKey('?'))
+			if cmd == nil {
+				t.Fatal("focused ? did not remain a search input")
+			}
+			got := next.(SupplierModel).CurrentFrame()
+			switch frame := got.(type) {
+			case BranchManagerFrame:
+				if frame.Query != "?" || !frame.SearchFocused {
+					t.Fatalf("focused help key changed branch search: frame=%#v", frame)
+				}
+			case ContactManagerFrame:
+				if frame.Query != "?" || !frame.SearchFocused {
+					t.Fatalf("focused help key changed contact search: frame=%#v", frame)
+				}
+			default:
+				t.Fatalf("focused help key changed route: frame=%#v", got)
+			}
+		})
+	}
+}

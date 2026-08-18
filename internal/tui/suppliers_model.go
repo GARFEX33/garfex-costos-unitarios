@@ -15,6 +15,7 @@ type SupplierModel struct {
 	nextRouteID   uint64
 	nextRequestID uint64
 	navigation    *SupplierNavigationTarget
+	childCreate   *ChildCreateTarget
 	AtRoot        bool
 }
 
@@ -242,6 +243,13 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "enter" && frame.SelectedID > 0 {
 			return m.openChildDetail(frame.SelectedID)
 		}
+		if msg.String() == "ctrl+n" {
+			m.childCreate = &ChildCreateTarget{SupplierID: frame.SupplierID}
+			return m, nil
+		}
+		if msg.String() == "?" && !frame.SearchFocused {
+			return m.openHelp(frame, "branch-manager")
+		}
 		if msg.String() == "esc" {
 			return m.popFrame()
 		}
@@ -259,6 +267,18 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case ContactManagerFrame:
 		if msg.String() == "enter" && frame.SelectedID > 0 {
 			return m.openChildDetail(frame.SelectedID)
+		}
+		if msg.String() == "ctrl+n" {
+			target := &ChildCreateTarget{Contact: true, SupplierID: frame.SupplierID}
+			if frame.BranchID != nil {
+				value := *frame.BranchID
+				target.BranchID = &value
+			}
+			m.childCreate = target
+			return m, nil
+		}
+		if msg.String() == "?" && !frame.SearchFocused {
+			return m.openHelp(frame, "contact-manager")
 		}
 		if msg.String() == "esc" {
 			return m.popFrame()
@@ -278,11 +298,27 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "c" || msg.String() == "C" {
 			return m.openContactManager(frame, frame.SupplierID, &frame.BranchID)
 		}
+		if msg.String() == "a" || msg.String() == "A" {
+			return m.openChildLifecycle(frame, false, frame.BranchID, frame.Branch.Active)
+		}
+		if msg.String() == "?" {
+			return m.openHelp(frame, "branch-detail")
+		}
 		if msg.String() == "esc" {
 			return m.popFrame()
 		}
 	case ContactDetailFrame:
+		if msg.String() == "a" || msg.String() == "A" {
+			return m.openChildLifecycle(frame, true, frame.ContactID, frame.Contact.Active)
+		}
+		if msg.String() == "?" {
+			return m.openHelp(frame, "contact-detail")
+		}
 		if msg.String() == "esc" {
+			return m.popFrame()
+		}
+	case ChildLifecycleFrame:
+		if msg.String() == "esc" || msg.String() == "c" || msg.String() == "C" {
 			return m.popFrame()
 		}
 	case SupplierEditFrame:
@@ -523,6 +559,26 @@ func (m SupplierModel) openChildDetail(id int64) (SupplierModel, tea.Cmd) {
 	default:
 		return m, nil
 	}
+}
+
+func (m SupplierModel) PendingChildCreate() (ChildCreateTarget, bool) {
+	if m.childCreate == nil {
+		return ChildCreateTarget{}, false
+	}
+	return *m.childCreate, true
+}
+
+func (m SupplierModel) openChildLifecycle(previous any, contact bool, id int64, active bool) (SupplierModel, tea.Cmd) {
+	m.pushFrame(previous)
+	supplierID := int64(0)
+	switch frame := previous.(type) {
+	case BranchDetailFrame:
+		supplierID = frame.SupplierID
+	case ContactDetailFrame:
+		supplierID = frame.SupplierID
+	}
+	m.frame = ChildLifecycleFrame{Contact: contact, SupplierID: supplierID, ChildID: id, Active: active}
+	return m, nil
 }
 
 func detailCursor(items []SupplierDetailItem, cursor, delta int) int {
