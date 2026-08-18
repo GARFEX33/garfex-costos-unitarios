@@ -83,9 +83,9 @@ func supplierHelpView(frame SupplierHelpFrame) string {
 	case "contact-manager":
 		lines = append(lines, "Ctrl+N crear contacto · Enter detalle · E buscar · Esc volver · ? ayuda")
 	case "branch-detail":
-		lines = append(lines, "C contactos de la sucursal · A estado · Esc volver · ? ayuda")
+		lines = append(lines, "E editar · A estado · C contactos de la sucursal · Esc volver · ? ayuda")
 	case "contact-detail":
-		lines = append(lines, "A estado · Esc volver · ? ayuda")
+		lines = append(lines, "E editar · A estado · Esc volver · ? ayuda")
 	case "edit":
 		lines = append(lines, "Enter guardar · Esc: Cancelar")
 	default:
@@ -105,10 +105,10 @@ var supplierFooters = map[string]string{
 
 func supplierFooter(route string) string {
 	if route == "branch-detail" {
-		return "C contactos de la sucursal · Esc volver · Ctrl+C salir"
+		return "E editar · A estado · C contactos de la sucursal · Esc volver · Ctrl+C salir"
 	}
 	if route == "contact-detail" {
-		return "Esc volver · Ctrl+C salir"
+		return "E editar · A estado · Esc volver · Ctrl+C salir"
 	}
 	return supplierFooters[route]
 }
@@ -149,14 +149,18 @@ func childLifecycleView(f ChildLifecycleFrame) string {
 	if f.Active {
 		state, action = "Activo", "Desactivar"
 	}
-	return strings.Join([]string{"Cambiar estado de " + entity, "Estado actual: " + state, "Acción: " + action, supplierFooter("confirm")}, "\n")
+	lines := []string{"Cambiar estado de " + entity, "Estado actual: " + state, "Acción: " + action}
+	if f.Error != "" {
+		lines = append(lines, f.Error)
+	}
+	return strings.Join(append(lines, supplierFooter("confirm")), "\n")
 }
 func branchEditView(frame BranchEditFrame) string {
 	title := "Editar sucursal"
 	if !frame.Mode {
 		title = "Crear sucursal"
 	}
-	return childEditView(title, branchFormFields, []string{frame.Values.Name, frame.Values.Reference, frame.Values.City, frame.Values.State, frame.Values.Country, frame.Values.Address, frame.Values.GeneralPhone, frame.Values.GeneralEmail, frame.Values.Notes}, frame.Focus, "branch")
+	return childEditView(title, branchFormFields, []string{frame.Values.Name, frame.Values.Reference, frame.Values.City, frame.Values.State, frame.Values.Country, frame.Values.Address, frame.Values.GeneralPhone, frame.Values.GeneralEmail, frame.Values.Notes}, frame.Focus, frame.Error, "branch")
 }
 func contactEditView(frame ContactEditFrame) string {
 	title := "Editar contacto"
@@ -167,9 +171,9 @@ func contactEditView(frame ContactEditFrame) string {
 	if frame.Values.BranchID != nil {
 		branch = "Asociada"
 	}
-	return childEditView(title, contactFormFields, []string{frame.Values.Name, frame.Values.Role, branch, frame.Values.Mobile, frame.Values.Phone, frame.Values.Email, frame.Values.Notes}, frame.Focus, "contact")
+	return childEditView(title, contactFormFields, []string{frame.Values.Name, frame.Values.Role, branch, frame.Values.Mobile, frame.Values.Phone, frame.Values.Email, frame.Values.Notes}, frame.Focus, frame.Error, "contact")
 }
-func childEditView(title string, fields, values []string, focus int, kind string) string {
+func childEditView(title string, fields, values []string, focus int, err, kind string) string {
 	lines := []string{title}
 	for i, label := range fields {
 		marker := " "
@@ -177,6 +181,9 @@ func childEditView(title string, fields, values []string, focus int, kind string
 			marker = ">"
 		}
 		lines = append(lines, marker+label+": "+values[i])
+	}
+	if err != "" {
+		lines = append(lines, err)
 	}
 	return strings.Join(append(lines, childEditFooter(kind)), "\n")
 }

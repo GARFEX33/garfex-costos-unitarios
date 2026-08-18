@@ -52,6 +52,8 @@ func (m SupplierModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.childListReply(value), nil
 	case SupplierMutationMsg:
 		return m.mutationReply(value)
+	case ChildMutationMsg:
+		return m.childMutationReply(value)
 	case tea.KeyPressMsg:
 		return m.updateKey(value)
 	default:
@@ -327,6 +329,9 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.popFrame()
 		}
 	case ChildLifecycleFrame:
+		if msg.String() == "enter" {
+			return m, childMutationCmd(m.service, frame)
+		}
 		if msg.String() == "esc" || msg.String() == "c" || msg.String() == "C" {
 			return m.popFrame()
 		}
@@ -377,6 +382,14 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, supplierLifecycleCmd(service, frame)
+		}
+	case BranchEditFrame:
+		if msg.String() == "enter" {
+			return m, childMutationCmd(m.service, frame)
+		}
+	case ContactEditFrame:
+		if msg.String() == "enter" {
+			return m, childMutationCmd(m.service, frame)
 		}
 	case SupplierHelpFrame:
 		if msg.String() == "esc" {
@@ -451,6 +464,92 @@ func (m SupplierModel) mutationReply(msg SupplierMutationMsg) (SupplierModel, te
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m SupplierModel) childMutationReply(msg ChildMutationMsg) (SupplierModel, tea.Cmd) {
+	if !childMutationMatches(m.frame, msg) {
+		return m, nil
+	}
+	if msg.Err != nil {
+		switch frame := m.frame.(type) {
+		case BranchEditFrame:
+			frame.Error = childMutationErrorText(msg.Err, false, false)
+			m.frame = frame
+		case ContactEditFrame:
+			frame.Error = childMutationErrorText(msg.Err, true, false)
+			m.frame = frame
+		case ChildLifecycleFrame:
+			frame.Error = childMutationErrorText(msg.Err, frame.Contact, true)
+			m.frame = frame
+		}
+		return m, nil
+	}
+	previous, ok := m.previousFrame()
+	if !ok {
+		return m, nil
+	}
+	switch frame := previous.(type) {
+	case BranchDetailFrame:
+		if msg.Branch.ID == 0 {
+			msg.Branch = frame.Branch
+			msg.Branch.Active = !frame.Branch.Active
+		}
+		frame.Branch = msg.Branch
+		frame.State, frame.Error = SupplierDetailStateReady, ""
+		m.frame = frame
+	case ContactDetailFrame:
+		if msg.ContactValue.ID == 0 {
+			msg.ContactValue = frame.Contact
+			msg.ContactValue.Active = !frame.Contact.Active
+		}
+		frame.Contact, frame.BranchID = msg.ContactValue, msg.ContactValue.BranchID
+		frame.State, frame.Error = SupplierDetailStateReady, ""
+		m.frame = frame
+	default:
+		m.frame = previous
+	}
+	m.stack = m.stack[:len(m.stack)-1]
+	return m, nil
+}
+
+func childMutationMatches(frame any, msg ChildMutationMsg) bool {
+	route, request, contact, supplierID, childID := childMutationIdentity(frame)
+	if route == 0 || route != msg.RouteID || request != msg.RequestID || contact != msg.Contact || supplierID != msg.SupplierID {
+		return false
+	}
+	if childID == 0 {
+		return msg.Kind == ChildMutationCreate
+	}
+	if msg.ChildID != childID {
+		return false
+	}
+	switch value := frame.(type) {
+	case BranchEditFrame, ContactEditFrame:
+		return msg.Kind == ChildMutationUpdate
+	case ChildLifecycleFrame:
+		return msg.Kind == map[bool]ChildMutationKind{true: ChildMutationDeactivate, false: ChildMutationReactivate}[value.Active]
+	default:
+		return false
+	}
+}
+
+func childMutationErrorText(err error, contact, lifecycle bool) string {
+	entity, genitive, title, registered := "la sucursal", "de la sucursal", "La sucursal", "registrada"
+	if contact {
+		entity, genitive, title, registered = "el contacto", "del contacto", "El contacto", "registrado"
+	}
+	switch {
+	case errors.Is(err, domain.ErrValidation):
+		return "Revisá los datos " + genitive + "."
+	case errors.Is(err, domain.ErrNotFound):
+		return title + " ya no existe."
+	case errors.Is(err, domain.ErrConflict):
+		return title + " ya está " + registered + "."
+	case lifecycle:
+		return "No pude cambiar el estado " + genitive + ". Probá de nuevo en un momento."
+	default:
+		return "No pude guardar " + entity + ". Probá de nuevo en un momento."
+	}
 }
 
 func (m SupplierModel) previousFrame() (any, bool) {
@@ -586,7 +685,7 @@ func (m SupplierModel) openChildLifecycle(previous any, contact bool, id int64, 
 	case ContactDetailFrame:
 		supplierID = frame.SupplierID
 	}
-	m.frame = ChildLifecycleFrame{Contact: contact, SupplierID: supplierID, ChildID: id, Active: active}
+	m.frame = ChildLifecycleFrame{RouteID: m.nextRouteID, RequestID: m.nextRequestID, Contact: contact, SupplierID: supplierID, ChildID: id, Active: active}
 	return m, nil
 }
 
