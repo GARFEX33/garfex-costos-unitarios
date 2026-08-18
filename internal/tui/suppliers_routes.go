@@ -121,6 +121,20 @@ type ContactDetailFrame struct {
 	Error                 string
 }
 
+// ChildCreateTarget records the contextual seam consumed by the child-form slice.
+type ChildCreateTarget struct {
+	Contact    bool
+	SupplierID int64
+	BranchID   *int64
+}
+
+// ChildLifecycleFrame confirms one non-destructive branch or contact transition.
+type ChildLifecycleFrame struct {
+	Contact             bool
+	SupplierID, ChildID int64
+	Active              bool
+}
+
 func (f SupplierDetailFrame) StateText() string { return f.State.text(f.Error) }
 
 func supplierDetailItems(detail SupplierDetail) []SupplierDetailItem {
