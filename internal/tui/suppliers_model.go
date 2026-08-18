@@ -1,11 +1,16 @@
 package tui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	"unicode"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/modules/suppliers/domain"
+)
 
 type SupplierModel struct {
 	service       SupplierListService
 	frame         any
-	stack         []SupplierManagerSnapshot
+	stack         []any
 	nextRouteID   uint64
 	nextRequestID uint64
 	navigation    *SupplierNavigationTarget
@@ -29,7 +34,7 @@ func (m SupplierModel) Init() tea.Cmd {
 
 func (m SupplierModel) CurrentFrame() any { return m.frame }
 
-func (m SupplierModel) View() tea.View { return tea.NewView("Proveedores") }
+func (m SupplierModel) View() tea.View { return tea.NewView(m.supplierView()) }
 
 func (m SupplierModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := msg.(type) {
@@ -114,11 +119,20 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case SupplierDetailFrame:
 			frame.Cursor = detailCursor(frame.Items, frame.Cursor, delta)
 			m.frame = frame
+		case SupplierEditFrame:
+			next := frame.Focus + delta
+			if next >= 0 && next < len(supplierFormFields) {
+				frame.Focus = next
+			}
+			m.frame = frame
 		}
 		return m, nil
 	}
 	switch frame := m.frame.(type) {
 	case SupplierManagerFrame:
+		if msg.String() == "ctrl+n" {
+			return m.openEdit(frame, domain.Supplier{}, SupplierEditCreate)
+		}
 		if msg.String() == "enter" {
 			return m.openDetail(frame.SelectedID)
 		}
@@ -126,6 +140,13 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.AtRoot = true
 		}
 	case SupplierDetailFrame:
+		if msg.String() == "e" || msg.String() == "E" {
+			supplier := frame.Supplier
+			if supplier.ID == 0 {
+				supplier.ID = frame.SupplierID
+			}
+			return m.openEdit(frame, supplier, SupplierEditUpdate)
+		}
 		if msg.String() == "enter" && frame.Cursor >= 0 && frame.Cursor < len(frame.Items) && frame.Items[frame.Cursor].Selectable {
 			target := frame.Items[frame.Cursor].Target
 			m.navigation = &target
@@ -135,7 +156,74 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.stack = m.stack[:len(m.stack)-1]
 			m.navigation = nil
 		}
+	case SupplierEditFrame:
+		if msg.String() == "tab" {
+			frame.Focus = (frame.Focus + 1) % len(supplierFormFields)
+			m.frame = frame
+			return m, nil
+		}
+		if text := supplierPrintableText(msg); frame.Focused && text != "" {
+			frame = appendSupplierText(frame, text)
+			m.frame = frame
+			return m, nil
+		}
+		if msg.String() == "esc" {
+			return m.popFrame()
+		}
 	}
+	return m, nil
+}
+
+func supplierPrintableText(msg tea.KeyPressMsg) string {
+	if msg.Key().Mod != 0 {
+		return ""
+	}
+	if msg.Key().Text != "" {
+		return msg.Key().Text
+	}
+	if unicode.IsPrint(msg.Key().Code) {
+		return string(msg.Key().Code)
+	}
+	return ""
+}
+
+func appendSupplierText(frame SupplierEditFrame, text string) SupplierEditFrame {
+	switch frame.Focus {
+	case SupplierFieldTradeName:
+		frame.Values.TradeName += text
+	case SupplierFieldLegalName:
+		frame.Values.LegalName += text
+	case SupplierFieldTaxIdentifier:
+		frame.Values.TaxIdentifier += text
+	case SupplierFieldWebsite:
+		frame.Values.Website += text
+	default:
+		frame.Values.Notes += text
+	}
+	return frame
+}
+
+func (m SupplierModel) openEdit(previous any, supplier domain.Supplier, mode bool) (SupplierModel, tea.Cmd) {
+	if mode && supplier.ID <= 0 {
+		return m, nil
+	}
+	m.pushFrame(previous)
+	m.frame = newSupplierEditFrame(m.nextRouteID, m.nextRequestID, supplier, mode)
+	return m, nil
+}
+
+func (m *SupplierModel) pushFrame(frame any) {
+	m.stack = append(m.stack, frame)
+	m.nextRouteID++
+	m.nextRequestID++
+}
+
+func (m SupplierModel) popFrame() (SupplierModel, tea.Cmd) {
+	if len(m.stack) == 0 {
+		return m, nil
+	}
+	m.frame = m.stack[len(m.stack)-1]
+	m.stack = m.stack[:len(m.stack)-1]
 	return m, nil
 }
 

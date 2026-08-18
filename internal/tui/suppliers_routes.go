@@ -84,6 +84,7 @@ type SupplierManagerFrame struct {
 	Cursor, Offset, Viewport int
 	State                    SupplierState
 	Error                    string
+	SearchFocused            bool
 }
 
 func (f SupplierManagerFrame) StateText() string { return f.State.text(f.Error) }
@@ -149,4 +150,45 @@ func supplierFilterActive(filter SupplierFilter) *bool {
 	}
 	active := filter == SupplierFilterActive
 	return &active
+}
+
+const SupplierEditCreate = false
+const SupplierEditUpdate = true
+
+const (
+	SupplierFieldTradeName = iota
+	SupplierFieldLegalName
+	SupplierFieldTaxIdentifier
+	SupplierFieldWebsite
+	SupplierFieldNotes
+)
+
+var supplierFormFields = []string{
+	"Nombre comercial",
+	"Razón social",
+	"Identificación fiscal/RFC",
+	"Sitio web",
+	"Notas",
+}
+
+// SupplierEditFrame is the separate progressive form for supplier-only data.
+type SupplierEditFrame struct {
+	RouteID, RequestID uint64
+	SupplierID         int64
+	Mode               bool
+	Values             domain.SupplierDetails
+	Focus              int
+	Focused            bool
+	Error              string
+}
+
+func newSupplierEditFrame(route, request uint64, supplier domain.Supplier, mode bool) SupplierEditFrame {
+	return SupplierEditFrame{
+		RouteID: route, RequestID: request, SupplierID: supplier.ID, Mode: mode,
+		Values: domain.SupplierDetails{
+			TradeName: supplier.TradeName, LegalName: supplier.LegalName,
+			TaxIdentifier: supplier.TaxIdentifier, Website: supplier.Website, Notes: supplier.Notes,
+		},
+		Focused: true,
+	}
 }

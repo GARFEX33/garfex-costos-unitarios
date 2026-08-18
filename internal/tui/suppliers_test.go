@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -41,6 +43,187 @@ func supplierModelAfter(t *testing.T, model SupplierModel, msg tea.Msg) Supplier
 
 func supplierKey(code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: code})
+}
+
+func supplierTextKey(text string) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: []rune(text)[0], Text: text})
+}
+
+func supplierCtrlN() tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: 'n', Mod: tea.ModCtrl})
+}
+
+type unsupportedSupplierRoute struct{}
+
+func TestSupplierPR3AManagerCreateAndProgressiveSupplierForm(t *testing.T) {
+	model := NewSupplierModel(&supplierListTestService{})
+	manager := model.CurrentFrame().(SupplierManagerFrame)
+	manager.SearchFocused = true
+	model.frame = manager
+
+	next, cmd := model.Update(supplierCtrlN())
+	model = next.(SupplierModel)
+	if cmd != nil {
+		t.Fatal("manager Ctrl+N returned a command; create opens synchronously")
+	}
+	form, ok := model.CurrentFrame().(SupplierEditFrame)
+	if !ok || form.Mode != SupplierEditCreate || form.SupplierID != 0 {
+		t.Fatalf("create frame = %#v, want supplier create form", model.CurrentFrame())
+	}
+	wantLabels := []string{"Nombre comercial", "Razón social", "Identificación fiscal/RFC", "Sitio web", "Notas"}
+	if got := supplierFormFields; !reflect.DeepEqual(got, wantLabels) {
+		t.Fatalf("form labels = %#v, want %#v", got, wantLabels)
+	}
+
+	for i, value := range []string{"Comercial", "Legal", "RFC-123", "https://acme.example", "Notas"} {
+		for _, key := range value {
+			model = supplierModelAfter(t, model, supplierTextKey(string(key)))
+		}
+		if i < 4 {
+			model = supplierModelAfter(t, model, supplierKey(tea.KeyTab))
+		}
+	}
+	form = model.CurrentFrame().(SupplierEditFrame)
+	wantValues := domain.SupplierDetails{TradeName: "Comercial", LegalName: "Legal", TaxIdentifier: "RFC-123", Website: "https://acme.example", Notes: "Notas"}
+	gotValues := form.Values
+	if !reflect.DeepEqual(gotValues, wantValues) {
+		t.Fatalf("progressive form values = %#v, want %#v", gotValues, wantValues)
+	}
+}
+
+func TestSupplierPR3AManagerCtrlNWithoutSearchFocusOpensCreate(t *testing.T) {
+	model := NewSupplierModel(&supplierListTestService{})
+	model = supplierModelAfter(t, model, supplierCtrlN())
+	form, ok := model.CurrentFrame().(SupplierEditFrame)
+	if !ok || form.Mode != SupplierEditCreate {
+		t.Fatalf("unfocused manager Ctrl+N frame = %#v, want create form", model.CurrentFrame())
+	}
+}
+
+func TestSupplierPR3ACtrlNIgnoredOutsideManager(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		frame any
+		check func(t *testing.T, got any)
+	}{
+		{
+			name:  "detail",
+			frame: SupplierDetailFrame{SupplierID: 71, State: SupplierDetailStateReady},
+			check: func(t *testing.T, got any) {
+				if detail := got.(SupplierDetailFrame); detail.SupplierID != 71 {
+					t.Fatalf("detail after Ctrl+N = %#v, want unchanged detail", detail)
+				}
+			},
+		},
+		{
+			name:  "edit form",
+			frame: SupplierEditFrame{Mode: SupplierEditUpdate, SupplierID: 71},
+			check: func(t *testing.T, got any) {
+				if form := got.(SupplierEditFrame); form.SupplierID != 71 || form.Mode != SupplierEditUpdate {
+					t.Fatalf("edit after Ctrl+N = %#v, want unchanged edit", form)
+				}
+			},
+		},
+		{
+			name:  "unsupported route",
+			frame: unsupportedSupplierRoute{},
+			check: func(t *testing.T, got any) {
+				if _, ok := got.(unsupportedSupplierRoute); !ok {
+					t.Fatalf("unsupported route after Ctrl+N = %#v, want unchanged route", got)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = test.frame
+			model = supplierModelAfter(t, model, supplierCtrlN())
+			test.check(t, model.CurrentFrame())
+		})
+	}
+}
+
+func TestSupplierPR3ADetailEditUsesViewedSupplierID(t *testing.T) {
+	model := NewSupplierModel(&supplierListTestService{})
+	model.frame = SupplierDetailFrame{SupplierID: 84, State: SupplierDetailStateReady}
+
+	model = supplierModelAfter(t, model, supplierKey('E'))
+	form, ok := model.CurrentFrame().(SupplierEditFrame)
+	if !ok || form.Mode != SupplierEditUpdate || form.SupplierID != 84 {
+		t.Fatalf("detail E frame = %#v, want edit for supplier 84", model.CurrentFrame())
+	}
+}
+
+func TestSupplierPR3AFocusedPrintableKeysRemainText(t *testing.T) {
+	for _, text := range []string{"E", "S", "C", "A", "?"} {
+		t.Run(text, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = SupplierEditFrame{Mode: SupplierEditCreate, Values: domain.SupplierDetails{}, Focus: 0, Focused: true}
+			model = supplierModelAfter(t, model, supplierTextKey(text))
+			form, ok := model.CurrentFrame().(SupplierEditFrame)
+			if !ok || form.Values.TradeName != text {
+				t.Fatalf("focused %q input = %#v, want text in field", text, model.CurrentFrame())
+			}
+		})
+	}
+}
+
+func TestSupplierPR3AFormEscCancelsCreateAndEditWithoutSave(t *testing.T) {
+	manager := SupplierManagerFrame{Query: "acme", Filter: SupplierFilterInactive, Rows: []SupplierRow{{ID: 9}}, SelectedID: 9, Cursor: 0, Offset: 25, Viewport: 12, State: SupplierStateReady}
+	detail := SupplierDetailFrame{RouteID: 3, RequestID: 4, SupplierID: 9, Supplier: domain.Supplier{ID: 9}, State: SupplierDetailStateReady}
+	for _, test := range []struct {
+		name   string
+		before any
+		open   tea.KeyPressMsg
+		assert func(t *testing.T, got any)
+	}{
+		{
+			name:   "create",
+			before: manager,
+			open:   supplierCtrlN(),
+			assert: func(t *testing.T, got any) {
+				if !reflect.DeepEqual(got, manager) {
+					t.Fatalf("create Esc frame = %#v, want %#v", got, manager)
+				}
+			},
+		},
+		{
+			name:   "edit",
+			before: detail,
+			open:   supplierKey('E'),
+			assert: func(t *testing.T, got any) {
+				if !reflect.DeepEqual(got, detail) {
+					t.Fatalf("edit Esc frame = %#v, want %#v", got, detail)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = test.before
+			model = supplierModelAfter(t, model, test.open)
+			model = supplierModelAfter(t, model, supplierKey(tea.KeyEscape))
+			test.assert(t, model.CurrentFrame())
+		})
+	}
+}
+
+func TestSupplierPR3AMinimumDeterministicSupplierFormView(t *testing.T) {
+	model := NewSupplierModel(&supplierListTestService{})
+	model.frame = SupplierEditFrame{Mode: SupplierEditUpdate, SupplierID: 84, Focus: 2, Focused: true}
+	first := model.View().Content
+	second := model.View().Content
+	if first != second {
+		t.Fatalf("form view changed between renders: %q != %q", first, second)
+	}
+	for _, label := range []string{"Nombre comercial", "Razón social", "Identificación fiscal/RFC", "Sitio web", "Notas", "Esc: Cancelar"} {
+		if !strings.Contains(first, label) {
+			t.Fatalf("form view = %q, want label/footer %q", first, label)
+		}
+	}
+	if strings.Contains(first, "Sucursales") || strings.Contains(first, "Contactos") {
+		t.Fatalf("supplier-only form rendered child fields: %q", first)
+	}
 }
 
 func TestSupplierPR2AInitialActiveEmptyQueryLoad(t *testing.T) {
