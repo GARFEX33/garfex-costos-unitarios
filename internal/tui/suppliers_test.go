@@ -26,6 +26,12 @@ type supplierListTestService struct {
 	createErr       error
 	updateErr       error
 	activeErr       error
+	branchResult    domain.Branch
+	contactResult   domain.Contact
+	childErr        error
+	branchSupplier  int64
+	contactSupplier int64
+	contactBranch   *int64
 	createCalls     int
 	updateCalls     int
 	deactivateCalls int
@@ -79,6 +85,35 @@ func (s *supplierListTestService) DeactivateSupplier(context.Context, int64) (do
 func (s *supplierListTestService) ReactivateSupplier(context.Context, int64) (domain.Supplier, error) {
 	s.reactivateCalls++
 	return s.activeResult, s.activeErr
+}
+
+func (s *supplierListTestService) AddBranch(_ context.Context, id int64, _ domain.BranchDetails) (domain.Branch, error) {
+	s.branchSupplier = id
+	return s.branchResult, s.childErr
+}
+func (s *supplierListTestService) UpdateBranch(_ context.Context, supplierID, id int64, _ domain.BranchDetails) (domain.Branch, error) {
+	s.branchSupplier = supplierID
+	return s.branchResult, s.childErr
+}
+func (s *supplierListTestService) DeactivateBranch(c context.Context, supplierID, id int64) (domain.Branch, error) {
+	return s.UpdateBranch(c, supplierID, id, domain.BranchDetails{})
+}
+func (s *supplierListTestService) ReactivateBranch(c context.Context, supplierID, id int64) (domain.Branch, error) {
+	return s.UpdateBranch(c, supplierID, id, domain.BranchDetails{})
+}
+func (s *supplierListTestService) AddContact(_ context.Context, id int64, d domain.ContactDetails) (domain.Contact, error) {
+	s.contactSupplier, s.contactBranch = id, d.BranchID
+	return s.contactResult, s.childErr
+}
+func (s *supplierListTestService) UpdateContact(_ context.Context, supplierID, id int64, d domain.ContactDetails) (domain.Contact, error) {
+	s.contactSupplier, s.contactBranch = supplierID, d.BranchID
+	return s.contactResult, s.childErr
+}
+func (s *supplierListTestService) DeactivateContact(c context.Context, supplierID, id int64) (domain.Contact, error) {
+	return s.UpdateContact(c, supplierID, id, domain.ContactDetails{})
+}
+func (s *supplierListTestService) ReactivateContact(c context.Context, supplierID, id int64) (domain.Contact, error) {
+	return s.UpdateContact(c, supplierID, id, domain.ContactDetails{})
 }
 
 func supplierModelAfter(t *testing.T, model SupplierModel, msg tea.Msg) SupplierModel {
@@ -166,7 +201,7 @@ func assertStaleDetail(t *testing.T, s *supplierListTestService, frame any, stal
 func TestSupplierPR4B1Footers(t *testing.T) {
 	branchView := (SupplierModel{frame: BranchDetailFrame{Supplier: domain.Supplier{TradeName: "Acme"}, Branch: domain.Branch{Name: "Centro", City: "Córdoba", GeneralPhone: "555", GeneralEmail: "c@acme.test"}}}).View().Content
 	contactView := (SupplierModel{frame: ContactDetailFrame{Contact: domain.Contact{Name: "Ana", Role: "Compras", Mobile: "555", Email: "a@acme.test"}, Branch: domain.Branch{ID: 41, Name: "Centro", City: "Córdoba"}}}).View().Content
-	requireSupplier(t, !strings.Contains(branchView, "E editar") && !strings.Contains(contactView, "E editar") && strings.Contains(branchView, "C contactos de la sucursal") && strings.Contains(branchView+contactView, "Sucursal: Centro (Córdoba)"), "route footer/content mismatch")
+	requireSupplier(t, strings.Contains(branchView, "E editar") && strings.Contains(contactView, "E editar") && strings.Contains(branchView, "C contactos de la sucursal") && strings.Contains(branchView+contactView, "Sucursal: Centro (Córdoba)"), "route footer/content mismatch")
 }
 
 func TestSupplierPR4B1DetailStatesAndContent(t *testing.T) {
@@ -223,13 +258,12 @@ func TestSupplierPR4B1DetailFootersExact(t *testing.T) {
 	for _, test := range []struct {
 		name, view, footer string
 	}{
-		{name: "branch", view: branchDetailView(BranchDetailFrame{}), footer: "C contactos de la sucursal · Esc volver · Ctrl+C salir"},
-		{name: "contact", view: contactDetailView(ContactDetailFrame{}), footer: "Esc volver · Ctrl+C salir"},
+		{name: "branch", view: branchDetailView(BranchDetailFrame{}), footer: "E editar · A estado · C contactos de la sucursal · Esc volver · Ctrl+C salir"},
+		{name: "contact", view: contactDetailView(ContactDetailFrame{}), footer: "E editar · A estado · Esc volver · Ctrl+C salir"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lines := strings.Split(test.view, "\n")
 			requireSupplier(t, lines[len(lines)-1] == test.footer, "detail footer command set mismatch")
-			requireSupplier(t, !strings.Contains(test.view, "E editar"), "detail footer exposes unsupported E command")
 		})
 	}
 }
@@ -1195,4 +1229,125 @@ func TestSupplierPR4C1ChildFormsAndRouteCommands(t *testing.T) {
 			})
 		}
 	})
+}
+
+func childMutationCommand(t *testing.T, m SupplierModel, key tea.KeyPressMsg) ChildMutationMsg {
+	_, cmd := m.Update(key)
+	requireSupplier(t, cmd != nil, "child mutation command missing")
+	return cmd().(ChildMutationMsg)
+}
+func requireChildDetail(t *testing.T, got any, contact bool, id int64, name string, active bool) {
+	value := reflect.ValueOf(got).FieldByName(map[bool]string{false: "Branch", true: "Contact"}[contact])
+	requireSupplier(t, value.IsValid() && value.FieldByName("ID").Int() == id && (name == "" || value.FieldByName("Name").String() == name) && value.FieldByName("Active").Bool() == active, "child detail restoration mismatch")
+}
+func TestSupplierPR4CChildMutationsAreCorrelatedAndScoped(t *testing.T) {
+	branchID := int64(41)
+	s := &supplierListTestService{branchResult: domain.Branch{ID: branchID, SupplierID: 8, Name: "Centro", Active: true}, contactResult: domain.Contact{ID: 31, SupplierID: 8, BranchID: &branchID, Name: "Ana", Active: true}}
+	for _, tc := range []struct {
+		name            string
+		before          any
+		contact, create bool
+		id              int64
+		nameValue       string
+	}{
+		{"branch create", BranchManagerFrame{RouteID: 3, RequestID: 4, SupplierID: 8}, false, true, branchID, ""},
+		{"contact create", ContactManagerFrame{RouteID: 5, RequestID: 6, SupplierID: 8, BranchID: &branchID}, true, true, 31, ""},
+		{"branch update", BranchDetailFrame{RouteID: 7, RequestID: 8, SupplierID: 8, BranchID: branchID, Branch: s.branchResult, State: SupplierDetailStateReady}, false, false, branchID, "Centro"},
+		{"contact update", ContactDetailFrame{RouteID: 9, RequestID: 10, SupplierID: 8, ContactID: 31, BranchID: &branchID, Contact: s.contactResult, State: SupplierDetailStateReady}, true, false, 31, "Ana"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewSupplierModel(s)
+			m.frame = tc.before
+			if tc.create {
+				m = supplierModelAfter(t, m, supplierCtrlN())
+			} else {
+				m = supplierModelAfter(t, m, supplierKey('E'))
+			}
+			msg := childMutationCommand(t, m, supplierKey(tea.KeyEnter))
+			kind := ChildMutationUpdate
+			if tc.create {
+				kind = ChildMutationCreate
+			}
+			requireSupplier(t, msg.Kind == kind && msg.RouteID > 0 && msg.RequestID > 0 && msg.SupplierID == 8 && msg.ChildID == tc.id && msg.Contact == tc.contact, "child mutation correlation mismatch")
+			if tc.create {
+				if tc.contact {
+					requireSupplier(t, s.contactSupplier == 8 && reflect.DeepEqual(s.contactBranch, &branchID), "contact scope mismatch")
+				} else {
+					requireSupplier(t, s.branchSupplier == 8, "branch scope mismatch")
+				}
+				requireSupplier(t, reflect.DeepEqual(supplierModelAfter(t, m, msg).CurrentFrame(), tc.before), "create restoration mismatch")
+				return
+			}
+			for _, name := range []string{"route", "request", "supplier", "child", "kind"} {
+				stale := msg
+				switch name {
+				case "route":
+					stale.RouteID++
+				case "request":
+					stale.RequestID++
+				case "supplier":
+					stale.SupplierID++
+				case "child":
+					stale.ChildID++
+				case "kind":
+					stale.Kind = ChildMutationCreate
+				}
+				got := supplierModelAfter(t, m, stale)
+				requireSupplier(t, reflect.DeepEqual(got.CurrentFrame(), m.CurrentFrame()), "stale "+name+" reply changed edit route")
+			}
+			requireChildDetail(t, supplierModelAfter(t, m, msg).CurrentFrame(), tc.contact, tc.id, tc.nameValue, true)
+		})
+	}
+}
+
+func requireChildUpdateError(t *testing.T, frame any, contact bool, id int64, err error, want string) {
+	m := NewSupplierModel(&supplierListTestService{childErr: err})
+	m.frame = frame
+	msg := childMutationCommand(t, m, supplierKey(tea.KeyEnter))
+	got := supplierModelAfter(t, m, msg)
+	requireSupplier(t, msg.ChildID == id && msg.Contact == contact && strings.Contains(got.View().Content, want), "child update error mismatch")
+}
+
+func TestSupplierPR4CUpdateErrorsKeepRequestedChildID(t *testing.T) {
+	branchID, contactID := int64(41), int64(31)
+	requireChildUpdateError(t, BranchEditFrame{RouteID: 21, RequestID: 22, SupplierID: 8, BranchID: branchID, Mode: SupplierEditUpdate}, false, branchID, domain.ErrValidation, "Revisá los datos de la sucursal.")
+	requireChildUpdateError(t, ContactEditFrame{RouteID: 23, RequestID: 24, SupplierID: 8, ContactID: contactID, Mode: SupplierEditUpdate}, true, contactID, errors.New("secret"), "No pude guardar el contacto.")
+}
+
+func TestSupplierPR4CLifecycleExecutionErrorsAndHelp(t *testing.T) {
+	branchID, contactID := int64(41), int64(31)
+	s := &supplierListTestService{branchResult: domain.Branch{ID: branchID, SupplierID: 8, Active: false}, contactResult: domain.Contact{ID: contactID, SupplierID: 8, Active: true}}
+	for _, tc := range []struct {
+		name    string
+		before  any
+		contact bool
+		kind    ChildMutationKind
+		active  bool
+	}{
+		{"branch deactivate", BranchDetailFrame{RouteID: 4, RequestID: 5, SupplierID: 8, BranchID: branchID, Branch: domain.Branch{ID: branchID, Active: true}, State: SupplierDetailStateReady}, false, ChildMutationDeactivate, true},
+		{"contact reactivate", ContactDetailFrame{RouteID: 6, RequestID: 7, SupplierID: 8, ContactID: contactID, Contact: domain.Contact{ID: contactID}, State: SupplierDetailStateReady}, true, ChildMutationReactivate, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewSupplierModel(s)
+			m.frame = tc.before
+			m = supplierModelAfter(t, m, supplierKey('A'))
+			msg := childMutationCommand(t, m, supplierKey(tea.KeyEnter))
+			id := branchID
+			if tc.contact {
+				id = contactID
+			}
+			requireSupplier(t, msg.Kind == tc.kind && msg.Contact == tc.contact && msg.SupplierID == 8 && msg.ChildID == id, "lifecycle scope mismatch")
+			requireChildDetail(t, supplierModelAfter(t, m, msg).CurrentFrame(), tc.contact, id, "", !tc.active)
+		})
+	}
+	for _, tc := range []struct {
+		want    string
+		err     error
+		contact bool
+	}{
+		{"Revisá los datos de la sucursal.", domain.ErrValidation, false}, {"La sucursal ya no existe.", domain.ErrBranchNotFound, false}, {"La sucursal ya está registrada.", domain.ErrConflict, false}, {"No pude cambiar el estado de la sucursal. Probá de nuevo en un momento.", errors.New("secret"), false},
+		{"Revisá los datos del contacto.", domain.ErrValidation, true}, {"El contacto ya no existe.", domain.ErrContactNotFound, true}, {"El contacto ya está registrado.", domain.ErrConflict, true}, {"No pude cambiar el estado del contacto. Probá de nuevo en un momento.", errors.New("secret"), true},
+	} {
+		requireSupplier(t, childMutationErrorText(tc.err, tc.contact, true) == tc.want, childMutationErrorText(tc.err, tc.contact, true))
+	}
 }

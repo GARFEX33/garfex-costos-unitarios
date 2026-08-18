@@ -13,6 +13,7 @@ type BranchEditFrame struct {
 	Values               domain.BranchDetails
 	Focus                int
 	Focused              bool
+	Error                string
 }
 type ContactEditFrame struct {
 	RouteID, RequestID    uint64
@@ -21,6 +22,7 @@ type ContactEditFrame struct {
 	Values                domain.ContactDetails
 	Focus                 int
 	Focused               bool
+	Error                 string
 }
 
 var branchFormFields = []string{

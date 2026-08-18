@@ -32,6 +32,16 @@ type SupplierLifecycleService interface {
 	ReactivateSupplier(context.Context, int64) (domain.Supplier, error)
 }
 
+type SupplierChildMutationService interface {
+	AddBranch(context.Context, int64, domain.BranchDetails) (domain.Branch, error)
+	UpdateBranch(context.Context, int64, int64, domain.BranchDetails) (domain.Branch, error)
+	DeactivateBranch(context.Context, int64, int64) (domain.Branch, error)
+	ReactivateBranch(context.Context, int64, int64) (domain.Branch, error)
+	AddContact(context.Context, int64, domain.ContactDetails) (domain.Contact, error)
+	UpdateContact(context.Context, int64, int64, domain.ContactDetails) (domain.Contact, error)
+	DeactivateContact(context.Context, int64, int64) (domain.Contact, error)
+	ReactivateContact(context.Context, int64, int64) (domain.Contact, error)
+}
 type SupplierListMsg struct {
 	RouteID, RequestID uint64
 	Rows               []SupplierRow
@@ -73,6 +83,25 @@ type SupplierMutationMsg struct {
 	Kind               SupplierMutationKind
 	Supplier           domain.Supplier
 	Err                error
+}
+
+type ChildMutationKind uint8
+
+const (
+	ChildMutationCreate ChildMutationKind = iota
+	ChildMutationUpdate
+	ChildMutationDeactivate
+	ChildMutationReactivate
+)
+
+type ChildMutationMsg struct {
+	RouteID, RequestID  uint64
+	Kind                ChildMutationKind
+	Contact             bool
+	SupplierID, ChildID int64
+	Branch              domain.Branch
+	ContactValue        domain.Contact
+	Err                 error
 }
 
 const supplierPageSize = 25
@@ -171,5 +200,85 @@ func supplierLifecycleCmd(service SupplierLifecycleService, frame SupplierLifecy
 			kind = SupplierMutationReactivate
 		}
 		return SupplierMutationMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Kind: kind, Supplier: supplier, Err: err}
+	}
+}
+
+func childMutationCmd(service any, frame any) tea.Cmd {
+	mutationService, ok := service.(SupplierChildMutationService)
+	if !ok {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx := context.Background()
+		switch value := frame.(type) {
+		case BranchEditFrame:
+			if value.Mode {
+				branch, err := mutationService.UpdateBranch(ctx, value.SupplierID, value.BranchID, value.Values)
+				return childBranchMutation(value, ChildMutationUpdate, branch, err)
+			}
+			branch, err := mutationService.AddBranch(ctx, value.SupplierID, value.Values)
+			return childBranchMutation(value, ChildMutationCreate, branch, err)
+		case ContactEditFrame:
+			if value.Mode {
+				contact, err := mutationService.UpdateContact(ctx, value.SupplierID, value.ContactID, value.Values)
+				return childContactMutation(value, ChildMutationUpdate, contact, err)
+			}
+			contact, err := mutationService.AddContact(ctx, value.SupplierID, value.Values)
+			return childContactMutation(value, ChildMutationCreate, contact, err)
+		case ChildLifecycleFrame:
+			kind := ChildMutationDeactivate
+			if !value.Active {
+				kind = ChildMutationReactivate
+			}
+			if value.Contact {
+				if value.Active {
+					contact, err := mutationService.DeactivateContact(ctx, value.SupplierID, value.ChildID)
+					return childContactLifecycleMutation(value, kind, contact, err)
+				}
+				contact, err := mutationService.ReactivateContact(ctx, value.SupplierID, value.ChildID)
+				return childContactLifecycleMutation(value, kind, contact, err)
+			}
+			if value.Active {
+				branch, err := mutationService.DeactivateBranch(ctx, value.SupplierID, value.ChildID)
+				return childBranchLifecycleMutation(value, kind, branch, err)
+			}
+			branch, err := mutationService.ReactivateBranch(ctx, value.SupplierID, value.ChildID)
+			return childBranchLifecycleMutation(value, kind, branch, err)
+		default:
+			return ChildMutationMsg{}
+		}
+	}
+}
+
+func childBranchMutation(f BranchEditFrame, kind ChildMutationKind, value domain.Branch, err error) tea.Msg {
+	return ChildMutationMsg{RouteID: f.RouteID, RequestID: f.RequestID, Kind: kind, SupplierID: f.SupplierID, ChildID: childMutationReplyID(f.BranchID, value.ID, err), Branch: value, Err: err}
+}
+
+func childContactMutation(f ContactEditFrame, kind ChildMutationKind, value domain.Contact, err error) tea.Msg {
+	return ChildMutationMsg{RouteID: f.RouteID, RequestID: f.RequestID, Kind: kind, Contact: true, SupplierID: f.SupplierID, ChildID: childMutationReplyID(f.ContactID, value.ID, err), ContactValue: value, Err: err}
+}
+
+func childMutationReplyID(requested, returned int64, err error) int64 {
+	return map[bool]int64{true: requested, false: returned}[err != nil]
+}
+
+func childBranchLifecycleMutation(f ChildLifecycleFrame, kind ChildMutationKind, value domain.Branch, err error) tea.Msg {
+	return ChildMutationMsg{RouteID: f.RouteID, RequestID: f.RequestID, Kind: kind, SupplierID: f.SupplierID, ChildID: f.ChildID, Branch: value, Err: err}
+}
+
+func childContactLifecycleMutation(f ChildLifecycleFrame, kind ChildMutationKind, value domain.Contact, err error) tea.Msg {
+	return ChildMutationMsg{RouteID: f.RouteID, RequestID: f.RequestID, Kind: kind, Contact: true, SupplierID: f.SupplierID, ChildID: f.ChildID, ContactValue: value, Err: err}
+}
+
+func childMutationIdentity(frame any) (uint64, uint64, bool, int64, int64) {
+	switch value := frame.(type) {
+	case BranchEditFrame:
+		return value.RouteID, value.RequestID, false, value.SupplierID, value.BranchID
+	case ContactEditFrame:
+		return value.RouteID, value.RequestID, true, value.SupplierID, value.ContactID
+	case ChildLifecycleFrame:
+		return value.RouteID, value.RequestID, value.Contact, value.SupplierID, value.ChildID
+	default:
+		return 0, 0, false, 0, 0
 	}
 }

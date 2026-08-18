@@ -130,9 +130,11 @@ type ChildCreateTarget struct {
 
 // ChildLifecycleFrame confirms one non-destructive branch or contact transition.
 type ChildLifecycleFrame struct {
+	RouteID, RequestID  uint64
 	Contact             bool
 	SupplierID, ChildID int64
 	Active              bool
+	Error               string
 }
 
 func (f SupplierDetailFrame) StateText() string { return f.State.text(f.Error) }
