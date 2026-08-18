@@ -43,6 +43,10 @@ func (m SupplierModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.listReply(value), nil
 	case SupplierDetailMsg:
 		return m.detailReply(value), nil
+	case BranchDetailMsg:
+		return m.branchDetailReply(value), nil
+	case ContactDetailMsg:
+		return m.contactDetailReply(value), nil
 	case BranchListMsg, ContactListMsg:
 		return m.childListReply(value), nil
 	case SupplierMutationMsg:
@@ -85,6 +89,38 @@ func (m SupplierModel) detailReply(msg SupplierDetailMsg) SupplierModel {
 	}
 	m.frame = frame
 	return m
+}
+
+func (m SupplierModel) branchDetailReply(msg BranchDetailMsg) SupplierModel {
+	frame, ok := m.frame.(BranchDetailFrame)
+	if !ok || frame.RouteID != msg.RouteID || frame.RequestID != msg.RequestID {
+		return m
+	}
+	frame.Supplier, frame.Branch, frame.Contacts = msg.Supplier, msg.Branch, msg.Contacts
+	frame.State, frame.Error = childDetailResult(msg.Err, frame.Branch.ID == 0, "de la sucursal")
+	m.frame = frame
+	return m
+}
+
+func (m SupplierModel) contactDetailReply(msg ContactDetailMsg) SupplierModel {
+	frame, ok := m.frame.(ContactDetailFrame)
+	if !ok || frame.RouteID != msg.RouteID || frame.RequestID != msg.RequestID {
+		return m
+	}
+	frame.Contact, frame.Branch, frame.BranchID = msg.Contact, msg.Branch, msg.Contact.BranchID
+	frame.State, frame.Error = childDetailResult(msg.Err, frame.Contact.ID == 0, "del contacto")
+	m.frame = frame
+	return m
+}
+
+func childDetailResult(err error, empty bool, name string) (SupplierDetailState, string) {
+	if err != nil {
+		return SupplierDetailStateError, "No pude cargar el detalle " + name + ". Probá de nuevo en un momento."
+	}
+	if empty {
+		return SupplierDetailStateEmpty, ""
+	}
+	return SupplierDetailStateReady, ""
 }
 
 func supplierResultState(err error, empty bool) (SupplierState, string) {
@@ -203,6 +239,9 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openHelp(frame, "detail")
 		}
 	case BranchManagerFrame:
+		if msg.String() == "enter" && frame.SelectedID > 0 {
+			return m.openChildDetail(frame.SelectedID)
+		}
 		if msg.String() == "esc" {
 			return m.popFrame()
 		}
@@ -218,6 +257,9 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case ContactManagerFrame:
+		if msg.String() == "enter" && frame.SelectedID > 0 {
+			return m.openChildDetail(frame.SelectedID)
+		}
 		if msg.String() == "esc" {
 			return m.popFrame()
 		}
@@ -231,6 +273,17 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.frame = frame
 				return m, contactListCmd(m.service.(SupplierDetailService), frame)
 			}
+		}
+	case BranchDetailFrame:
+		if msg.String() == "c" || msg.String() == "C" {
+			return m.openContactManager(frame, frame.SupplierID, &frame.BranchID)
+		}
+		if msg.String() == "esc" {
+			return m.popFrame()
+		}
+	case ContactDetailFrame:
+		if msg.String() == "esc" {
+			return m.popFrame()
 		}
 	case SupplierEditFrame:
 		if msg.String() == "tab" {
@@ -449,6 +502,27 @@ func (m SupplierModel) openDetail(id int64) (SupplierModel, tea.Cmd) {
 	detail := SupplierDetailFrame{RouteID: m.nextRouteID, RequestID: m.nextRequestID, SupplierID: id, State: SupplierDetailStateLoading}
 	m.frame, m.navigation = detail, nil
 	return m, supplierDetailCmd(service, detail)
+}
+
+func (m SupplierModel) openChildDetail(id int64) (SupplierModel, tea.Cmd) {
+	service, ok := m.service.(SupplierDetailService)
+	if !ok || id <= 0 {
+		return m, nil
+	}
+	switch frame := m.frame.(type) {
+	case BranchManagerFrame:
+		m.pushFrame(frame)
+		detail := BranchDetailFrame{RouteID: m.nextRouteID, RequestID: m.nextRequestID, SupplierID: frame.SupplierID, BranchID: id, State: SupplierDetailStateLoading}
+		m.frame = detail
+		return m, branchDetailCmd(service, detail)
+	case ContactManagerFrame:
+		m.pushFrame(frame)
+		detail := ContactDetailFrame{RouteID: m.nextRouteID, RequestID: m.nextRequestID, SupplierID: frame.SupplierID, ContactID: id, BranchID: frame.BranchID, State: SupplierDetailStateLoading}
+		m.frame = detail
+		return m, contactDetailCmd(service, detail)
+	default:
+		return m, nil
+	}
 }
 
 func detailCursor(items []SupplierDetailItem, cursor, delta int) int {

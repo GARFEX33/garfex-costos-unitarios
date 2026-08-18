@@ -101,6 +101,26 @@ type SupplierDetailFrame struct {
 	Error              string
 }
 
+type BranchDetailFrame struct {
+	RouteID, RequestID   uint64
+	SupplierID, BranchID int64
+	Supplier             domain.Supplier
+	Branch               domain.Branch
+	Contacts             []domain.Contact
+	State                SupplierDetailState
+	Error                string
+}
+
+type ContactDetailFrame struct {
+	RouteID, RequestID    uint64
+	SupplierID, ContactID int64
+	BranchID              *int64
+	Branch                domain.Branch
+	Contact               domain.Contact
+	State                 SupplierDetailState
+	Error                 string
+}
+
 func (f SupplierDetailFrame) StateText() string { return f.State.text(f.Error) }
 
 func supplierDetailItems(detail SupplierDetail) []SupplierDetailItem {

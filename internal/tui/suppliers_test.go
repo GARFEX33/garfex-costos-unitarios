@@ -40,6 +40,18 @@ func (s *supplierListTestService) SearchSuppliers(_ context.Context, criteria do
 func (s *supplierListTestService) GetSupplier(context.Context, int64) (domain.Supplier, error) {
 	return s.supplier, s.err
 }
+func (s *supplierListTestService) GetBranch(_ context.Context, _ int64, _ int64) (domain.Branch, error) {
+	if len(s.branches) > 0 {
+		return s.branches[0], s.err
+	}
+	return domain.Branch{}, s.err
+}
+func (s *supplierListTestService) GetContact(_ context.Context, _ int64, _ int64) (domain.Contact, error) {
+	if len(s.contacts) > 0 {
+		return s.contacts[0], s.err
+	}
+	return domain.Contact{}, s.err
+}
 func (s *supplierListTestService) ListBranches(_ context.Context, _ int64, criteria domain.ListCriteria) ([]domain.Branch, error) {
 	s.branchCriteria = criteria
 	return s.branches, s.err
@@ -88,6 +100,139 @@ func supplierCtrlN() tea.KeyPressMsg {
 }
 
 type unsupportedSupplierRoute struct{}
+
+func requireSupplier(t *testing.T, ok bool, message string) {
+	if !ok {
+		t.Fatal(message)
+	}
+}
+
+func TestSupplierPR4B1ManagerEnterStableIDs(t *testing.T) {
+	assertChildEnter(t, BranchManagerFrame{SupplierID: 8, SelectedID: 41}, "BranchID", 41)
+	assertChildEnter(t, ContactManagerFrame{SupplierID: 8, SelectedID: 31}, "ContactID", 31)
+}
+
+func assertChildEnter(t *testing.T, frame any, idField string, id int64) {
+	m := NewSupplierModel(&supplierListTestService{})
+	m.frame = frame
+	next, _ := m.Update(supplierKey(tea.KeyEnter))
+	got := reflect.ValueOf(next.(SupplierModel).CurrentFrame())
+	requireSupplier(t, got.FieldByName("SupplierID").Int() == 8 && got.FieldByName(idField).Int() == id, "stable detail ID mismatch")
+}
+
+func TestSupplierPR4B1DetailContextAndRestoration(t *testing.T) {
+	s := &supplierListTestService{supplier: domain.Supplier{ID: 8, TradeName: "Acme"}, branches: []domain.Branch{{ID: 41, SupplierID: 8, Name: "Centro"}}, contacts: []domain.Contact{{ID: 31, SupplierID: 8, Name: "Ana"}}}
+	assertRestoredDetail(t, s, BranchManagerFrame{RouteID: 3, RequestID: 4, SupplierID: 8, Query: "ce", Filter: SupplierFilterInactive, SelectedID: 41, Cursor: 2, Offset: 25, Viewport: 10}, "BranchID", "Acme")
+	assertRestoredDetail(t, s, ContactManagerFrame{RouteID: 5, RequestID: 6, SupplierID: 8, Query: "an", Filter: SupplierFilterAll, SelectedID: 31, Cursor: 1, Offset: 50, Viewport: 10}, "ContactID", "Ana")
+}
+
+func assertRestoredDetail(t *testing.T, s *supplierListTestService, before any, idField, want string) {
+	m := NewSupplierModel(s)
+	m.frame = before
+	next, cmd := m.Update(supplierKey(tea.KeyEnter))
+	m = supplierModelAfter(t, next.(SupplierModel), cmd())
+	requireSupplier(t, strings.Contains(m.View().Content, want), "detail content missing")
+	m = supplierModelAfter(t, m, supplierKey(tea.KeyEscape))
+	requireSupplier(t, reflect.DeepEqual(m.CurrentFrame(), before), "exact snapshot restoration failed")
+}
+
+func TestSupplierPR4B1BranchScope(t *testing.T) {
+	s := &supplierListTestService{}
+	m := NewSupplierModel(s)
+	m.frame = BranchDetailFrame{SupplierID: 8, BranchID: 41, State: SupplierDetailStateReady}
+	next, cmd := m.Update(supplierKey('C'))
+	m = next.(SupplierModel)
+	f, ok := m.CurrentFrame().(ContactManagerFrame)
+	msg, msgOK := cmd().(ContactListMsg)
+	requireSupplier(t, ok && f.SupplierID == 8 && f.BranchID != nil && *f.BranchID == 41 && msgOK && s.contactCriteria.BranchID != nil && *s.contactCriteria.BranchID == 41 && msg.RouteID == f.RouteID && msg.RequestID == f.RequestID, "branch scope was not correlated")
+}
+
+func TestSupplierPR4B1StaleRepliesSpanishStates(t *testing.T) {
+	service := &supplierListTestService{}
+	assertStaleDetail(t, service, BranchDetailFrame{RouteID: 2, RequestID: 3, State: SupplierDetailStateLoading}, BranchDetailMsg{RouteID: 1, RequestID: 3}, BranchDetailMsg{RouteID: 2, RequestID: 3, Err: errors.New("fallo")}, "detalle de la sucursal")
+	assertStaleDetail(t, service, ContactDetailFrame{RouteID: 2, RequestID: 3, State: SupplierDetailStateLoading}, ContactDetailMsg{RouteID: 2, RequestID: 2}, ContactDetailMsg{RouteID: 2, RequestID: 3, Err: errors.New("fallo")}, "detalle del contacto")
+}
+
+func assertStaleDetail(t *testing.T, s *supplierListTestService, frame any, stale, reply tea.Msg, want string) {
+	m := NewSupplierModel(s)
+	m.frame = frame
+	before := m.CurrentFrame()
+	m = supplierModelAfter(t, m, stale)
+	requireSupplier(t, reflect.DeepEqual(m.CurrentFrame(), before), "stale reply changed frame")
+	m = supplierModelAfter(t, m, reply)
+	requireSupplier(t, strings.Contains(m.View().Content, want) && strings.Contains(m.View().Content, "Probá de nuevo"), "Spanish detail error missing")
+}
+
+func TestSupplierPR4B1Footers(t *testing.T) {
+	branchView := (SupplierModel{frame: BranchDetailFrame{Supplier: domain.Supplier{TradeName: "Acme"}, Branch: domain.Branch{Name: "Centro", City: "Córdoba", GeneralPhone: "555", GeneralEmail: "c@acme.test"}}}).View().Content
+	contactView := (SupplierModel{frame: ContactDetailFrame{Contact: domain.Contact{Name: "Ana", Role: "Compras", Mobile: "555", Email: "a@acme.test"}, Branch: domain.Branch{ID: 41, Name: "Centro", City: "Córdoba"}}}).View().Content
+	requireSupplier(t, !strings.Contains(branchView, "E editar") && !strings.Contains(contactView, "E editar") && strings.Contains(branchView, "C contactos de la sucursal") && strings.Contains(branchView+contactView, "Sucursal: Centro (Córdoba)"), "route footer/content mismatch")
+}
+
+func TestSupplierPR4B1DetailStatesAndContent(t *testing.T) {
+	states := []struct {
+		name  string
+		state SupplierDetailState
+		want  string
+	}{
+		{name: "loading", state: SupplierDetailStateLoading, want: "Cargando…"},
+		{name: "ready", state: SupplierDetailStateReady, want: "Resultados"},
+		{name: "empty", state: SupplierDetailStateEmpty, want: "Sin información"},
+	}
+	for _, route := range []struct {
+		name string
+		view func(SupplierDetailState) string
+	}{
+		{name: "branch", view: func(state SupplierDetailState) string {
+			return branchDetailView(BranchDetailFrame{State: state})
+		}},
+		{name: "contact", view: func(state SupplierDetailState) string {
+			return contactDetailView(ContactDetailFrame{State: state})
+		}},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			for _, test := range states {
+				t.Run(test.name, func(t *testing.T) {
+					requireSupplier(t, strings.Contains(route.view(test.state), test.want), "detail state is not Spanish")
+				})
+			}
+		})
+	}
+
+	branchView := branchDetailView(BranchDetailFrame{
+		State:    SupplierDetailStateReady,
+		Supplier: domain.Supplier{TradeName: "Acme SA", LegalName: "Acme Legal"},
+		Branch:   domain.Branch{Name: "Centro", Reference: "BR-41", City: "Córdoba", State: "Córdoba", Country: "Argentina", Address: "Av. Siempre Viva 41", GeneralPhone: "555-0041", GeneralEmail: "centro@acme.test", Notes: "Recepción por puerta norte", Active: true},
+		Contacts: []domain.Contact{{Name: "Ana"}},
+	})
+	for _, want := range []string{"Proveedor: Acme SA · Acme Legal", "Nombre: Centro", "Referencia: BR-41", "Ciudad: Córdoba", "Provincia/Estado: Córdoba", "País: Argentina", "Dirección: Av. Siempre Viva 41", "Teléfono general: 555-0041", "Email general: centro@acme.test", "Notas: Recepción por puerta norte", "Estado: Activo", "Contacto asociado: Ana"} {
+		requireSupplier(t, strings.Contains(branchView, want), "branch detail field missing: "+want)
+	}
+
+	contactView := contactDetailView(ContactDetailFrame{
+		State:   SupplierDetailStateReady,
+		Contact: domain.Contact{Name: "Ana", Role: "Compras", Mobile: "555-1000", Phone: "555-2000", Email: "ana@acme.test", Notes: "Contacto principal", Active: true},
+		Branch:  domain.Branch{ID: 41, Name: "Centro", City: "Córdoba"},
+	})
+	for _, want := range []string{"Nombre: Ana", "Cargo: Compras", "Sucursal: Centro (Córdoba)", "Móvil: 555-1000", "Teléfono: 555-2000", "Email: ana@acme.test", "Notas: Contacto principal", "Estado: Activo"} {
+		requireSupplier(t, strings.Contains(contactView, want), "contact detail field missing: "+want)
+	}
+}
+
+func TestSupplierPR4B1DetailFootersExact(t *testing.T) {
+	for _, test := range []struct {
+		name, view, footer string
+	}{
+		{name: "branch", view: branchDetailView(BranchDetailFrame{}), footer: "C contactos de la sucursal · Esc volver · Ctrl+C salir"},
+		{name: "contact", view: contactDetailView(ContactDetailFrame{}), footer: "Esc volver · Ctrl+C salir"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lines := strings.Split(test.view, "\n")
+			requireSupplier(t, lines[len(lines)-1] == test.footer, "detail footer command set mismatch")
+			requireSupplier(t, !strings.Contains(test.view, "E editar"), "detail footer exposes unsupported E command")
+		})
+	}
+}
 
 func TestSupplierPR4ChildManagers(t *testing.T) {
 	branches := []domain.Branch{

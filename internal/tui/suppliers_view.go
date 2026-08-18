@@ -20,6 +20,10 @@ func (m SupplierModel) supplierView() string {
 		return m.branchManagerView(frame)
 	case ContactManagerFrame:
 		return m.contactManagerView(frame)
+	case BranchDetailFrame:
+		return branchDetailView(frame)
+	case ContactDetailFrame:
+		return contactDetailView(frame)
 	default:
 		return ""
 	}
@@ -85,4 +89,41 @@ var supplierFooters = map[string]string{
 	"help":    "Esc volver · Ctrl+C salir",
 }
 
-func supplierFooter(route string) string { return supplierFooters[route] }
+func supplierFooter(route string) string {
+	if route == "branch-detail" {
+		return "C contactos de la sucursal · Esc volver · Ctrl+C salir"
+	}
+	if route == "contact-detail" {
+		return "Esc volver · Ctrl+C salir"
+	}
+	return supplierFooters[route]
+}
+
+func branchDetailView(f BranchDetailFrame) string {
+	active := detailStates[f.Branch.Active]
+	lines := []string{"Detalle de la sucursal", f.State.text(f.Error), "Proveedor: " + f.Supplier.TradeName + " · " + f.Supplier.LegalName, "Nombre: " + f.Branch.Name, "Referencia: " + f.Branch.Reference, "Ciudad: " + f.Branch.City, "Provincia/Estado: " + f.Branch.State, "País: " + f.Branch.Country, "Dirección: " + f.Branch.Address, "Teléfono general: " + f.Branch.GeneralPhone, "Email general: " + f.Branch.GeneralEmail, "Notas: " + f.Branch.Notes, "Estado: " + active}
+	for _, contact := range f.Contacts {
+		lines = append(lines, "Contacto asociado: "+contact.Name)
+	}
+	if len(f.Contacts) == 0 {
+		lines = append(lines, "Contactos asociados: Ninguno")
+	}
+	return strings.Join(append(lines, supplierFooter("branch-detail")), "\n")
+}
+
+func contactDetailView(f ContactDetailFrame) string {
+	active := detailStates[f.Contact.Active]
+	branch := "General"
+	if f.Branch.ID > 0 {
+		branch = f.Branch.Name
+		if f.Branch.City != "" {
+			branch += " (" + f.Branch.City + ")"
+		}
+	} else if f.BranchID != nil {
+		branch = "Asociada"
+	}
+	lines := []string{"Detalle del contacto", f.State.text(f.Error), "Nombre: " + f.Contact.Name, "Cargo: " + f.Contact.Role, "Sucursal: " + branch, "Móvil: " + f.Contact.Mobile, "Teléfono: " + f.Contact.Phone, "Email: " + f.Contact.Email, "Notas: " + f.Contact.Notes, "Estado: " + active}
+	return strings.Join(append(lines, supplierFooter("contact-detail")), "\n")
+}
+
+var detailStates = map[bool]string{false: "Inactivo", true: "Activo"}
