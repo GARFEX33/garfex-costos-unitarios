@@ -16,6 +16,10 @@ func (m SupplierModel) supplierView() string {
 		return supplierLifecycleView(frame)
 	case SupplierHelpFrame:
 		return supplierHelpView(frame)
+	case BranchManagerFrame:
+		return m.branchManagerView(frame)
+	case ContactManagerFrame:
+		return m.contactManagerView(frame)
 	default:
 		return ""
 	}

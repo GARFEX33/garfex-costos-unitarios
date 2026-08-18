@@ -18,6 +18,8 @@ type supplierListTestService struct {
 	contacts        []domain.Contact
 	err             error
 	criteria        domain.SupplierSearch
+	branchCriteria  domain.ListCriteria
+	contactCriteria domain.ContactListCriteria
 	createResult    domain.Supplier
 	updateResult    domain.Supplier
 	activeResult    domain.Supplier
@@ -38,10 +40,12 @@ func (s *supplierListTestService) SearchSuppliers(_ context.Context, criteria do
 func (s *supplierListTestService) GetSupplier(context.Context, int64) (domain.Supplier, error) {
 	return s.supplier, s.err
 }
-func (s *supplierListTestService) ListBranches(context.Context, int64, domain.ListCriteria) ([]domain.Branch, error) {
+func (s *supplierListTestService) ListBranches(_ context.Context, _ int64, criteria domain.ListCriteria) ([]domain.Branch, error) {
+	s.branchCriteria = criteria
 	return s.branches, s.err
 }
-func (s *supplierListTestService) ListContacts(context.Context, int64, domain.ContactListCriteria) ([]domain.Contact, error) {
+func (s *supplierListTestService) ListContacts(_ context.Context, _ int64, criteria domain.ContactListCriteria) ([]domain.Contact, error) {
+	s.contactCriteria = criteria
 	return s.contacts, s.err
 }
 
@@ -84,6 +88,151 @@ func supplierCtrlN() tea.KeyPressMsg {
 }
 
 type unsupportedSupplierRoute struct{}
+
+func TestSupplierPR4ChildManagers(t *testing.T) {
+	branches := []domain.Branch{
+		{ID: 13, SupplierID: 8, Name: "Centro", City: "Córdoba", Active: true},
+		{ID: 11, SupplierID: 8, Name: "Centro", City: "Rosario", Active: true},
+		{ID: 12, SupplierID: 8, Name: "Norte", City: "Rosario", Active: true},
+	}
+	open := func(t *testing.T, s *supplierListTestService, detail SupplierDetailFrame, key rune) SupplierModel {
+		m := NewSupplierModel(s)
+		m.frame = detail
+		return supplierModelAfter(t, m, supplierKey(key))
+	}
+	t.Run("Supplier Detail S opens scoped Branch Manager", func(t *testing.T) {
+		s := &supplierListTestService{branches: branches}
+		m := open(t, s, SupplierDetailFrame{SupplierID: 8, State: SupplierDetailStateReady}, 'S')
+		f := m.CurrentFrame().(BranchManagerFrame)
+		if f.SupplierID != 8 || f.Filter != SupplierFilterActive || f.State.text(f.Error) != "Cargando…" {
+			t.Fatalf("opening = %#v", f)
+		}
+		m = supplierModelAfter(t, m, m.InitChild()())
+		f = m.CurrentFrame().(BranchManagerFrame)
+		if s.branchCriteria.Active == nil || !*s.branchCriteria.Active || s.branchCriteria.Limit != supplierPageSize || s.branchCriteria.Offset != 0 {
+			t.Fatalf("criteria = %#v", s.branchCriteria)
+		}
+		if f.State.text(f.Error) != "Resultados" || len(f.Items) != 5 || f.Items[0].Selectable || f.Items[0].Label != "Córdoba" || f.Items[1].Target.BranchID != 13 || f.Items[2].Label != "Rosario" || f.Items[2].Selectable || f.SelectedID != 13 {
+			t.Fatalf("grouping = %#v", f.Items)
+		}
+		m = supplierModelAfter(t, m, supplierKey(tea.KeyDown))
+		if m.CurrentFrame().(BranchManagerFrame).SelectedID != 11 {
+			t.Fatalf("heading selected: %#v", m.CurrentFrame())
+		}
+	})
+	t.Run("Supplier Detail C opens supplier-scoped Contact Manager", func(t *testing.T) {
+		branchID := int64(42)
+		s := &supplierListTestService{contacts: []domain.Contact{{ID: 31, SupplierID: 8, Name: "Ana", Active: true}, {ID: 32, SupplierID: 8, Name: "Bruno", BranchID: &branchID, Active: true}}}
+		detail := SupplierDetailFrame{SupplierID: 8, State: SupplierDetailStateReady, Items: []SupplierDetailItem{{Kind: SupplierDetailHeading, Label: "Rosario"}, {Kind: SupplierDetailBranch, Label: "Centro", Target: SupplierNavigationTarget{BranchID: branchID}}}}
+		m := open(t, s, detail, 'C')
+		f := m.CurrentFrame().(ContactManagerFrame)
+		if f.SupplierID != 8 || f.BranchID != nil || f.Filter != SupplierFilterActive || f.State.text(f.Error) != "Cargando…" {
+			t.Fatalf("opening = %#v", f)
+		}
+		m = supplierModelAfter(t, m, m.InitChild()())
+		f = m.CurrentFrame().(ContactManagerFrame)
+		if s.contactCriteria.Active == nil || !*s.contactCriteria.Active || s.contactCriteria.BranchID != nil || s.contactCriteria.Limit != supplierPageSize || s.contactCriteria.Offset != 0 {
+			t.Fatalf("criteria = %#v", s.contactCriteria)
+		}
+		if f.State.text(f.Error) != "Resultados" || len(f.Items) != 4 || f.Items[0].Label != "General" || f.Items[0].Selectable || f.Items[2].Label != "Rosario / Centro" || f.Items[2].Selectable || f.SelectedID != 31 {
+			t.Fatalf("grouping = %#v", f.Items)
+		}
+		m = supplierModelAfter(t, m, supplierKey(tea.KeyDown))
+		if m.CurrentFrame().(ContactManagerFrame).SelectedID != 32 {
+			t.Fatalf("heading selected: %#v", m.CurrentFrame())
+		}
+	})
+	for _, tc := range []struct {
+		name      string
+		state     SupplierState
+		err, want string
+	}{
+		{"loading", SupplierStateLoading, "", "Cargando…"}, {"result", SupplierStateReady, "", "Resultados"}, {"empty", SupplierStateEmpty, "", "Sin resultados"}, {"error", SupplierStateError, "No pude cargar la lista.", "No pude cargar la lista."},
+	} {
+		t.Run("Spanish "+tc.name, func(t *testing.T) {
+			for _, frame := range []struct {
+				state SupplierState
+				err   string
+			}{{tc.state, tc.err}, {tc.state, tc.err}} {
+				if got := frame.state.text(frame.err); got != tc.want {
+					t.Fatalf("state = %q, want %q", got, tc.want)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		frame  any
+		branch bool
+	}{
+		{"branch", BranchManagerFrame{RouteID: 1, RequestID: 1, SupplierID: 8, Filter: SupplierFilterInactive, Query: "a", Offset: 25, Cursor: 1, SelectedID: 12, SearchFocused: true}, true}, {"contact", ContactManagerFrame{RouteID: 1, RequestID: 1, SupplierID: 8, Filter: SupplierFilterAll, Query: "a", Offset: 25, Cursor: 1, SelectedID: 32, SearchFocused: true}, false},
+	} {
+		t.Run("focused search "+tc.name, func(t *testing.T) {
+			s := &supplierListTestService{}
+			m := NewSupplierModel(s)
+			m.frame = tc.frame
+			next, cmd := m.Update(supplierTextKey("x"))
+			m = next.(SupplierModel)
+			if cmd == nil {
+				t.Fatal("no search command")
+			}
+			switch f := m.CurrentFrame().(type) {
+			case BranchManagerFrame:
+				if f.Query != "ax" || f.Offset != 0 || f.Cursor != 0 || f.SelectedID != 0 {
+					t.Fatalf("reset = %#v", f)
+				}
+			case ContactManagerFrame:
+				if f.Query != "ax" || f.Offset != 0 || f.Cursor != 0 || f.SelectedID != 0 {
+					t.Fatalf("reset = %#v", f)
+				}
+			}
+			m = supplierModelAfter(t, m, cmd())
+			if tc.branch {
+				if s.branchCriteria.Text != "ax" || s.branchCriteria.Active == nil || *s.branchCriteria.Active || s.branchCriteria.Offset != 0 {
+					t.Fatalf("search = %#v", s.branchCriteria)
+				}
+			} else if s.contactCriteria.Text != "ax" || s.contactCriteria.Active != nil || s.contactCriteria.Offset != 0 {
+				t.Fatalf("search = %#v", s.contactCriteria)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		frame any
+		msg   tea.Msg
+	}{
+		{"branch route", BranchManagerFrame{RouteID: 4, RequestID: 9, State: SupplierStateLoading}, BranchListMsg{RouteID: 3, RequestID: 9, Branches: branches}}, {"branch request", BranchManagerFrame{RouteID: 4, RequestID: 9, State: SupplierStateLoading}, BranchListMsg{RouteID: 4, RequestID: 8, Branches: branches}}, {"contact route", ContactManagerFrame{RouteID: 4, RequestID: 9, State: SupplierStateLoading}, ContactListMsg{RouteID: 3, RequestID: 9, Contacts: []domain.Contact{{ID: 31}}}}, {"contact request", ContactManagerFrame{RouteID: 4, RequestID: 9, State: SupplierStateLoading}, ContactListMsg{RouteID: 4, RequestID: 8, Contacts: []domain.Contact{{ID: 31}}}},
+	} {
+		t.Run("stale "+tc.name, func(t *testing.T) {
+			m := NewSupplierModel(&supplierListTestService{})
+			m.frame = tc.frame
+			before := m.CurrentFrame()
+			m = supplierModelAfter(t, m, tc.msg)
+			if !reflect.DeepEqual(m.CurrentFrame(), before) {
+				t.Fatalf("stale reply changed %#v", m.CurrentFrame())
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		key  rune
+	}{{"branch manager", 'S'}, {"contact manager", 'C'}} {
+		t.Run("manager Esc "+tc.name, func(t *testing.T) {
+			s := &supplierListTestService{branches: branches, contacts: []domain.Contact{{ID: 31, Name: "Ana"}}}
+			before := SupplierDetailFrame{SupplierID: 8, State: SupplierDetailStateReady}
+			m := open(t, s, before, tc.key)
+			m = supplierModelAfter(t, m, m.InitChild()())
+			m = supplierModelAfter(t, m, supplierKey(tea.KeyEscape))
+			if !reflect.DeepEqual(m.CurrentFrame(), before) {
+				t.Fatalf("restoration = %#v", m.CurrentFrame())
+			}
+		})
+	}
+	next, cmd := NewSupplierModel(&supplierListTestService{}).Update(supplierKey(tea.KeyEscape))
+	if m := next.(SupplierModel); !m.AtRoot || cmd != nil {
+		t.Fatalf("root Esc = %v/%v", next, cmd)
+	}
+}
 
 func TestSupplierPR3AManagerCreateAndProgressiveSupplierForm(t *testing.T) {
 	model := NewSupplierModel(&supplierListTestService{})
