@@ -17,6 +17,19 @@ type SupplierDetailService interface {
 	ListContacts(context.Context, int64, domain.ContactListCriteria) ([]domain.Contact, error)
 }
 
+type SupplierCreateService interface {
+	CreateSupplier(context.Context, domain.SupplierDetails) (domain.Supplier, error)
+}
+
+type SupplierUpdateService interface {
+	UpdateSupplier(context.Context, int64, domain.SupplierDetails) (domain.Supplier, error)
+}
+
+type SupplierLifecycleService interface {
+	DeactivateSupplier(context.Context, int64) (domain.Supplier, error)
+	ReactivateSupplier(context.Context, int64) (domain.Supplier, error)
+}
+
 type SupplierListMsg struct {
 	RouteID, RequestID uint64
 	Rows               []SupplierRow
@@ -26,6 +39,22 @@ type SupplierListMsg struct {
 type SupplierDetailMsg struct {
 	RouteID, RequestID uint64
 	Detail             SupplierDetail
+	Err                error
+}
+
+type SupplierMutationKind uint8
+
+const (
+	SupplierMutationCreate SupplierMutationKind = iota
+	SupplierMutationUpdate
+	SupplierMutationDeactivate
+	SupplierMutationReactivate
+)
+
+type SupplierMutationMsg struct {
+	RouteID, RequestID uint64
+	Kind               SupplierMutationKind
+	Supplier           domain.Supplier
 	Err                error
 }
 
@@ -60,5 +89,38 @@ func supplierDetailCmd(service SupplierDetailService, frame SupplierDetailFrame)
 			RouteID: frame.RouteID, RequestID: frame.RequestID,
 			Detail: SupplierDetail{Supplier: supplier, Branches: branches, Contacts: contacts}, Err: err,
 		}
+	}
+}
+
+func supplierCreateCmd(service SupplierCreateService, frame SupplierEditFrame) tea.Cmd {
+	return func() tea.Msg {
+		supplier, err := service.CreateSupplier(context.Background(), frame.Values)
+		return SupplierMutationMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Kind: SupplierMutationCreate, Supplier: supplier, Err: err}
+	}
+}
+
+func supplierUpdateCmd(service SupplierUpdateService, frame SupplierEditFrame) tea.Cmd {
+	return func() tea.Msg {
+		supplier, err := service.UpdateSupplier(context.Background(), frame.SupplierID, frame.Values)
+		return SupplierMutationMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Kind: SupplierMutationUpdate, Supplier: supplier, Err: err}
+	}
+}
+
+func supplierLifecycleCmd(service SupplierLifecycleService, frame SupplierLifecycleFrame) tea.Cmd {
+	return func() tea.Msg {
+		var (
+			supplier domain.Supplier
+			err      error
+		)
+		if frame.Active {
+			supplier, err = service.DeactivateSupplier(context.Background(), frame.SupplierID)
+		} else {
+			supplier, err = service.ReactivateSupplier(context.Background(), frame.SupplierID)
+		}
+		kind := SupplierMutationDeactivate
+		if !frame.Active {
+			kind = SupplierMutationReactivate
+		}
+		return SupplierMutationMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Kind: kind, Supplier: supplier, Err: err}
 	}
 }

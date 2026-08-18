@@ -182,6 +182,21 @@ type SupplierEditFrame struct {
 	Error              string
 }
 
+// SupplierLifecycleFrame requires an explicit, single-state transition.
+type SupplierLifecycleFrame struct {
+	RouteID, RequestID uint64
+	SupplierID         int64
+	Supplier           domain.Supplier
+	Active             bool
+	Error              string
+}
+
+// SupplierHelpFrame is contextual to the route that opened it.
+type SupplierHelpFrame struct {
+	RouteID, RequestID uint64
+	Origin             string
+}
+
 func newSupplierEditFrame(route, request uint64, supplier domain.Supplier, mode bool) SupplierEditFrame {
 	return SupplierEditFrame{
 		RouteID: route, RequestID: request, SupplierID: supplier.ID, Mode: mode,
