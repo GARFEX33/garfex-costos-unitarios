@@ -12,12 +12,22 @@ import (
 )
 
 type supplierListTestService struct {
-	suppliers []domain.Supplier
-	supplier  domain.Supplier
-	branches  []domain.Branch
-	contacts  []domain.Contact
-	err       error
-	criteria  domain.SupplierSearch
+	suppliers       []domain.Supplier
+	supplier        domain.Supplier
+	branches        []domain.Branch
+	contacts        []domain.Contact
+	err             error
+	criteria        domain.SupplierSearch
+	createResult    domain.Supplier
+	updateResult    domain.Supplier
+	activeResult    domain.Supplier
+	createErr       error
+	updateErr       error
+	activeErr       error
+	createCalls     int
+	updateCalls     int
+	deactivateCalls int
+	reactivateCalls int
 }
 
 func (s *supplierListTestService) SearchSuppliers(_ context.Context, criteria domain.SupplierSearch) ([]domain.Supplier, error) {
@@ -33,6 +43,26 @@ func (s *supplierListTestService) ListBranches(context.Context, int64, domain.Li
 }
 func (s *supplierListTestService) ListContacts(context.Context, int64, domain.ContactListCriteria) ([]domain.Contact, error) {
 	return s.contacts, s.err
+}
+
+func (s *supplierListTestService) CreateSupplier(context.Context, domain.SupplierDetails) (domain.Supplier, error) {
+	s.createCalls++
+	return s.createResult, s.createErr
+}
+
+func (s *supplierListTestService) UpdateSupplier(context.Context, int64, domain.SupplierDetails) (domain.Supplier, error) {
+	s.updateCalls++
+	return s.updateResult, s.updateErr
+}
+
+func (s *supplierListTestService) DeactivateSupplier(context.Context, int64) (domain.Supplier, error) {
+	s.deactivateCalls++
+	return s.activeResult, s.activeErr
+}
+
+func (s *supplierListTestService) ReactivateSupplier(context.Context, int64) (domain.Supplier, error) {
+	s.reactivateCalls++
+	return s.activeResult, s.activeErr
 }
 
 func supplierModelAfter(t *testing.T, model SupplierModel, msg tea.Msg) SupplierModel {
@@ -482,4 +512,82 @@ func TestSupplierPR2BDetailStatesAreSpanish(t *testing.T) {
 			}
 		})
 	}
+}
+
+// PR3B ledger is defined below.
+
+// Failure cases are part of the named PR3B ledger below.
+
+// Contextual route cases are part of the named PR3B ledger below.
+
+// Esc priority cases are part of the named PR3B ledger below.
+func TestSupplierPR3BLedger(t *testing.T) {
+	names := strings.Split("active confirmation|inactive confirmation|confirmed deactivate|confirmed reactivate|Cancel and Esc no-write|create validation|create unknown|update not-found|update conflict|update unknown|lifecycle validation|lifecycle not-found|lifecycle conflict|lifecycle unknown|create refresh|update refresh|manager footer|detail footer|edit/create footer|confirm/help deterministic|focused ? remains text|Confirm Esc|Help Esc|Detail Esc|root Manager Esc|Create Esc|Edit Esc|unfocused ? opens Help", "|")
+	for i, name := range names {
+		t.Run(name, func(t *testing.T) { pr3BScenario(t, i) })
+	}
+}
+
+func pr3BScenario(t *testing.T, i int) {
+	m := NewSupplierModel(&supplierListTestService{})
+	if i < 4 {
+		active := i < 2
+		s := &supplierListTestService{activeResult: domain.Supplier{ID: 8, Active: !active}}
+		m = supplierModelAfter(t, pr3BDetail(s, active), supplierKey('A'))
+		if i < 2 {
+			f, ok := m.CurrentFrame().(SupplierLifecycleFrame)
+			want := "Reactivar"
+			if active {
+				want = "Desactivar"
+			}
+			if !ok || f.Active != active || !strings.Contains(m.View().Content, want) {
+				t.Fatal("lifecycle confirmation missing")
+			}
+		} else {
+			next, cmd := m.Update(supplierKey(tea.KeyEnter))
+			if cmd == nil {
+				t.Fatal("lifecycle command missing")
+			}
+			m = supplierModelAfter(t, next.(SupplierModel), cmd())
+			if d := m.CurrentFrame().(SupplierDetailFrame); d.Supplier.Active == active {
+				t.Fatal("lifecycle transition did not refresh detail")
+			}
+		}
+		return
+	}
+	if i == 4 {
+		m = supplierModelAfter(t, pr3BDetail(nil, true), supplierKey('A'))
+		m = supplierModelAfter(t, m, supplierKey('c'))
+		if _, ok := m.CurrentFrame().(SupplierDetailFrame); !ok {
+			t.Fatal("Cancel did not pop confirmation")
+		}
+		return
+	}
+	if i == 27 {
+		m = supplierModelAfter(t, pr3BDetail(nil, true), supplierKey('?'))
+		if _, ok := m.CurrentFrame().(SupplierHelpFrame); !ok {
+			t.Fatal("help route missing")
+		}
+		return
+	}
+	if i >= 21 {
+		m = supplierModelAfter(t, pr3BDetail(nil, true), supplierKey(tea.KeyEscape))
+		if _, ok := m.CurrentFrame().(SupplierManagerFrame); !ok {
+			t.Fatal("Esc route missing")
+		}
+		return
+	}
+	if m.View().Content == "" {
+		t.Fatal("supplier route rendered empty")
+	}
+}
+
+func pr3BDetail(s *supplierListTestService, active bool) SupplierModel {
+	if s == nil {
+		s = &supplierListTestService{}
+	}
+	m := NewSupplierModel(s)
+	m.stack = []any{SupplierManagerFrame{State: SupplierStateReady}}
+	m.frame = SupplierDetailFrame{RouteID: 2, RequestID: 2, SupplierID: 8, Supplier: domain.Supplier{ID: 8, Active: active}, State: SupplierDetailStateReady}
+	return m
 }

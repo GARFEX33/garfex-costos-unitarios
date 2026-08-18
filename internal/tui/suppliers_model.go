@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
@@ -42,6 +43,8 @@ func (m SupplierModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.listReply(value), nil
 	case SupplierDetailMsg:
 		return m.detailReply(value), nil
+	case SupplierMutationMsg:
+		return m.mutationReply(value)
 	case tea.KeyPressMsg:
 		return m.updateKey(value)
 	default:
@@ -92,6 +95,21 @@ func supplierResultState(err error, empty bool) (SupplierState, string) {
 	return SupplierStateReady, ""
 }
 
+func supplierMutationErrorText(err error, lifecycle bool) string {
+	switch {
+	case errors.Is(err, domain.ErrValidation):
+		return "Revisá los datos del proveedor."
+	case errors.Is(err, domain.ErrNotFound):
+		return "El proveedor ya no existe."
+	case errors.Is(err, domain.ErrConflict):
+		return "El identificador fiscal ya está registrado."
+	case lifecycle:
+		return "No pude cambiar el estado del proveedor. Probá de nuevo en un momento."
+	default:
+		return "No pude guardar el proveedor. Probá de nuevo en un momento."
+	}
+}
+
 func (m SupplierModel) LoadSuppliers(query string, filter SupplierFilter) (SupplierModel, tea.Cmd) {
 	frame, ok := m.frame.(SupplierManagerFrame)
 	if !ok {
@@ -139,6 +157,9 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "esc" {
 			m.AtRoot = true
 		}
+		if msg.String() == "?" && !frame.SearchFocused {
+			return m.openHelp(frame, "manager")
+		}
 	case SupplierDetailFrame:
 		if msg.String() == "e" || msg.String() == "E" {
 			supplier := frame.Supplier
@@ -152,9 +173,13 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.navigation = &target
 		}
 		if msg.String() == "esc" && len(m.stack) > 0 {
-			m.frame = m.stack[len(m.stack)-1]
-			m.stack = m.stack[:len(m.stack)-1]
-			m.navigation = nil
+			return m.popFrame()
+		}
+		if msg.String() == "a" || msg.String() == "A" {
+			return m.openLifecycle(frame)
+		}
+		if msg.String() == "?" {
+			return m.openHelp(frame, "detail")
 		}
 	case SupplierEditFrame:
 		if msg.String() == "tab" {
@@ -170,8 +195,120 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "esc" {
 			return m.popFrame()
 		}
+		if msg.String() == "enter" {
+			if frame.Mode {
+				service, ok := m.service.(SupplierUpdateService)
+				if !ok {
+					frame.Error = "No pude guardar el proveedor. Probá de nuevo en un momento."
+					m.frame = frame
+					return m, nil
+				}
+				return m, supplierUpdateCmd(service, frame)
+			}
+			service, ok := m.service.(SupplierCreateService)
+			if !ok {
+				frame.Error = "No pude guardar el proveedor. Probá de nuevo en un momento."
+				m.frame = frame
+				return m, nil
+			}
+			return m, supplierCreateCmd(service, frame)
+		}
+		if msg.String() == "?" && !frame.Focused {
+			return m.openHelp(frame, "edit")
+		}
+	case SupplierLifecycleFrame:
+		if msg.String() == "esc" || msg.String() == "c" || msg.String() == "C" {
+			return m.popFrame()
+		}
+		if msg.String() == "enter" {
+			service, ok := m.service.(SupplierLifecycleService)
+			if !ok {
+				frame.Error = supplierMutationErrorText(errors.New("lifecycle service unavailable"), true)
+				m.frame = frame
+				return m, nil
+			}
+			return m, supplierLifecycleCmd(service, frame)
+		}
+	case SupplierHelpFrame:
+		if msg.String() == "esc" {
+			return m.popFrame()
+		}
 	}
 	return m, nil
+}
+
+func (m SupplierModel) mutationReply(msg SupplierMutationMsg) (SupplierModel, tea.Cmd) {
+	switch frame := m.frame.(type) {
+	case SupplierEditFrame:
+		if frame.RouteID != msg.RouteID || frame.RequestID != msg.RequestID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			frame.Error = supplierMutationErrorText(msg.Err, false)
+			m.frame = frame
+			return m, nil
+		}
+		previous, ok := m.previousFrame()
+		if !ok {
+			return m, nil
+		}
+		if frame.Mode {
+			m.frame = previous
+			m.stack = m.stack[:len(m.stack)-1]
+			if detail, ok := previous.(SupplierDetailFrame); ok {
+				detail.Supplier = msg.Supplier
+				detail.State, detail.Error = SupplierDetailStateReady, ""
+				m.frame = detail
+			}
+			return m, nil
+		}
+		manager, ok := previous.(SupplierManagerFrame)
+		if !ok {
+			return m, nil
+		}
+		manager.Rows, manager.SelectedID, manager.Cursor = nil, 0, 0
+		manager.State, manager.Error = SupplierStateLoading, ""
+		m.frame = manager
+		m.stack = m.stack[:len(m.stack)-1]
+		m.nextRequestID++
+		manager.RequestID = m.nextRequestID
+		m.frame = manager
+		return m, supplierListCmd(m.service, manager)
+	case SupplierLifecycleFrame:
+		if frame.RouteID != msg.RouteID || frame.RequestID != msg.RequestID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			frame.Error = supplierMutationErrorText(msg.Err, true)
+			m.frame = frame
+			return m, nil
+		}
+		previous, ok := m.previousFrame()
+		if !ok {
+			return m, nil
+		}
+		detail, ok := previous.(SupplierDetailFrame)
+		if !ok {
+			return m, nil
+		}
+		if msg.Supplier.ID == 0 {
+			msg.Supplier = frame.Supplier
+			msg.Supplier.Active = !frame.Active
+		}
+		detail.Supplier = msg.Supplier
+		detail.State, detail.Error = SupplierDetailStateReady, ""
+		m.frame = detail
+		m.stack = m.stack[:len(m.stack)-1]
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m SupplierModel) previousFrame() (any, bool) {
+	if len(m.stack) == 0 {
+		return nil, false
+	}
+	return m.stack[len(m.stack)-1], true
 }
 
 func supplierPrintableText(msg tea.KeyPressMsg) string {
@@ -224,6 +361,22 @@ func (m SupplierModel) popFrame() (SupplierModel, tea.Cmd) {
 	}
 	m.frame = m.stack[len(m.stack)-1]
 	m.stack = m.stack[:len(m.stack)-1]
+	m.navigation = nil
+	return m, nil
+}
+
+func (m SupplierModel) openLifecycle(previous SupplierDetailFrame) (SupplierModel, tea.Cmd) {
+	m.pushFrame(previous)
+	m.frame = SupplierLifecycleFrame{
+		RouteID: m.nextRouteID, RequestID: m.nextRequestID,
+		SupplierID: previous.SupplierID, Supplier: previous.Supplier, Active: previous.Supplier.Active,
+	}
+	return m, nil
+}
+
+func (m SupplierModel) openHelp(previous any, origin string) (SupplierModel, tea.Cmd) {
+	m.pushFrame(previous)
+	m.frame = SupplierHelpFrame{RouteID: m.nextRouteID, RequestID: m.nextRequestID, Origin: origin}
 	return m, nil
 }
 
