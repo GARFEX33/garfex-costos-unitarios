@@ -11,6 +11,9 @@ import (
 
 type supplierListTestService struct {
 	suppliers []domain.Supplier
+	supplier  domain.Supplier
+	branches  []domain.Branch
+	contacts  []domain.Contact
 	err       error
 	criteria  domain.SupplierSearch
 }
@@ -18,6 +21,16 @@ type supplierListTestService struct {
 func (s *supplierListTestService) SearchSuppliers(_ context.Context, criteria domain.SupplierSearch) ([]domain.Supplier, error) {
 	s.criteria = criteria
 	return s.suppliers, s.err
+}
+
+func (s *supplierListTestService) GetSupplier(context.Context, int64) (domain.Supplier, error) {
+	return s.supplier, s.err
+}
+func (s *supplierListTestService) ListBranches(context.Context, int64, domain.ListCriteria) ([]domain.Branch, error) {
+	return s.branches, s.err
+}
+func (s *supplierListTestService) ListContacts(context.Context, int64, domain.ContactListCriteria) ([]domain.Contact, error) {
+	return s.contacts, s.err
 }
 
 func supplierModelAfter(t *testing.T, model SupplierModel, msg tea.Msg) SupplierModel {
@@ -165,5 +178,125 @@ func TestSupplierPR2ARootEscReturnsWithoutShellExit(t *testing.T) {
 	}
 	if _, ok := model.CurrentFrame().(SupplierManagerFrame); !ok {
 		t.Fatal("root Esc changed the manager frame")
+	}
+}
+
+func TestSupplierPR2BSnapshotRestoresExactlyOneManagerLevel(t *testing.T) {
+	model := NewSupplierModel(&supplierListTestService{})
+	manager := model.CurrentFrame().(SupplierManagerFrame)
+	manager.Query = "acme"
+	manager.Filter = SupplierFilterInactive
+	manager.Rows = []SupplierRow{{ID: 7}, {ID: 8}}
+	manager.SelectedID, manager.Cursor, manager.Offset, manager.Viewport = 8, 1, 25, 17
+	model.frame = manager
+
+	next, cmd := model.Update(supplierKey(tea.KeyEnter))
+	model = next.(SupplierModel)
+	if cmd == nil {
+		t.Fatal("manager Enter returned no detail command")
+	}
+	if detail := model.CurrentFrame().(SupplierDetailFrame); detail.SupplierID != 8 || detail.State != SupplierDetailStateLoading {
+		t.Fatalf("detail frame = %#v, want supplier 8 loading", detail)
+	}
+
+	next, _ = model.Update(supplierKey(tea.KeyEscape))
+	model = next.(SupplierModel)
+	restored := model.CurrentFrame().(SupplierManagerFrame)
+	if restored.Query != manager.Query || restored.Filter != manager.Filter || restored.SelectedID != manager.SelectedID || restored.Cursor != manager.Cursor || restored.Offset != manager.Offset || restored.Viewport != manager.Viewport {
+		t.Fatalf("restored manager = %#v, want snapshot %#v", restored, manager)
+	}
+}
+
+func TestSupplierPR2BDetailCommandGroupsPresentationOnlyAndKeepsStableIDs(t *testing.T) {
+	branchID := int64(20)
+	service := &supplierListTestService{
+		supplier: domain.Supplier{ID: 8, TradeName: "Acme", Active: true},
+		branches: []domain.Branch{{ID: branchID, SupplierID: 8, Name: "Centro", City: "Rosario"}},
+		contacts: []domain.Contact{
+			{ID: 30, SupplierID: 8, Name: "General", BranchID: nil},
+			{ID: 31, SupplierID: 8, Name: "Branch contact", BranchID: &branchID},
+		},
+	}
+	model := NewSupplierModel(service)
+	manager := model.CurrentFrame().(SupplierManagerFrame)
+	manager.Rows, manager.SelectedID = []SupplierRow{{ID: 8}}, 8
+	model.frame = manager
+	next, cmd := model.Update(supplierKey(tea.KeyEnter))
+	model = next.(SupplierModel)
+	model = supplierModelAfter(t, model, cmd())
+
+	detail := model.CurrentFrame().(SupplierDetailFrame)
+	if detail.State != SupplierDetailStateReady || len(detail.Items) != 5 {
+		t.Fatalf("detail = %#v, want ready grouped detail", detail)
+	}
+	if got := detail.Items[0]; got.Kind != SupplierDetailHeading || got.Selectable || got.Label != "General" {
+		t.Fatalf("general heading = %#v", got)
+	}
+	if got := detail.Items[2]; got.Kind != SupplierDetailHeading || got.Selectable || got.Label != "Rosario" {
+		t.Fatalf("city heading = %#v", got)
+	}
+	if got := detail.Items[1]; got.Target.ContactID != 30 || got.Kind != SupplierDetailContact {
+		t.Fatalf("general contact = %#v", got)
+	}
+	if got := detail.Items[3]; got.Target.BranchID != branchID || got.Kind != SupplierDetailBranch || !got.Selectable {
+		t.Fatalf("branch target = %#v", got)
+	}
+	if got := detail.Items[4]; got.Target.ContactID != 31 || got.Kind != SupplierDetailContact {
+		t.Fatalf("branch contact = %#v", got)
+	}
+}
+
+func TestSupplierPR2BEnterSelectsDirectChildButNotHeading(t *testing.T) {
+	model := NewSupplierModel(&supplierListTestService{})
+	model.frame = SupplierDetailFrame{Items: []SupplierDetailItem{{Kind: SupplierDetailHeading, Label: "General"}, {Kind: SupplierDetailBranch, Selectable: true, Target: SupplierNavigationTarget{BranchID: 20}}}, State: SupplierDetailStateReady}
+	model = supplierModelAfter(t, model, supplierKey(tea.KeyEnter))
+	if _, ok := model.PendingNavigation(); ok {
+		t.Fatal("heading Enter produced a navigation target")
+	}
+	model = supplierModelAfter(t, model, supplierKey(tea.KeyDown))
+	model = supplierModelAfter(t, model, supplierKey(tea.KeyEnter))
+	if got, ok := model.PendingNavigation(); !ok || got != (SupplierNavigationTarget{BranchID: 20}) {
+		t.Fatalf("child navigation = %#v/%v, want branch target", got, ok)
+	}
+}
+
+func TestSupplierPR2BStaleDetailReplyIsRejected(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		msg  SupplierDetailMsg
+	}{
+		{name: "route", msg: SupplierDetailMsg{RouteID: 3, RequestID: 9, Detail: SupplierDetail{Supplier: domain.Supplier{ID: 8}, Branches: []domain.Branch{{ID: 99}}}}},
+		{name: "request", msg: SupplierDetailMsg{RouteID: 4, RequestID: 8, Detail: SupplierDetail{Supplier: domain.Supplier{ID: 8}, Branches: []domain.Branch{{ID: 99}}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = SupplierDetailFrame{RouteID: 4, RequestID: 9, SupplierID: 8, State: SupplierDetailStateLoading}
+			next, _ := model.Update(test.msg)
+			detail := next.(SupplierModel).CurrentFrame().(SupplierDetailFrame)
+			if detail.State != SupplierDetailStateLoading || len(detail.Items) != 0 {
+				t.Fatalf("stale detail reply changed frame = %#v", detail)
+			}
+		})
+	}
+}
+
+func TestSupplierPR2BDetailStatesAreSpanish(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		msg  SupplierDetailMsg
+		want string
+	}{
+		{name: "empty", msg: SupplierDetailMsg{RouteID: 1, RequestID: 1, Detail: SupplierDetail{}}, want: "Sin información"},
+		{name: "error", msg: SupplierDetailMsg{RouteID: 1, RequestID: 1, Err: errors.New("secret")}, want: "No pude cargar el detalle del proveedor. Probá de nuevo en un momento."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = SupplierDetailFrame{RouteID: 1, RequestID: 1, SupplierID: 8, State: SupplierDetailStateLoading}
+			next, _ := model.Update(test.msg)
+			detail := next.(SupplierModel).CurrentFrame().(SupplierDetailFrame)
+			if got := detail.StateText(); got != test.want {
+				t.Fatalf("detail state text = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
