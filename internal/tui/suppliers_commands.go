@@ -13,6 +13,8 @@ type SupplierListService interface {
 
 type SupplierDetailService interface {
 	GetSupplier(context.Context, int64) (domain.Supplier, error)
+	GetBranch(context.Context, int64, int64) (domain.Branch, error)
+	GetContact(context.Context, int64, int64) (domain.Contact, error)
 	ListBranches(context.Context, int64, domain.ListCriteria) ([]domain.Branch, error)
 	ListContacts(context.Context, int64, domain.ContactListCriteria) ([]domain.Contact, error)
 }
@@ -39,6 +41,21 @@ type SupplierListMsg struct {
 type SupplierDetailMsg struct {
 	RouteID, RequestID uint64
 	Detail             SupplierDetail
+	Err                error
+}
+
+type BranchDetailMsg struct {
+	RouteID, RequestID uint64
+	Supplier           domain.Supplier
+	Branch             domain.Branch
+	Contacts           []domain.Contact
+	Err                error
+}
+
+type ContactDetailMsg struct {
+	RouteID, RequestID uint64
+	Contact            domain.Contact
+	Branch             domain.Branch
 	Err                error
 }
 
@@ -89,6 +106,38 @@ func supplierDetailCmd(service SupplierDetailService, frame SupplierDetailFrame)
 			RouteID: frame.RouteID, RequestID: frame.RequestID,
 			Detail: SupplierDetail{Supplier: supplier, Branches: branches, Contacts: contacts}, Err: err,
 		}
+	}
+}
+
+func branchDetailCmd(service SupplierDetailService, frame BranchDetailFrame) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		supplier, err := service.GetSupplier(ctx, frame.SupplierID)
+		if err != nil {
+			return BranchDetailMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Err: err}
+		}
+		branch, err := service.GetBranch(ctx, frame.SupplierID, frame.BranchID)
+		if err != nil {
+			return BranchDetailMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Supplier: supplier, Err: err}
+		}
+		active := true
+		contacts, err := service.ListContacts(ctx, frame.SupplierID, domain.ContactListCriteria{Active: &active, BranchID: &frame.BranchID, Limit: supplierPageSize})
+		return BranchDetailMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Supplier: supplier, Branch: branch, Contacts: contacts, Err: err}
+	}
+}
+
+func contactDetailCmd(service SupplierDetailService, frame ContactDetailFrame) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		contact, err := service.GetContact(ctx, frame.SupplierID, frame.ContactID)
+		if err != nil {
+			return ContactDetailMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Err: err}
+		}
+		var branch domain.Branch
+		if contact.BranchID != nil {
+			branch, err = service.GetBranch(ctx, frame.SupplierID, *contact.BranchID)
+		}
+		return ContactDetailMsg{RouteID: frame.RouteID, RequestID: frame.RequestID, Contact: contact, Branch: branch, Err: err}
 	}
 }
 
