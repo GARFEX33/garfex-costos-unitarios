@@ -26,6 +26,10 @@ func (m SupplierModel) supplierView() string {
 		return contactDetailView(frame)
 	case ChildLifecycleFrame:
 		return childLifecycleView(frame)
+	case BranchEditFrame:
+		return branchEditView(frame)
+	case ContactEditFrame:
+		return contactEditView(frame)
 	default:
 		return ""
 	}
@@ -146,6 +150,41 @@ func childLifecycleView(f ChildLifecycleFrame) string {
 		state, action = "Activo", "Desactivar"
 	}
 	return strings.Join([]string{"Cambiar estado de " + entity, "Estado actual: " + state, "Acción: " + action, supplierFooter("confirm")}, "\n")
+}
+func branchEditView(frame BranchEditFrame) string {
+	title := "Editar sucursal"
+	if !frame.Mode {
+		title = "Crear sucursal"
+	}
+	return childEditView(title, branchFormFields, []string{frame.Values.Name, frame.Values.Reference, frame.Values.City, frame.Values.State, frame.Values.Country, frame.Values.Address, frame.Values.GeneralPhone, frame.Values.GeneralEmail, frame.Values.Notes}, frame.Focus, "branch")
+}
+func contactEditView(frame ContactEditFrame) string {
+	title := "Editar contacto"
+	if !frame.Mode {
+		title = "Crear contacto"
+	}
+	branch := "General"
+	if frame.Values.BranchID != nil {
+		branch = "Asociada"
+	}
+	return childEditView(title, contactFormFields, []string{frame.Values.Name, frame.Values.Role, branch, frame.Values.Mobile, frame.Values.Phone, frame.Values.Email, frame.Values.Notes}, frame.Focus, "contact")
+}
+func childEditView(title string, fields, values []string, focus int, kind string) string {
+	lines := []string{title}
+	for i, label := range fields {
+		marker := " "
+		if i == focus {
+			marker = ">"
+		}
+		lines = append(lines, marker+label+": "+values[i])
+	}
+	return strings.Join(append(lines, childEditFooter(kind)), "\n")
+}
+func childEditFooter(kind string) string {
+	if kind == "branch" {
+		return "Enter guardar sucursal · Esc: Cancelar · Ctrl+C salir"
+	}
+	return "Enter guardar contacto · Esc: Cancelar · Ctrl+C salir"
 }
 
 var detailStates = map[bool]string{false: "Inactivo", true: "Activo"}

@@ -164,6 +164,9 @@ func (m SupplierModel) LoadSuppliers(query string, filter SupplierFilter) (Suppl
 }
 
 func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if next, cmd, ok := m.updateChildEdit(msg); ok {
+		return next, cmd
+	}
 	if delta, ok := supplierKeyDelta[msg.String()]; ok {
 		switch frame := m.frame.(type) {
 		case SupplierManagerFrame:
@@ -245,7 +248,7 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+n" {
 			m.childCreate = &ChildCreateTarget{SupplierID: frame.SupplierID}
-			return m, nil
+			return m.openBranchEdit(frame, domain.Branch{SupplierID: frame.SupplierID}, SupplierEditCreate)
 		}
 		if msg.String() == "?" && !frame.SearchFocused {
 			return m.openHelp(frame, "branch-manager")
@@ -275,7 +278,7 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				target.BranchID = &value
 			}
 			m.childCreate = target
-			return m, nil
+			return m.openContactEdit(frame, domain.Contact{SupplierID: frame.SupplierID, BranchID: target.BranchID}, SupplierEditCreate)
 		}
 		if msg.String() == "?" && !frame.SearchFocused {
 			return m.openHelp(frame, "contact-manager")
@@ -295,6 +298,9 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case BranchDetailFrame:
+		if msg.String() == "e" || msg.String() == "E" {
+			return m.openBranchEdit(frame, frame.Branch, SupplierEditUpdate)
+		}
 		if msg.String() == "c" || msg.String() == "C" {
 			return m.openContactManager(frame, frame.SupplierID, &frame.BranchID)
 		}
@@ -308,6 +314,9 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.popFrame()
 		}
 	case ContactDetailFrame:
+		if msg.String() == "e" || msg.String() == "E" {
+			return m.openContactEdit(frame, frame.Contact, SupplierEditUpdate)
+		}
 		if msg.String() == "a" || msg.String() == "A" {
 			return m.openChildLifecycle(frame, true, frame.ContactID, frame.Contact.Active)
 		}
