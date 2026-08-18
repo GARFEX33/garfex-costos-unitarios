@@ -43,6 +43,8 @@ func (m SupplierModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.listReply(value), nil
 	case SupplierDetailMsg:
 		return m.detailReply(value), nil
+	case BranchListMsg, ContactListMsg:
+		return m.childListReply(value), nil
 	case SupplierMutationMsg:
 		return m.mutationReply(value)
 	case tea.KeyPressMsg:
@@ -143,6 +145,18 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				frame.Focus = next
 			}
 			m.frame = frame
+		case BranchManagerFrame:
+			frame.Cursor = detailCursor(frame.Items, frame.Cursor, delta)
+			if frame.Cursor >= 0 && frame.Cursor < len(frame.Items) {
+				frame.SelectedID = frame.Items[frame.Cursor].Target.BranchID
+			}
+			m.frame = frame
+		case ContactManagerFrame:
+			frame.Cursor = detailCursor(frame.Items, frame.Cursor, delta)
+			if frame.Cursor >= 0 && frame.Cursor < len(frame.Items) {
+				frame.SelectedID = frame.Items[frame.Cursor].Target.ContactID
+			}
+			m.frame = frame
 		}
 		return m, nil
 	}
@@ -161,6 +175,12 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openHelp(frame, "manager")
 		}
 	case SupplierDetailFrame:
+		if msg.String() == "s" || msg.String() == "S" {
+			return m.openBranchManager(frame, frame.SupplierID)
+		}
+		if msg.String() == "c" || msg.String() == "C" {
+			return m.openContactManager(frame, frame.SupplierID, nil)
+		}
 		if msg.String() == "e" || msg.String() == "E" {
 			supplier := frame.Supplier
 			if supplier.ID == 0 {
@@ -169,7 +189,8 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openEdit(frame, supplier, SupplierEditUpdate)
 		}
 		if msg.String() == "enter" && frame.Cursor >= 0 && frame.Cursor < len(frame.Items) && frame.Items[frame.Cursor].Selectable {
-			target := frame.Items[frame.Cursor].Target
+			item := frame.Items[frame.Cursor]
+			target := item.Target
 			m.navigation = &target
 		}
 		if msg.String() == "esc" && len(m.stack) > 0 {
@@ -180,6 +201,36 @@ func (m SupplierModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "?" {
 			return m.openHelp(frame, "detail")
+		}
+	case BranchManagerFrame:
+		if msg.String() == "esc" {
+			return m.popFrame()
+		}
+		if frame.SearchFocused {
+			if text := supplierPrintableText(msg); text != "" {
+				frame.Query += text
+				frame.Offset, frame.Cursor, frame.SelectedID = 0, 0, 0
+				m.nextRequestID++
+				frame.RequestID = m.nextRequestID
+				frame.State = SupplierStateLoading
+				m.frame = frame
+				return m, branchListCmd(m.service.(SupplierDetailService), frame)
+			}
+		}
+	case ContactManagerFrame:
+		if msg.String() == "esc" {
+			return m.popFrame()
+		}
+		if frame.SearchFocused {
+			if text := supplierPrintableText(msg); text != "" {
+				frame.Query += text
+				frame.Offset, frame.Cursor, frame.SelectedID = 0, 0, 0
+				m.nextRequestID++
+				frame.RequestID = m.nextRequestID
+				frame.State = SupplierStateLoading
+				m.frame = frame
+				return m, contactListCmd(m.service.(SupplierDetailService), frame)
+			}
 		}
 	case SupplierEditFrame:
 		if msg.String() == "tab" {
