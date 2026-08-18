@@ -1022,3 +1022,177 @@ func TestSupplierPR4B2ContextualHelp(t *testing.T) {
 		})
 	}
 }
+
+func TestSupplierPR4C1ChildFormsAndRouteCommands(t *testing.T) {
+	branchID := int64(41)
+	tests := []struct {
+		name    string
+		frame   any
+		contact bool
+		branch  *int64
+	}{
+		{
+			name:  "branch manager creates while search is focused",
+			frame: BranchManagerFrame{RouteID: 3, RequestID: 4, SupplierID: 8, Query: "cent", Filter: SupplierFilterInactive, SelectedID: 12, Cursor: 2, Offset: 25, Viewport: 10, SearchFocused: true},
+		},
+		{
+			name:    "supplier contact creates without branch",
+			frame:   ContactManagerFrame{RouteID: 5, RequestID: 6, SupplierID: 8, Query: "ana", Filter: SupplierFilterAll, SearchFocused: true},
+			contact: true,
+		},
+		{
+			name:    "branch contact creates with branch preselected",
+			frame:   ContactManagerFrame{RouteID: 7, RequestID: 8, SupplierID: 8, BranchID: &branchID, SearchFocused: true},
+			contact: true,
+			branch:  &branchID,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.frame
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = before
+			next, cmd := model.Update(supplierCtrlN())
+			if cmd != nil {
+				t.Fatal("child Ctrl+N returned a command; form entry is synchronous")
+			}
+			model = next.(SupplierModel)
+
+			switch form := model.CurrentFrame().(type) {
+			case BranchEditFrame:
+				if test.contact || form.RouteID == 0 || form.RequestID == 0 || form.SupplierID != 8 || form.BranchID != 0 || form.Mode != SupplierEditCreate {
+					t.Fatalf("branch create frame = %#v", form)
+				}
+			case ContactEditFrame:
+				if !test.contact || form.RouteID == 0 || form.RequestID == 0 || form.SupplierID != 8 || form.ContactID != 0 || form.Mode != SupplierEditCreate || !reflect.DeepEqual(form.Values.BranchID, test.branch) {
+					t.Fatalf("contact create frame = %#v", form)
+				}
+			default:
+				t.Fatalf("create frame = %#v", model.CurrentFrame())
+			}
+			title, footer, fields := "Crear sucursal", "Enter guardar sucursal · Esc: Cancelar · Ctrl+C salir", []string{"Nombre", "Referencia", "Ciudad", "Provincia/Estado", "País", "Dirección", "Teléfono general", "Email general", "Notas"}
+			if test.contact {
+				title, footer, fields = "Crear contacto", "Enter guardar contacto · Esc: Cancelar · Ctrl+C salir", []string{"Nombre", "Cargo", "Sucursal", "Móvil", "Teléfono", "Email", "Notas"}
+			}
+			first := model.View().Content
+			if first != model.View().Content || !strings.Contains(first, title) || !strings.Contains(first, footer) {
+				t.Fatalf("non-deterministic or inaccurate form view = %q", first)
+			}
+			for _, field := range fields {
+				if !strings.Contains(first, field) {
+					t.Fatalf("form view = %q, missing field %q", first, field)
+				}
+			}
+			model = supplierModelAfter(t, model, supplierKey(tea.KeyEscape))
+			if !reflect.DeepEqual(model.CurrentFrame(), before) {
+				t.Fatalf("form Esc restoration = %#v, want %#v", model.CurrentFrame(), before)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name    string
+		before  any
+		contact bool
+	}{
+		{"branch detail E", BranchDetailFrame{SupplierID: 8, BranchID: branchID, Branch: domain.Branch{ID: branchID, SupplierID: 8, Name: "Centro"}, State: SupplierDetailStateReady}, false},
+		{"contact detail E", ContactDetailFrame{SupplierID: 8, ContactID: 31, Contact: domain.Contact{ID: 31, SupplierID: 8, Name: "Ana"}, State: SupplierDetailStateReady}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = test.before
+			model = supplierModelAfter(t, model, supplierKey('E'))
+
+			switch form := model.CurrentFrame().(type) {
+			case BranchEditFrame:
+				if test.contact || form.Mode != SupplierEditUpdate || form.SupplierID != 8 || form.BranchID != branchID || form.Values.Name != "Centro" {
+					t.Fatalf("branch detail E = %#v", form)
+				}
+			case ContactEditFrame:
+				if !test.contact || form.Mode != SupplierEditUpdate || form.SupplierID != 8 || form.ContactID != 31 || form.Values.Name != "Ana" {
+					t.Fatalf("contact detail E = %#v", form)
+				}
+			default:
+				t.Fatalf("detail E frame = %#v", model.CurrentFrame())
+			}
+			wantView := "Editar sucursal\n>Nombre: Centro\n Referencia: \n Ciudad: \n Provincia/Estado: \n País: \n Dirección: \n Teléfono general: \n Email general: \n Notas: \nEnter guardar sucursal · Esc: Cancelar · Ctrl+C salir"
+			if test.contact {
+				wantView = "Editar contacto\n>Nombre: Ana\n Cargo: \n Sucursal: General\n Móvil: \n Teléfono: \n Email: \n Notas: \nEnter guardar contacto · Esc: Cancelar · Ctrl+C salir"
+			}
+			if got := model.View().Content; got != wantView {
+				t.Fatalf("detail edit view = %q, want %q", got, wantView)
+			}
+			model = supplierModelAfter(t, model, supplierKey(tea.KeyEscape))
+			if !reflect.DeepEqual(model.CurrentFrame(), test.before) {
+				t.Fatal("detail edit Esc did not restore the exact frame")
+			}
+		})
+	}
+	t.Run("focused printable shortcuts remain input", func(t *testing.T) {
+		for _, text := range []string{"E", "S", "C", "A", "?", "x"} {
+			model := NewSupplierModel(&supplierListTestService{})
+			model.frame = BranchEditFrame{Mode: SupplierEditCreate, Focus: 0, Focused: true}
+			model = supplierModelAfter(t, model, supplierTextKey(text))
+			form, ok := model.CurrentFrame().(BranchEditFrame)
+			if !ok || form.Values.Name != text {
+				t.Fatalf("focused %q input = %#v", text, model.CurrentFrame())
+			}
+		}
+	})
+	t.Run("focused j and k remain text for branch and contact", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			form any
+		}{
+			{name: "branch", form: BranchEditFrame{Mode: SupplierEditCreate, Focus: 0, Focused: true}},
+			{name: "contact", form: ContactEditFrame{Mode: SupplierEditCreate, Focus: 0, Focused: true}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				model := NewSupplierModel(&supplierListTestService{})
+				model.frame = test.form
+				model = supplierModelAfter(t, model, supplierTextKey("j"))
+				model = supplierModelAfter(t, model, supplierTextKey("k"))
+				switch form := model.CurrentFrame().(type) {
+				case BranchEditFrame:
+					if form.Values.Name != "jk" || form.Focus != 0 {
+						t.Fatalf("branch input = %#v, want name %q at focus 0", form, "jk")
+					}
+				case ContactEditFrame:
+					if form.Values.Name != "jk" || form.Focus != 0 {
+						t.Fatalf("contact input = %#v, want name %q at focus 0", form, "jk")
+					}
+				default:
+					t.Fatalf("focused input frame = %#v", model.CurrentFrame())
+				}
+			})
+		}
+	})
+	t.Run("arrow and tab keys move child form focus", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			form any
+		}{
+			{name: "branch", form: BranchEditFrame{Mode: SupplierEditCreate, Focus: 0, Focused: true}},
+			{name: "contact", form: ContactEditFrame{Mode: SupplierEditCreate, Focus: 0, Focused: true}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				model := NewSupplierModel(&supplierListTestService{})
+				model.frame = test.form
+				model = supplierModelAfter(t, model, supplierKey(tea.KeyDown))
+				model = supplierModelAfter(t, model, supplierKey(tea.KeyTab))
+				model = supplierModelAfter(t, model, supplierKey(tea.KeyUp))
+				switch form := model.CurrentFrame().(type) {
+				case BranchEditFrame:
+					if form.Focus != 1 {
+						t.Fatalf("branch focus = %d, want 1", form.Focus)
+					}
+				case ContactEditFrame:
+					if form.Focus != 1 {
+						t.Fatalf("contact focus = %d, want 1", form.Focus)
+					}
+				default:
+					t.Fatalf("focus frame = %#v", model.CurrentFrame())
+				}
+			})
+		}
+	})
+}
