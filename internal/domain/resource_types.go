@@ -169,8 +169,14 @@ type Resource struct {
 	NaturalUnit string
 	Attributes  []ResourceAttributeValue
 	IdentityKey string
-	Active      bool
-	canonical   bool
+	// Revision is the migration-8 monotonic optimistic-concurrency (CAS)
+	// column (design "Resource revisions and identity"). Create stores
+	// revision 1; deactivate/reactivate increment it only on an actual
+	// transition. It is 0 until a later CAS-aware slice populates it — no
+	// current write path reads or checks it yet.
+	Revision  uint64
+	Active    bool
+	canonical bool
 }
 
 func (r *Resource) Deactivate() bool {
@@ -210,7 +216,10 @@ type ResourceSnapshot struct {
 	NaturalUnit string
 	Attributes  []ResourceAttributeValue
 	IdentityKey string
-	Active      bool
+	// Revision — see Resource.Revision. A repository not yet populating this
+	// field leaves it 0; HydrateResource carries it through unvalidated.
+	Revision uint64
+	Active   bool
 }
 
 func HydrateResource(snapshot ResourceSnapshot) (Resource, error) {
@@ -220,7 +229,7 @@ func HydrateResource(snapshot ResourceSnapshot) (Resource, error) {
 	if !strings.HasPrefix(snapshot.IdentityKey, "v1|") {
 		return Resource{}, validation("resource snapshot identity is not v1")
 	}
-	return Resource{ID: snapshot.ID, ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode, NaturalUnit: snapshot.NaturalUnit, Attributes: append([]ResourceAttributeValue(nil), snapshot.Attributes...), IdentityKey: snapshot.IdentityKey, Active: snapshot.Active, canonical: true}, nil
+	return Resource{ID: snapshot.ID, ClassCode: snapshot.ClassCode, FamilyCode: snapshot.FamilyCode, TypeCode: snapshot.TypeCode, NaturalUnit: snapshot.NaturalUnit, Attributes: append([]ResourceAttributeValue(nil), snapshot.Attributes...), IdentityKey: snapshot.IdentityKey, Revision: snapshot.Revision, Active: snapshot.Active, canonical: true}, nil
 }
 
 func (r Resource) ValidateForPersistence() error {

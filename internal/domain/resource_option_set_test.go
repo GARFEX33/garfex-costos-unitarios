@@ -128,3 +128,42 @@ func TestOptionSetIsolation_OptionsForAndValidOptionsAgree(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyCatalogMutation_OptionSetIsLosslessAndNotSnapshotNoOp(t *testing.T) {
+	catalog := ResourceCatalog{OptionSets: []ResourceOptionSet{{Code: "DEFAULT", Name: "Default", Active: true}}}
+	insert := CatalogRecord{Kind: KindOptionSet, Active: true, Values: map[string]CatalogValue{
+		"code": {Text: "COLORS"}, "name": {Text: "Colores"},
+	}}
+	candidate, err := ApplyCatalogMutation(catalog, NewCatalogRegistry(), CatalogMutation{Op: OpInsert, Record: insert})
+	if err != nil {
+		t.Fatalf("option-set insert error = %v, want nil", err)
+	}
+	if len(candidate.OptionSets) != 2 || candidate.OptionSets[1] != (ResourceOptionSet{Code: "COLORS", Name: "Colores", Active: true}) {
+		t.Fatalf("option-set insert = %+v, want a real appended record", candidate.OptionSets)
+	}
+	if len(catalog.OptionSets) != 1 || catalog.OptionSets[0].Code != "DEFAULT" {
+		t.Fatalf("option-set insert changed prior snapshot: %+v", catalog.OptionSets)
+	}
+
+	replacement := CatalogRecord{Kind: KindOptionSet, Active: false, Values: map[string]CatalogValue{
+		"code": {Text: "COLORS"}, "name": {Text: "Colores actualizados"},
+	}}
+	updated, err := ApplyCatalogMutation(candidate, NewCatalogRegistry(), CatalogMutation{
+		Op: OpUpdate, Record: insert, Replacement: &replacement,
+	})
+	if err != nil {
+		t.Fatalf("option-set update error = %v, want nil", err)
+	}
+	if got := updated.OptionSets[1]; got != (ResourceOptionSet{Code: "COLORS", Name: "Colores actualizados", Active: false}) {
+		t.Fatalf("option-set update = %+v, want replacement without field loss", got)
+	}
+
+	active, err := ApplyCatalogMutation(updated, NewCatalogRegistry(), CatalogMutation{Op: OpReactivate, Record: insert})
+	if err != nil || !active.OptionSets[1].Active {
+		t.Fatalf("option-set reactivate = %+v, error %v; want active record", active.OptionSets, err)
+	}
+	deleted, err := ApplyCatalogMutation(active, NewCatalogRegistry(), CatalogMutation{Op: OpDelete, Record: insert})
+	if err != nil || len(deleted.OptionSets) != 1 || deleted.OptionSets[0].Code != "DEFAULT" {
+		t.Fatalf("option-set delete = %+v, error %v; want only DEFAULT", deleted.OptionSets, err)
+	}
+}

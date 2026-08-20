@@ -34,11 +34,74 @@ type CatalogValue struct {
 // administrable CatalogKind (design D8). ID is the repository-assigned
 // database identity (0 until Insert persists it) — the pure domain layer
 // never uses it for cross-references, only the repository does.
+// CatalogRuleRecord is one ordered applicability rule attached to a
+// CatalogRecord. When is evaluated in Rules slice order; the remaining fields
+// describe the rule's effective attribute semantics and lifecycle state.
+type CatalogRuleRecord struct {
+	When                 AttributeCondition
+	Mode                 AttributeMode
+	IdentityParticipates bool
+	NotApplicable        bool
+	Active               bool
+}
+
+// Revision is the migration-8 monotonic optimistic-concurrency (CAS) column
+// for the record's underlying table (design "Resource revisions and
+// identity"). It is 0 for a record not yet persisted; a repository populates
+// it on Get/List/Insert. No current write path increments or checks it yet —
+// dormant until a later CAS-aware slice wires it into Update/SetActive/Delete.
 type CatalogRecord struct {
-	Kind   CatalogKindCode
-	ID     int64
-	Active bool
-	Values map[string]CatalogValue
+	Kind     CatalogKindCode
+	ID       int64
+	Revision uint64
+	Active   bool
+	Values   map[string]CatalogValue
+	Rules    []CatalogRuleRecord
+}
+
+// cloneCatalogStrings preserves nil versus non-nil empty slices while
+// isolating the mutable backing array.
+func cloneCatalogStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	copyOfValues := make([]string, len(values))
+	copy(copyOfValues, values)
+	return copyOfValues
+}
+
+// cloneCatalogValue copies every mutable part of a catalog value. Text,
+// scalar fields, and CatalogRef are value types; List is the nested storage
+// that needs an independent backing array.
+func cloneCatalogValue(value CatalogValue) CatalogValue {
+	value.List = cloneCatalogStrings(value.List)
+	return value
+}
+
+// cloneCatalogRules preserves nil versus non-nil empty slices while isolating
+// the ordered rule records from their caller-owned backing array.
+func cloneCatalogRules(rules []CatalogRuleRecord) []CatalogRuleRecord {
+	if rules == nil {
+		return nil
+	}
+	copyOfRules := make([]CatalogRuleRecord, len(rules))
+	copy(copyOfRules, rules)
+	return copyOfRules
+}
+
+// cloneCatalogRecord copies the values map and each value's nested storage so
+// mutation builders can safely read a caller-owned record.
+func cloneCatalogRecord(record CatalogRecord) CatalogRecord {
+	copyOfRecord := record
+	copyOfRecord.Rules = cloneCatalogRules(record.Rules)
+	if record.Values == nil {
+		return copyOfRecord
+	}
+	copyOfRecord.Values = make(map[string]CatalogValue, len(record.Values))
+	for name, value := range record.Values {
+		copyOfRecord.Values[name] = cloneCatalogValue(value)
+	}
+	return copyOfRecord
 }
 
 type CatalogStatus uint8

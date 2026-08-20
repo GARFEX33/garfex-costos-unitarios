@@ -162,3 +162,24 @@ func TestCatalogRegistry_KindsReturnsAnIndependentCopy(t *testing.T) {
 		t.Fatalf("mutating the slice returned by Kinds() leaked into the registry's own state")
 	}
 }
+
+func TestCatalogKindRegistry_AllRegisteredKindsAreLifecycleCapable(t *testing.T) {
+	want := []CatalogKindCode{
+		KindClass, KindFamily, KindType, KindAttributeDefinition, KindOptionSet,
+		KindOption, KindOptionRelation, KindUnit, KindUnitPolicy, KindAttributeBinding,
+		KindPresentationField,
+	}
+	registry := NewCatalogRegistry()
+	if got := len(registry.Kinds()); got != len(want) {
+		t.Fatalf("registry has %d kinds, want exactly %d", got, len(want))
+	}
+	for _, code := range want {
+		kind, ok := registry.Kind(code)
+		if !ok {
+			t.Fatalf("expected registered kind %q", code)
+		}
+		if !kind.SoftDelete {
+			t.Errorf("kind %q is not lifecycle-capable", code)
+		}
+	}
+}
