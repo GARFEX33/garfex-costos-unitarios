@@ -28,6 +28,7 @@ type catalogReader interface {
 // translation, decides which repository backs the service.
 type catalogWriter interface {
 	Create(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
+	UpdateRevision(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
 }
 
 // catalogPort is the complete catalog seam: reads plus the one graduated
@@ -47,6 +48,7 @@ type resourceReader interface {
 // resourceWriter is the narrow resource write seam the bridge consumes.
 type resourceWriter interface {
 	Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
+	UpdateRevision(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error)
 }
 
 // resourcePort is the complete resource seam: reads plus the one graduated
@@ -145,6 +147,46 @@ func (a *Adapter) CreateCatalog(ctx context.Context, req public.CatalogWriteRequ
 		return public.CatalogRecord{}, mapError(err)
 	}
 	return a.mapCatalogRecord(kind, created), nil
+}
+
+// UpdateCatalog replaces one existing catalog record under optimistic
+// concurrency. Reuses the exact inverse value/rule mappers Create built; no
+// new mapping code. Actor travels only as request-scoped context metadata,
+// exactly as in CreateCatalog.
+func (a *Adapter) UpdateCatalog(ctx context.Context, req public.CatalogUpdateRequest) (public.CatalogRecord, error) {
+	kind := domain.CatalogKindCode(req.Kind)
+	rec := domain.CatalogRecord{
+		ID:     req.ID,
+		Active: req.Active,
+		Values: a.toDomainCatalogValues(kind, req.Values),
+		Rules:  toDomainCatalogRules(req.Rules),
+	}
+	updated, err := a.catalog.UpdateRevision(core.WithActor(ctx, req.Actor), kind, rec, req.ExpectedRevision)
+	if err != nil {
+		return public.CatalogRecord{}, mapError(err)
+	}
+	return a.mapCatalogRecord(kind, updated), nil
+}
+
+// UpdateResource replaces one existing resource under optimistic
+// concurrency. No create-confirm read: ResourceRepositoryV2.UpdateRevision
+// returns the real persisted Resource directly.
+func (a *Adapter) UpdateResource(ctx context.Context, req public.ResourceUpdateRequest) (public.Resource, error) {
+	attrs, err := toDomainResourceAttributes(req.Attributes)
+	if err != nil {
+		return public.Resource{}, err
+	}
+	command := domain.UpdateCommand{
+		ID:          req.ID,
+		Scope:       domain.ResourceScope{ClassCode: req.Scope.ClassCode, FamilyCode: req.Scope.FamilyCode, TypeCode: req.Scope.TypeCode},
+		NaturalUnit: req.NaturalUnit,
+		Attributes:  attrs,
+	}
+	updated, err := a.resources.UpdateRevision(core.WithActor(ctx, req.Actor), command, req.ExpectedRevision)
+	if err != nil {
+		return public.Resource{}, mapError(err)
+	}
+	return mapResource(updated), nil
 }
 
 // SearchResources returns a page of resources matching the query.

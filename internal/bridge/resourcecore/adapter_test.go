@@ -22,10 +22,11 @@ type bridgePgxLikeError struct {
 func (e bridgePgxLikeError) Error() string { return e.ServerMessage }
 
 type fakeCatalogReader struct {
-	kinds  []domain.CatalogKind
-	list   func(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error)
-	get    func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error)
-	create func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
+	kinds          []domain.CatalogKind
+	list           func(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error)
+	get            func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error)
+	create         func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
+	updateRevision func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
 }
 
 func (f *fakeCatalogReader) Kinds() []domain.CatalogKind { return f.kinds }
@@ -38,20 +39,32 @@ func (f *fakeCatalogReader) Get(ctx context.Context, kind domain.CatalogKindCode
 func (f *fakeCatalogReader) Create(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
 	return f.create(ctx, kind, rec)
 }
+func (f *fakeCatalogReader) UpdateRevision(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
+	return f.updateRevision(ctx, kind, rec, expectedRevision)
+}
 
 type fakeResourceReader struct {
-	get           func(ctx context.Context, classCode, identityKey string) (domain.Resource, error)
-	search        func(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error)
-	describe      func(resource domain.Resource) string
-	create        func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
-	lastDescribed domain.Resource
+	get            func(ctx context.Context, classCode, identityKey string) (domain.Resource, error)
+	search         func(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error)
+	describe       func(resource domain.Resource) string
+	create         func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
+	updateRevision func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error)
+	lastDescribed  domain.Resource
+	getCalls       int
+	updateCalls    int
 }
 
 func (f *fakeResourceReader) Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
 	return f.create(ctx, command)
 }
 
+func (f *fakeResourceReader) UpdateRevision(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+	f.updateCalls++
+	return f.updateRevision(ctx, command, expectedRevision)
+}
+
 func (f *fakeResourceReader) Get(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
+	f.getCalls++
 	return f.get(ctx, classCode, identityKey)
 }
 func (f *fakeResourceReader) SearchPage(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error) {
@@ -690,6 +703,207 @@ func TestCatalogCreate_NineCategoryTable_DistinctAndNoLeakage(t *testing.T) {
 	}
 }
 
+func TestWriteBridge_CatalogWriter_UpdateRevisionFakeAdapted(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		updateRevision: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
+			rec.Revision = expectedRevision + 1
+			return rec, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	rec, err := adapter.UpdateCatalog(context.Background(), public.CatalogUpdateRequest{
+		Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1,
+		Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.ID != 1 || rec.Revision != 2 {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+}
+
+func TestCatalogUpdate_FieldCompleteness_IDAndExpectedRevision(t *testing.T) {
+	var capturedRec domain.CatalogRecord
+	var capturedExpected uint64
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		updateRevision: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
+			capturedRec, capturedExpected = rec, expectedRevision
+			rec.Revision = expectedRevision + 1
+			return rec, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.UpdateCatalog(context.Background(), public.CatalogUpdateRequest{
+		Actor: "PI", Kind: public.KindClass, ID: 42, ExpectedRevision: 7,
+		Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedRec.ID != 42 {
+		t.Fatalf("CatalogUpdateRequest.ID not mapped to rec.ID: got %d", capturedRec.ID)
+	}
+	if capturedExpected != 7 {
+		t.Fatalf("CatalogUpdateRequest.ExpectedRevision not mapped to the expectedRevision argument: got %d", capturedExpected)
+	}
+}
+
+func TestCatalogUpdate_TenCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"XX000", "", "", "", "unclassified driver failure"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrCatalogRecordNotFound, public.NotFound},
+		{"duplicate", domain.ErrCatalogDuplicate, public.Duplicate},
+		{"invalid reference", domain.ErrCatalogReference, public.InvalidReference},
+		{"validation", domain.ErrResourceValidation, public.Validation},
+		{"invalid catalog", domain.WrapInvalidCatalog(domain.ErrResourceValidation), public.InvalidCatalog},
+		{"unavailable", catalogo.ErrCatalogWriterUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+		{"conflict", domain.ErrRevisionConflict, public.Conflict},
+		{"immutable code", domain.ErrCodeImmutable, public.ImmutableCode},
+	}
+	seen := map[public.ErrorCode]struct{}{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &fakeCatalogReader{
+				kinds: []domain.CatalogKind{classKind()},
+				updateRevision: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
+					return domain.CatalogRecord{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(catalog, nil)
+			_, err := adapter.UpdateCatalog(context.Background(), public.CatalogUpdateRequest{
+				Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1,
+				Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+			})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v, got %v", tt.wantCode, err)
+			}
+			var publicErr public.Error
+			if !errors.As(err, &publicErr) {
+				t.Fatalf("expected public.Error, got %T", err)
+			}
+			if errors.Unwrap(publicErr) != nil {
+				t.Fatalf("public error must not unwrap")
+			}
+			for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+				if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+					t.Fatalf("leaked technical detail %q in %v", leak, err)
+				}
+			}
+			seen[tt.wantCode] = struct{}{}
+		})
+	}
+	if len(seen) != 10 {
+		t.Fatalf("expected exactly 10 distinct catalog Update categories, got %d: %+v", len(seen), seen)
+	}
+}
+
+// TestCatalogUpdate_TenCategoryTable_ExcludesUnreachable proves that the
+// four Delete/Reactivate-only sentinels are correctly classified to their
+// own distinct category (not silently collapsed into an unrelated one) if
+// they were ever injected at this seam, even though catalogo.Service.
+// UpdateRevision's real call graph never constructs them. INTEGRITY's
+// exclusion for UpdateCatalog is not a bridge-injection claim — mapError
+// would obviously classify a directly-injected domain.ErrResourceIntegrity
+// as INTEGRITY, the same as it does for any other operation. The exclusion
+// is a production-reachability claim proven by source tracing (grep-
+// confirmed zero references to domain.ErrResourceIntegrity anywhere in
+// internal/postgres/catalog_admin_*.go, cited in design.md and
+// specs/resource-master-core/spec.md), not something a fake-injection unit
+// test can establish either way.
+func TestCatalogUpdate_TenCategoryTable_ExcludesUnreachable(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"identity conflict", domain.ErrIdentityConflict, public.IdentityConflict},
+		{"invalid lifecycle", domain.ErrInvalidLifecycle, public.InvalidLifecycle},
+		{"reactivation impossible", domain.ErrReactivationImpossible, public.ReactivationImpossible},
+		{"in use", domain.ErrCatalogInUse, public.InUse},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &fakeCatalogReader{
+				kinds: []domain.CatalogKind{classKind()},
+				updateRevision: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
+					return domain.CatalogRecord{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(catalog, nil)
+			_, err := adapter.UpdateCatalog(context.Background(), public.CatalogUpdateRequest{
+				Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1,
+				Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+			})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v (this operation never constructs it in production, but if it ever leaked through it must not silently misclassify), got %v", tt.wantCode, err)
+			}
+		})
+	}
+}
+
+func TestCatalogUpdate_ImmutableCode_ViaKindRegistryLookup(t *testing.T) {
+	registry := domain.NewCatalogRegistry()
+	def, ok := registry.Kind(domain.KindClass)
+	if !ok {
+		t.Fatal("KindClass must be registered")
+	}
+	var immutableField string
+	for _, f := range def.Fields {
+		if f.Immutable == domain.ImmutableOnceReferenced {
+			immutableField = f.Name
+			break
+		}
+	}
+	if immutableField == "" {
+		t.Fatal("expected KindClass to declare at least one ImmutableOnceReferenced field")
+	}
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		updateRevision: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{}, domain.ErrCodeImmutable
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.UpdateCatalog(context.Background(), public.CatalogUpdateRequest{
+		Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1,
+		Values: map[string]public.Value{immutableField: {Kind: public.ValueCode, Text: "CHANGED"}},
+	})
+	if !public.IsCode(err, public.ImmutableCode) {
+		t.Fatalf("expected IMMUTABLE_CODE for a registry-driven immutable field change, got %v", err)
+	}
+}
+
+func TestCatalogUpdate_ActorReachesDiagnosticSeam(t *testing.T) {
+	var capturedCtx context.Context
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		updateRevision: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
+			capturedCtx = ctx
+			return domain.CatalogRecord{}, domain.ErrRevisionConflict
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.UpdateCatalog(context.Background(), public.CatalogUpdateRequest{
+		Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1,
+		Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+	})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if core.ActorFrom(capturedCtx) != "PI" {
+		t.Fatalf("expected Actor to reach the diagnostic seam via ctx, got %q", core.ActorFrom(capturedCtx))
+	}
+}
+
 func TestWriteBridge_ResourcePort_FakeAdapted(t *testing.T) {
 	resources := &fakeResourceReader{
 		create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
@@ -896,5 +1110,216 @@ func TestResourceCreate_NineCategoryTable_DistinctAndNoLeakage(t *testing.T) {
 	}
 	if len(seen) != len(tests) {
 		t.Fatalf("expected %d distinct categories, got %d: %+v", len(tests), len(seen), seen)
+	}
+}
+
+func TestWriteBridge_ResourceWriter_UpdateRevisionFakeAdapted(t *testing.T) {
+	resources := &fakeResourceReader{
+		updateRevision: func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+			return domain.Resource{ID: command.ID, ClassCode: command.Scope.ClassCode, IdentityKey: "v1|x", Revision: expectedRevision + 1}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	res, err := adapter.UpdateResource(context.Background(), public.ResourceUpdateRequest{
+		Actor:            "PI",
+		ID:               1,
+		ExpectedRevision: 1,
+		Scope:            public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit:      "m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID != 1 || res.Revision != 2 {
+		t.Fatalf("unexpected resource: %+v", res)
+	}
+}
+
+func TestResourceUpdate_FieldCompleteness_IDAndExpectedRevision(t *testing.T) {
+	var captured domain.UpdateCommand
+	var capturedExpected uint64
+	resources := &fakeResourceReader{
+		updateRevision: func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+			captured, capturedExpected = command, expectedRevision
+			return domain.Resource{ID: command.ID, ClassCode: command.Scope.ClassCode, IdentityKey: "v1|x", Revision: expectedRevision + 1}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	_, err := adapter.UpdateResource(context.Background(), public.ResourceUpdateRequest{
+		Actor:            "PI",
+		ID:               99,
+		ExpectedRevision: 3,
+		Scope:            public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit:      "m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if captured.ID != 99 {
+		t.Fatalf("ResourceUpdateRequest.ID not mapped to domain.UpdateCommand.ID: got %d", captured.ID)
+	}
+	if capturedExpected != 3 {
+		t.Fatalf("ResourceUpdateRequest.ExpectedRevision not mapped to the expectedRevision argument: got %d", capturedExpected)
+	}
+}
+
+func TestResourceUpdate_NoConfirmRead_CallCountAssertion(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"success", nil},
+		{"not found", domain.ErrResourceNotFound},
+		{"duplicate", domain.ErrDuplicateResource},
+		{"invalid reference", domain.ErrResourceReference},
+		{"integrity", domain.ErrResourceIntegrity},
+		{"conflict", domain.ErrResourceRevisionConflict},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				updateRevision: func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+					if tt.err != nil {
+						return domain.Resource{}, tt.err
+					}
+					return domain.Resource{ID: command.ID, ClassCode: command.Scope.ClassCode, IdentityKey: "v1|x", Revision: expectedRevision + 1}, nil
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, _ = adapter.UpdateResource(context.Background(), public.ResourceUpdateRequest{
+				Actor:            "PI",
+				ID:               1,
+				ExpectedRevision: 1,
+				Scope:            public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+				NaturalUnit:      "m",
+			})
+			if resources.updateCalls != 1 {
+				t.Fatalf("expected UpdateRevision to be called exactly once, got %d", resources.updateCalls)
+			}
+			if resources.getCalls != 0 {
+				t.Fatalf("expected Adapter.UpdateResource to perform no confirm-read (Get) call, got %d calls", resources.getCalls)
+			}
+		})
+	}
+}
+
+func TestResourceUpdate_ActorReachesDiagnosticSeam(t *testing.T) {
+	var capturedCtx context.Context
+	resources := &fakeResourceReader{
+		updateRevision: func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+			capturedCtx = ctx
+			return domain.Resource{}, domain.ErrResourceRevisionConflict
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	_, err := adapter.UpdateResource(context.Background(), public.ResourceUpdateRequest{
+		Actor:            "PI",
+		ID:               1,
+		ExpectedRevision: 1,
+		Scope:            public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit:      "m",
+	})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if core.ActorFrom(capturedCtx) != "PI" {
+		t.Fatalf("expected Actor to reach the diagnostic seam via ctx, got %q", core.ActorFrom(capturedCtx))
+	}
+}
+
+func TestResourceUpdate_NineCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"XX000", "", "", "", "unclassified driver failure"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrResourceNotFound, public.NotFound},
+		{"duplicate", domain.ErrDuplicateResource, public.Duplicate},
+		{"invalid reference", domain.ErrResourceReference, public.InvalidReference},
+		{"validation", domain.ErrResourceValidation, public.Validation},
+		{"integrity", domain.ErrResourceIntegrity, public.Integrity},
+		{"unavailable", core.ErrUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+		{"conflict", domain.ErrResourceRevisionConflict, public.Conflict},
+	}
+	seen := map[public.ErrorCode]struct{}{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				updateRevision: func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+					return domain.Resource{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, err := adapter.UpdateResource(context.Background(), public.ResourceUpdateRequest{
+				Actor:            "PI",
+				ID:               1,
+				ExpectedRevision: 1,
+				Scope:            public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+				NaturalUnit:      "m",
+			})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v, got %v", tt.wantCode, err)
+			}
+			var publicErr public.Error
+			if !errors.As(err, &publicErr) {
+				t.Fatalf("expected public.Error, got %T", err)
+			}
+			if errors.Unwrap(publicErr) != nil {
+				t.Fatalf("public error must not unwrap")
+			}
+			for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+				if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+					t.Fatalf("leaked technical detail %q in %v", leak, err)
+				}
+			}
+			seen[tt.wantCode] = struct{}{}
+		})
+	}
+	if len(seen) != 9 {
+		t.Fatalf("expected exactly 9 distinct resource Update categories, got %d: %+v", len(seen), seen)
+	}
+}
+
+// TestResourceUpdate_NineCategoryTable_ExcludesUnreachable mirrors the
+// catalog-side exclusion test's discipline: IDENTITY_CONFLICT/
+// INVALID_LIFECYCLE/REACTIVATION_IMPOSSIBLE/IN_USE are Reactivate/Delete-
+// only in production and IMMUTABLE_CODE has no resource-Update call site
+// (resources have no "código" field concept at all). Injecting them at
+// this seam still proves mapError classifies each to its own distinct,
+// correct category rather than silently collapsing into an unrelated one.
+func TestResourceUpdate_NineCategoryTable_ExcludesUnreachable(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"identity conflict", domain.ErrIdentityConflict, public.IdentityConflict},
+		{"invalid lifecycle", domain.ErrInvalidLifecycle, public.InvalidLifecycle},
+		{"reactivation impossible", domain.ErrReactivationImpossible, public.ReactivationImpossible},
+		{"in use", domain.ErrCatalogInUse, public.InUse},
+		{"immutable code", domain.ErrCodeImmutable, public.ImmutableCode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				updateRevision: func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+					return domain.Resource{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, err := adapter.UpdateResource(context.Background(), public.ResourceUpdateRequest{
+				Actor:            "PI",
+				ID:               1,
+				ExpectedRevision: 1,
+				Scope:            public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+				NaturalUnit:      "m",
+			})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v (this operation never constructs it in production, but if it ever leaked through it must not silently misclassify), got %v", tt.wantCode, err)
+			}
+		})
 	}
 }
