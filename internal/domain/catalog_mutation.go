@@ -317,7 +317,7 @@ func attributeRulesFromRecords(records []CatalogRuleRecord) []AttributeRule {
 	}
 	rules := make([]AttributeRule, len(records))
 	for i, record := range records {
-		rules[i] = AttributeRule{When: record.When, Mode: record.Mode, IdentityParticipates: record.IdentityParticipates, NotApplicable: record.NotApplicable, Active: record.Active}
+		rules[i] = AttributeRule(record)
 	}
 	return rules
 }
