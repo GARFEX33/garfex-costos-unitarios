@@ -29,6 +29,8 @@ type catalogReader interface {
 type catalogWriter interface {
 	Create(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
 	UpdateRevision(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
+	DeactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
+	ReactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 }
 
 // catalogPort is the complete catalog seam: reads plus the one graduated
@@ -49,6 +51,8 @@ type resourceReader interface {
 type resourceWriter interface {
 	Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
 	UpdateRevision(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error)
+	DeactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error)
+	ReactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error)
 }
 
 // resourcePort is the complete resource seam: reads plus the one graduated
@@ -187,6 +191,63 @@ func (a *Adapter) UpdateResource(ctx context.Context, req public.ResourceUpdateR
 		return public.Resource{}, mapError(err)
 	}
 	return mapResource(updated), nil
+}
+
+// DeactivateCatalog deactivates one existing catalog record under
+// optimistic concurrency. DeactivateRevision returns only error — no
+// record, because postgres's SetActive builds a deliberately partial
+// 4-field domain.CatalogRecord projection even at the domain-port level. A
+// confirm-read recovers the complete public record, the same gap-recovery
+// shape CreateResource already established for a different underlying gap.
+// A confirm-read failure is not given a distinct error category: it flows
+// through the same mapError any other Get failure would use — never told
+// the toggle itself failed when the persisted state has, in fact, already
+// changed.
+func (a *Adapter) DeactivateCatalog(ctx context.Context, req public.CatalogLifecycleRequest) (public.CatalogRecord, error) {
+	kind := domain.CatalogKindCode(req.Kind)
+	if err := a.catalog.DeactivateRevision(core.WithActor(ctx, req.Actor), kind, req.ID, req.ExpectedRevision); err != nil {
+		return public.CatalogRecord{}, mapError(err)
+	}
+	rec, err := a.catalog.Get(ctx, kind, req.ID)
+	if err != nil {
+		return public.CatalogRecord{}, mapError(err)
+	}
+	return a.mapCatalogRecord(kind, rec), nil
+}
+
+// ReactivateCatalog reactivates one existing catalog record under
+// optimistic concurrency. Same confirm-read shape as DeactivateCatalog.
+func (a *Adapter) ReactivateCatalog(ctx context.Context, req public.CatalogLifecycleRequest) (public.CatalogRecord, error) {
+	kind := domain.CatalogKindCode(req.Kind)
+	if err := a.catalog.ReactivateRevision(core.WithActor(ctx, req.Actor), kind, req.ID, req.ExpectedRevision); err != nil {
+		return public.CatalogRecord{}, mapError(err)
+	}
+	rec, err := a.catalog.Get(ctx, kind, req.ID)
+	if err != nil {
+		return public.CatalogRecord{}, mapError(err)
+	}
+	return a.mapCatalogRecord(kind, rec), nil
+}
+
+// DeactivateResource deactivates one existing resource under optimistic
+// concurrency. No confirm-read: domain.LifecycleResult.Resource is already
+// the complete, persisted resource.
+func (a *Adapter) DeactivateResource(ctx context.Context, req public.ResourceLifecycleRequest) (public.Resource, error) {
+	result, err := a.resources.DeactivateRevision(core.WithActor(ctx, req.Actor), req.ID, req.ExpectedRevision)
+	if err != nil {
+		return public.Resource{}, mapError(err)
+	}
+	return mapResource(result.Resource), nil
+}
+
+// ReactivateResource reactivates one existing resource under optimistic
+// concurrency. Same no-confirm-read shape as DeactivateResource.
+func (a *Adapter) ReactivateResource(ctx context.Context, req public.ResourceLifecycleRequest) (public.Resource, error) {
+	result, err := a.resources.ReactivateRevision(core.WithActor(ctx, req.Actor), req.ID, req.ExpectedRevision)
+	if err != nil {
+		return public.Resource{}, mapError(err)
+	}
+	return mapResource(result.Resource), nil
 }
 
 // SearchResources returns a page of resources matching the query.

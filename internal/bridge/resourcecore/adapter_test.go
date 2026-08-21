@@ -22,11 +22,14 @@ type bridgePgxLikeError struct {
 func (e bridgePgxLikeError) Error() string { return e.ServerMessage }
 
 type fakeCatalogReader struct {
-	kinds          []domain.CatalogKind
-	list           func(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error)
-	get            func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error)
-	create         func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
-	updateRevision func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
+	kinds              []domain.CatalogKind
+	list               func(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error)
+	get                func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error)
+	create             func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
+	updateRevision     func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
+	deactivateRevision func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
+	reactivateRevision func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
+	getCalls           int
 }
 
 func (f *fakeCatalogReader) Kinds() []domain.CatalogKind { return f.kinds }
@@ -34,6 +37,7 @@ func (f *fakeCatalogReader) List(ctx context.Context, kind domain.CatalogKindCod
 	return f.list(ctx, kind, filter)
 }
 func (f *fakeCatalogReader) Get(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+	f.getCalls++
 	return f.get(ctx, kind, id)
 }
 func (f *fakeCatalogReader) Create(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
@@ -42,16 +46,26 @@ func (f *fakeCatalogReader) Create(ctx context.Context, kind domain.CatalogKindC
 func (f *fakeCatalogReader) UpdateRevision(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
 	return f.updateRevision(ctx, kind, rec, expectedRevision)
 }
+func (f *fakeCatalogReader) DeactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+	return f.deactivateRevision(ctx, kind, id, expectedRevision)
+}
+func (f *fakeCatalogReader) ReactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+	return f.reactivateRevision(ctx, kind, id, expectedRevision)
+}
 
 type fakeResourceReader struct {
-	get            func(ctx context.Context, classCode, identityKey string) (domain.Resource, error)
-	search         func(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error)
-	describe       func(resource domain.Resource) string
-	create         func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
-	updateRevision func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error)
-	lastDescribed  domain.Resource
-	getCalls       int
-	updateCalls    int
+	get                func(ctx context.Context, classCode, identityKey string) (domain.Resource, error)
+	search             func(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error)
+	describe           func(resource domain.Resource) string
+	create             func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
+	updateRevision     func(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error)
+	deactivateRevision func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error)
+	reactivateRevision func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error)
+	lastDescribed      domain.Resource
+	getCalls           int
+	updateCalls        int
+	deactivateCalls    int
+	reactivateCalls    int
 }
 
 func (f *fakeResourceReader) Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
@@ -61,6 +75,16 @@ func (f *fakeResourceReader) Create(ctx context.Context, command domain.CreateCo
 func (f *fakeResourceReader) UpdateRevision(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
 	f.updateCalls++
 	return f.updateRevision(ctx, command, expectedRevision)
+}
+
+func (f *fakeResourceReader) DeactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+	f.deactivateCalls++
+	return f.deactivateRevision(ctx, id, expectedRevision)
+}
+
+func (f *fakeResourceReader) ReactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+	f.reactivateCalls++
+	return f.reactivateRevision(ctx, id, expectedRevision)
 }
 
 func (f *fakeResourceReader) Get(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
@@ -904,6 +928,259 @@ func TestCatalogUpdate_ActorReachesDiagnosticSeam(t *testing.T) {
 	}
 }
 
+func TestWriteBridge_CatalogWriter_DeactivateRevisionFakeAdapted(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{Kind: kind, ID: id, Revision: 2, Active: false}, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	rec, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.ID != 1 || rec.Active {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+}
+
+func TestWriteBridge_CatalogWriter_ReactivateRevisionFakeAdapted(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		reactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{Kind: kind, ID: id, Revision: 2, Active: true}, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	rec, err := adapter.ReactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.ID != 1 || !rec.Active {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+}
+
+func TestCatalogLifecycle_FieldCompleteness_KindIDExpectedRevision(t *testing.T) {
+	var capturedKind domain.CatalogKindCode
+	var capturedID int64
+	var capturedExpected uint64
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			capturedKind, capturedID, capturedExpected = kind, id, expectedRevision
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{Kind: kind, ID: id, Revision: 8, Active: false}, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 42, ExpectedRevision: 7})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedKind != domain.KindClass {
+		t.Fatalf("Kind not mapped: got %q", capturedKind)
+	}
+	if capturedID != 42 {
+		t.Fatalf("ID not mapped: got %d", capturedID)
+	}
+	if capturedExpected != 7 {
+		t.Fatalf("ExpectedRevision not mapped: got %d", capturedExpected)
+	}
+}
+
+func TestCatalogLifecycle_SixCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"XX000", "", "", "", "unclassified driver failure"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrCatalogRecordNotFound, public.NotFound},
+		{"invalid catalog", domain.WrapInvalidCatalog(domain.ErrResourceValidation), public.InvalidCatalog},
+		{"conflict", domain.ErrRevisionConflict, public.Conflict},
+		{"unavailable", catalogo.ErrCatalogWriterUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+	}
+	for _, op := range []string{"deactivate", "reactivate"} {
+		seen := map[public.ErrorCode]struct{}{}
+		for _, tt := range tests {
+			t.Run(op+"/"+tt.name, func(t *testing.T) {
+				catalog := &fakeCatalogReader{
+					kinds: []domain.CatalogKind{classKind()},
+					deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+						return tt.err
+					},
+					reactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+						return tt.err
+					},
+				}
+				adapter := newTestAdapter(catalog, nil)
+				req := public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1}
+				var err error
+				if op == "deactivate" {
+					_, err = adapter.DeactivateCatalog(context.Background(), req)
+				} else {
+					_, err = adapter.ReactivateCatalog(context.Background(), req)
+				}
+				if !public.IsCode(err, tt.wantCode) {
+					t.Fatalf("expected %v, got %v", tt.wantCode, err)
+				}
+				var publicErr public.Error
+				if !errors.As(err, &publicErr) {
+					t.Fatalf("expected public.Error, got %T", err)
+				}
+				if errors.Unwrap(publicErr) != nil {
+					t.Fatalf("public error must not unwrap")
+				}
+				for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+					if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+						t.Fatalf("leaked technical detail %q in %v", leak, err)
+					}
+				}
+				seen[tt.wantCode] = struct{}{}
+			})
+		}
+		if len(seen) != 6 {
+			t.Fatalf("expected exactly 6 distinct catalog lifecycle categories for %s, got %d: %+v", op, len(seen), seen)
+		}
+	}
+}
+
+func TestCatalogLifecycle_SixCategoryTable_ExcludesUnreachable(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"identity conflict", domain.ErrIdentityConflict, public.IdentityConflict},
+		{"invalid lifecycle", domain.ErrInvalidLifecycle, public.InvalidLifecycle},
+		{"reactivation impossible", domain.ErrReactivationImpossible, public.ReactivationImpossible},
+		{"in use", domain.ErrCatalogInUse, public.InUse},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &fakeCatalogReader{
+				kinds: []domain.CatalogKind{classKind()},
+				deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+					return tt.err
+				},
+			}
+			adapter := newTestAdapter(catalog, nil)
+			_, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v (never claimed reachable from Deactivate in production, but must not silently misclassify if it ever leaked through), got %v", tt.wantCode, err)
+			}
+		})
+	}
+}
+
+func TestCatalogLifecycle_ConfirmRead_ReturnsCompleteRecord(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{Kind: kind, ID: id, Revision: 2, Active: false, Values: map[string]domain.CatalogValue{"code": {Text: "MAT"}}}, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	rec, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Values["code"].Text != "MAT" {
+		t.Fatalf("expected the complete record (Values populated) from the confirm-read, got %+v", rec)
+	}
+}
+
+func TestCatalogLifecycle_ConfirmReadFailure_SurfacesHonestlyUnreclassified(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{}, catalogo.ErrCatalogWriterUnavailable
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if !public.IsCode(err, public.Unavailable) {
+		t.Fatalf("expected the confirm-read's own mapped category (UNAVAILABLE), unreclassified, got %v", err)
+	}
+}
+
+func TestCatalogDeactivate_NoOp_StaleRevision_SilentSuccess(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{Kind: kind, ID: id, Revision: 5, Active: false}, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	rec, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 3})
+	if err != nil {
+		t.Fatalf("expected silent success on a no-op with a stale ExpectedRevision, got %v", err)
+	}
+	if rec.Revision != 5 || rec.Active {
+		t.Fatalf("expected the current persisted record at revision 5, got %+v", rec)
+	}
+}
+
+func TestCatalogReactivate_NoOp_StaleRevision_SilentSuccess(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		reactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{Kind: kind, ID: id, Revision: 5, Active: true}, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	rec, err := adapter.ReactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 3})
+	if err != nil {
+		t.Fatalf("expected silent success on a no-op with a stale ExpectedRevision, got %v", err)
+	}
+	if rec.Revision != 5 || !rec.Active {
+		t.Fatalf("expected the current persisted record at revision 5, got %+v", rec)
+	}
+}
+
+func TestCatalogLifecycle_ActorReachesDiagnosticSeam(t *testing.T) {
+	var capturedCtx context.Context
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		deactivateRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			capturedCtx = ctx
+			return domain.ErrRevisionConflict
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if core.ActorFrom(capturedCtx) != "PI" {
+		t.Fatalf("expected Actor to reach the diagnostic seam via ctx, got %q", core.ActorFrom(capturedCtx))
+	}
+}
+
 func TestWriteBridge_ResourcePort_FakeAdapted(t *testing.T) {
 	resources := &fakeResourceReader{
 		create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
@@ -1321,5 +1598,308 @@ func TestResourceUpdate_NineCategoryTable_ExcludesUnreachable(t *testing.T) {
 				t.Fatalf("expected %v (this operation never constructs it in production, but if it ever leaked through it must not silently misclassify), got %v", tt.wantCode, err)
 			}
 		})
+	}
+}
+
+func TestWriteBridge_ResourceWriter_DeactivateRevisionFakeAdapted(t *testing.T) {
+	resources := &fakeResourceReader{
+		deactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+			return domain.LifecycleResult{Resource: domain.Resource{ID: id, Revision: expectedRevision + 1, Active: false}, Changed: true}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	res, err := adapter.DeactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID != 1 || res.Active {
+		t.Fatalf("unexpected resource: %+v", res)
+	}
+}
+
+func TestWriteBridge_ResourceWriter_ReactivateRevisionFakeAdapted(t *testing.T) {
+	resources := &fakeResourceReader{
+		reactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+			return domain.LifecycleResult{Resource: domain.Resource{ID: id, Revision: expectedRevision + 1, Active: true}, Changed: true}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	res, err := adapter.ReactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID != 1 || !res.Active {
+		t.Fatalf("unexpected resource: %+v", res)
+	}
+}
+
+func TestResourceLifecycle_FieldCompleteness_IDAndExpectedRevision(t *testing.T) {
+	var capturedID int64
+	var capturedExpected uint64
+	resources := &fakeResourceReader{
+		deactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+			capturedID, capturedExpected = id, expectedRevision
+			return domain.LifecycleResult{Resource: domain.Resource{ID: id, Revision: expectedRevision + 1}}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	_, err := adapter.DeactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 99, ExpectedRevision: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedID != 99 {
+		t.Fatalf("ID not mapped: got %d", capturedID)
+	}
+	if capturedExpected != 3 {
+		t.Fatalf("ExpectedRevision not mapped: got %d", capturedExpected)
+	}
+}
+
+func TestResourceLifecycle_NoConfirmRead_CallCountAssertion(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"success", nil},
+		{"not found", domain.ErrResourceNotFound},
+		{"conflict", domain.ErrResourceRevisionConflict},
+	}
+	for _, tt := range tests {
+		t.Run("deactivate/"+tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				deactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+					if tt.err != nil {
+						return domain.LifecycleResult{}, tt.err
+					}
+					return domain.LifecycleResult{Resource: domain.Resource{ID: id, Revision: expectedRevision + 1}}, nil
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, _ = adapter.DeactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+			if resources.deactivateCalls != 1 {
+				t.Fatalf("expected DeactivateRevision to be called exactly once, got %d", resources.deactivateCalls)
+			}
+			if resources.getCalls != 0 {
+				t.Fatalf("expected Adapter.DeactivateResource to perform no confirm-read (Get) call, got %d calls", resources.getCalls)
+			}
+		})
+		t.Run("reactivate/"+tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				reactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+					if tt.err != nil {
+						return domain.LifecycleResult{}, tt.err
+					}
+					return domain.LifecycleResult{Resource: domain.Resource{ID: id, Revision: expectedRevision + 1}}, nil
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, _ = adapter.ReactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+			if resources.reactivateCalls != 1 {
+				t.Fatalf("expected ReactivateRevision to be called exactly once, got %d", resources.reactivateCalls)
+			}
+			if resources.getCalls != 0 {
+				t.Fatalf("expected Adapter.ReactivateResource to perform no confirm-read (Get) call, got %d calls", resources.getCalls)
+			}
+		})
+	}
+}
+
+func TestResourceDeactivate_FiveCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"XX000", "", "", "", "unclassified driver failure"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrResourceNotFound, public.NotFound},
+		{"conflict", domain.ErrResourceRevisionConflict, public.Conflict},
+		{"unavailable", core.ErrUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+	}
+	seen := map[public.ErrorCode]struct{}{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				deactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+					return domain.LifecycleResult{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, err := adapter.DeactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v, got %v", tt.wantCode, err)
+			}
+			var publicErr public.Error
+			if !errors.As(err, &publicErr) {
+				t.Fatalf("expected public.Error, got %T", err)
+			}
+			if errors.Unwrap(publicErr) != nil {
+				t.Fatalf("public error must not unwrap")
+			}
+			for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+				if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+					t.Fatalf("leaked technical detail %q in %v", leak, err)
+				}
+			}
+			seen[tt.wantCode] = struct{}{}
+		})
+	}
+	if len(seen) != 5 {
+		t.Fatalf("expected exactly 5 distinct resource Deactivate categories, got %d: %+v", len(seen), seen)
+	}
+}
+
+func TestResourceDeactivate_NeverReturnsIdentityConflict(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"identity conflict", domain.ErrIdentityConflict, public.IdentityConflict},
+		{"reactivation impossible", domain.ErrReactivationImpossible, public.ReactivationImpossible},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				deactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+					return domain.LifecycleResult{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, err := adapter.DeactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v (never claimed reachable from DeactivateResource in production, but must not silently misclassify if it ever leaked through), got %v", tt.wantCode, err)
+			}
+		})
+	}
+}
+
+func TestResourceReactivate_SevenCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"XX000", "", "", "", "unclassified driver failure"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrResourceNotFound, public.NotFound},
+		{"identity conflict", domain.ErrIdentityConflict, public.IdentityConflict},
+		{"reactivation impossible", domain.WrapReactivationImpossible(domain.ErrResourceReference), public.ReactivationImpossible},
+		{"conflict", domain.ErrResourceRevisionConflict, public.Conflict},
+		{"unavailable", core.ErrUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+	}
+	seen := map[public.ErrorCode]struct{}{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				reactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+					return domain.LifecycleResult{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, err := adapter.ReactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v, got %v", tt.wantCode, err)
+			}
+			var publicErr public.Error
+			if !errors.As(err, &publicErr) {
+				t.Fatalf("expected public.Error, got %T", err)
+			}
+			if errors.Unwrap(publicErr) != nil {
+				t.Fatalf("public error must not unwrap")
+			}
+			for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+				if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+					t.Fatalf("leaked technical detail %q in %v", leak, err)
+				}
+			}
+			seen[tt.wantCode] = struct{}{}
+		})
+	}
+	if len(seen) != 7 {
+		t.Fatalf("expected exactly 7 distinct resource Reactivate categories, got %d: %+v", len(seen), seen)
+	}
+}
+
+// TestResourceReactivate_IdentityConflictAndReactivationImpossible_FirstReachable
+// proves ReactivateResource is the first graduated operation to reach
+// IDENTITY_CONFLICT and REACTIVATION_IMPOSSIBLE. Neither category has a
+// production call site in CreateCatalog, CreateResource, UpdateCatalog,
+// UpdateResource, DeactivateCatalog, ReactivateCatalog, or
+// DeactivateResource — confirmed by their own reachability tables in this
+// file, none of which include either category.
+func TestResourceReactivate_IdentityConflictAndReactivationImpossible_FirstReachable(t *testing.T) {
+	t.Run("identity_conflict_via_integrity_reclassification", func(t *testing.T) {
+		resources := &fakeResourceReader{
+			reactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+				return domain.LifecycleResult{}, domain.ErrIdentityConflict
+			},
+		}
+		adapter := newTestAdapter(nil, resources)
+		_, err := adapter.ReactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+		if !public.IsCode(err, public.IdentityConflict) {
+			t.Fatalf("expected IDENTITY_CONFLICT, got %v", err)
+		}
+	})
+	t.Run("reactivation_impossible_via_reference_reclassification", func(t *testing.T) {
+		resources := &fakeResourceReader{
+			reactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+				return domain.LifecycleResult{}, domain.WrapReactivationImpossible(domain.ErrResourceReference)
+			},
+		}
+		adapter := newTestAdapter(nil, resources)
+		_, err := adapter.ReactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+		if !public.IsCode(err, public.ReactivationImpossible) {
+			t.Fatalf("expected REACTIVATION_IMPOSSIBLE, got %v", err)
+		}
+	})
+}
+
+func TestResourceReactivate_NoOp_StaleRevision_SilentSuccess(t *testing.T) {
+	resources := &fakeResourceReader{
+		reactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+			return domain.LifecycleResult{Resource: domain.Resource{ID: id, Revision: 5, Active: true}, Changed: false}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	res, err := adapter.ReactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 3})
+	if err != nil {
+		t.Fatalf("expected silent success on a no-op with a stale ExpectedRevision, got %v", err)
+	}
+	if res.Revision != 5 || !res.Active {
+		t.Fatalf("expected the current persisted resource at revision 5, got %+v", res)
+	}
+}
+
+func TestResourceDeactivate_SameCallShape_StaleRevision_Conflict(t *testing.T) {
+	resources := &fakeResourceReader{
+		deactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+			return domain.LifecycleResult{}, domain.ErrResourceRevisionConflict
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	_, err := adapter.DeactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 3})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("expected CONFLICT (no app-level no-op short-circuit for Deactivate — CAS enforced strictly even when already inactive), got %v", err)
+	}
+}
+
+func TestResourceLifecycle_ActorReachesDiagnosticSeam(t *testing.T) {
+	var capturedCtx context.Context
+	resources := &fakeResourceReader{
+		deactivateRevision: func(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+			capturedCtx = ctx
+			return domain.LifecycleResult{}, domain.ErrResourceRevisionConflict
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	_, err := adapter.DeactivateResource(context.Background(), public.ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if core.ActorFrom(capturedCtx) != "PI" {
+		t.Fatalf("expected Actor to reach the diagnostic seam via ctx, got %q", core.ActorFrom(capturedCtx))
 	}
 }
