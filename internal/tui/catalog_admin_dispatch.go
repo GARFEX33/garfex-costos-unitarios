@@ -361,9 +361,9 @@ func (a *CatalogAdminAdapter) answerSetActive(ctx context.Context, active bool) 
 	var err error
 	if active {
 		verb = "reactivar"
-		err = a.reactivator.Reactivate(ctx, a.activeKind, a.activeRecord.ID)
+		err = a.reactivator.ReactivateRevision(ctx, a.activeKind, a.activeRecord.ID, a.activeRecord.Revision)
 	} else {
-		err = a.deactivator.Deactivate(ctx, a.activeKind, a.activeRecord.ID)
+		err = a.deactivator.DeactivateRevision(ctx, a.activeKind, a.activeRecord.ID, a.activeRecord.Revision)
 	}
 	if err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
@@ -448,7 +448,7 @@ func (a *CatalogAdminAdapter) answerDeleteConfirmation(ctx context.Context, valu
 	}
 	def, _ := a.registry.Kind(a.activeKind)
 	title := catalogRecordDisplayLabel(def, a.activeRecord)
-	if err := a.deleter.Delete(ctx, a.activeKind, a.activeRecord.ID); err != nil {
+	if err := a.deleter.HardDeleteRevision(ctx, a.activeKind, a.activeRecord.ID, a.activeRecord.Revision); err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
 			ErrorMessage{Text: catalogLifecycleErrorMessage(def, "eliminar", err)},
 		}}, nil

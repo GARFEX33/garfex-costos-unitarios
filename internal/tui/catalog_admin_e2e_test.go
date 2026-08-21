@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -69,7 +70,13 @@ func TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow(t *te
 	boot, err := postgres.LoadResourceCatalog(ctx, pool)
 	must("LoadResourceCatalog (boot snapshot for catalogo.Service)", err)
 
-	svc := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), domain.NewCatalogRegistry(), boot)
+	// 4D composition switch: wire the additive, revision-aware
+	// domain.CatalogAdminRepositoryV2 alongside the legacy repository, the
+	// same real (not fake) production wiring cmd/garfex/main.go's
+	// newCatalogService now uses, so svc.Create below is authoritative
+	// through the committed-coherent-result V2 writer.
+	svc := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), domain.NewCatalogRegistry(), boot).
+		WithCatalogAdminRepositoryV2(postgres.NewCatalogAdminRepositoryV2(pool))
 
 	const (
 		classCode      = "TEST_E2E_SERVICIO"
@@ -338,7 +345,13 @@ func TestCatalogAdminE2EInactiveTypeReactivatedAfterRestartAllowsActiveOnlyCreat
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), domain.NewCatalogRegistry(), boot)
+	// 4D composition switch: wire the additive, revision-aware
+	// domain.CatalogAdminRepositoryV2 alongside the legacy repository, the
+	// same real (not fake) production wiring cmd/garfex/main.go's
+	// newCatalogService now uses, so svc.Create below is authoritative
+	// through the committed-coherent-result V2 writer.
+	svc := catalogo.NewService(postgres.NewCatalogAdminRepository(pool), domain.NewCatalogRegistry(), boot).
+		WithCatalogAdminRepositoryV2(postgres.NewCatalogAdminRepositoryV2(pool))
 	typeRec, err := svc.Create(ctx, domain.KindType, domain.CatalogRecord{Active: true, Values: map[string]domain.CatalogValue{
 		"class":  {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: "MATERIAL"}},
 		"family": {Ref: domain.CatalogRef{Kind: domain.KindFamily, Code: "CANALIZACIONES"}},
@@ -393,6 +406,101 @@ func TestCatalogAdminE2EInactiveTypeReactivatedAfterRestartAllowsActiveOnlyCreat
 			t.Errorf("cleanup resource: %v", err)
 		}
 	})
+}
+
+// TestCatalogAdminE2ECreateViaComposedV2AuthorityPublishesOnlyOnCommittedSuccess
+// proves 4D's composition switch through the REAL PostgreSQL-backed
+// domain.CatalogAdminRepositoryV2 — not a fake like session_coherence_test.go's
+// 4C proofs: a repository-level duplicate-code failure that in-memory
+// candidate validation cannot see (the conflicting row is seeded directly via
+// SQL, bypassing svc's own snapshot) still reaches Create() through the
+// composed V2 authority, leaves the published authority and an independent
+// LoadResourceCatalog reload unchanged, and a later genuinely valid Create
+// through the SAME composed service commits and publishes exactly once,
+// matching an independent reload.
+func TestCatalogAdminE2ECreateViaComposedV2AuthorityPublishesOnlyOnCommittedSuccess(t *testing.T) {
+	dsn := os.Getenv("GARFEX_TEST_DSN")
+	if dsn == "" {
+		t.Skip("GARFEX_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	boot, err := postgres.LoadResourceCatalog(ctx, pool)
+	if err != nil {
+		t.Fatalf("LoadResourceCatalog (boot): %v", err)
+	}
+	authority := domain.NewCatalogAuthority(boot)
+	svc := catalogo.NewServiceWithCatalogAuthority(postgres.NewCatalogAdminRepository(pool), domain.NewCatalogRegistry(), authority).
+		WithCatalogAdminRepositoryV2(postgres.NewCatalogAdminRepositoryV2(pool))
+	if !svc.CatalogAdminRepositoryV2Configured() {
+		t.Fatal("composed service must wire the V2 write authority")
+	}
+
+	const conflictCode = "TEST_E2E_V2_CONFLICT"
+	var seededID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO public.resource_classes (code, name, plural, slug, display_order, aliases, keywords, active) VALUES ($1,'Seed','Seeds','seed',99,'{}','{}',true) RETURNING id`, conflictCode).Scan(&seededID); err != nil {
+		t.Fatalf("seed conflicting class: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(ctx, `DELETE FROM public.resource_classes WHERE id=$1`, seededID); err != nil {
+			t.Errorf("cleanup seeded class: %v", err)
+		}
+	})
+
+	_, createErr := svc.Create(ctx, domain.KindClass, domain.CatalogRecord{Active: true, Values: map[string]domain.CatalogValue{
+		"code": {Text: conflictCode}, "name": {Text: "Conflict"}, "plural": {Text: "Conflicts"}, "slug": {Text: "conflict"},
+		"order": {Int: 1}, "aliases": {List: []string{}}, "keywords": {List: []string{}},
+	}})
+	if !errors.Is(createErr, domain.ErrCatalogDuplicate) {
+		t.Fatalf("Create() with a repository-level duplicate = %v, want domain.ErrCatalogDuplicate (the REAL repoV2 rejecting it)", createErr)
+	}
+	if _, version := authority.Current(); version != 1 {
+		t.Fatalf("authority version after rejected create = %d, want 1 (nothing published on a repository failure)", version)
+	}
+	reloaded, err := postgres.LoadResourceCatalog(ctx, pool)
+	if err != nil {
+		t.Fatalf("LoadResourceCatalog (after rejected create): %v", err)
+	}
+	count := 0
+	for _, c := range reloaded.Classes {
+		if c.Code == conflictCode {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("classes with code %q after rejected create = %d, want 1 (the seeded row only)", conflictCode, count)
+	}
+
+	classRec, err := svc.Create(ctx, domain.KindClass, domain.CatalogRecord{Active: true, Values: map[string]domain.CatalogValue{
+		"code": {Text: "TEST_E2E_V2_SUCCESS"}, "name": {Text: "Success"}, "plural": {Text: "Successes"}, "slug": {Text: "success"},
+		"order": {Int: 1}, "aliases": {List: []string{}}, "keywords": {List: []string{}},
+	}})
+	if err != nil {
+		t.Fatalf("Create() after the rejected duplicate: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Delete(ctx, domain.KindClass, classRec.ID) })
+	if _, version := authority.Current(); version != 2 {
+		t.Fatalf("authority version after committed create = %d, want 2 (published exactly once)", version)
+	}
+	afterSuccess, err := postgres.LoadResourceCatalog(ctx, pool)
+	if err != nil {
+		t.Fatalf("LoadResourceCatalog (after committed create): %v", err)
+	}
+	published, _ := authority.Current()
+	// The design's own oracle comparison is representational equivalence
+	// (nil/empty collections, default option-set spelling), never raw
+	// reflect.DeepEqual (design "Catalog transaction and coherent
+	// publication"; TestCatalogAdminE2EAdminAuthoredStructureDrivesRealResourceCreateFlow's
+	// own two-reload comparison above compares two LoadResourceCatalog
+	// results to each other, so it never exercises this distinction).
+	if !domain.EquivalentResourceCatalogs(published, afterSuccess) {
+		t.Fatalf("published authority after committed create is not equivalent to an independent reload:\npublished=%#v\nreload=%#v", published, afterSuccess)
+	}
 }
 
 func resourceTypesContain(types []domain.ResourceType, code string) bool {

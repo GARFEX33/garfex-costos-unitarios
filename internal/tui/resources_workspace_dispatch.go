@@ -293,11 +293,14 @@ func (a *ResourcesWorkspaceAdapter) answerLifecycleConfirmation(ctx context.Cont
 	}
 	reactivate := a.lifecycleTarget
 	verb := "desactivar"
-	transition := a.lifecycle.Deactivate
+	var result domain.LifecycleResult
+	var err error
 	if reactivate {
-		verb, transition = "reactivar", a.lifecycle.Reactivate
+		verb = "reactivar"
+		result, err = a.lifecycle.ReactivateRevision(ctx, a.lastDetail.ID, a.lastDetail.Revision)
+	} else {
+		result, err = a.lifecycle.DeactivateRevision(ctx, a.lastDetail.ID, a.lastDetail.Revision)
 	}
-	result, err := transition(ctx, a.lastDetail.ID)
 	if err != nil {
 		return InteractionResponse{Messages: []InteractionMessage{
 			ErrorMessage{Text: "No pude " + verb + " el recurso. Probá de nuevo en un momento."},

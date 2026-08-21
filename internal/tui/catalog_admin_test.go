@@ -63,14 +63,16 @@ func (f *fakeCatalogCreator) Create(_ context.Context, kind domain.CatalogKindCo
 }
 
 type fakeCatalogUpdater struct {
-	calls []domain.CatalogRecord
-	kinds []domain.CatalogKindCode
-	err   error
+	calls     []domain.CatalogRecord
+	kinds     []domain.CatalogKindCode
+	revisions []uint64
+	err       error
 }
 
-func (f *fakeCatalogUpdater) Update(_ context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+func (f *fakeCatalogUpdater) UpdateRevision(_ context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error) {
 	f.calls = append(f.calls, rec)
 	f.kinds = append(f.kinds, kind)
+	f.revisions = append(f.revisions, expectedRevision)
 	if f.err != nil {
 		return domain.CatalogRecord{}, f.err
 	}
@@ -108,32 +110,38 @@ func (f *fakeCatalogReferenceChecker) ReferencedByResources(_ context.Context, _
 // lifecycle-action tests (task 7.1) — succeed by default, recording every
 // call's id.
 type fakeCatalogDeactivator struct {
-	calls []int64
-	err   error
+	calls     []int64
+	revisions []uint64
+	err       error
 }
 
-func (f *fakeCatalogDeactivator) Deactivate(_ context.Context, _ domain.CatalogKindCode, id int64) error {
+func (f *fakeCatalogDeactivator) DeactivateRevision(_ context.Context, _ domain.CatalogKindCode, id int64, expectedRevision uint64) error {
 	f.calls = append(f.calls, id)
+	f.revisions = append(f.revisions, expectedRevision)
 	return f.err
 }
 
 type fakeCatalogReactivator struct {
-	calls []int64
-	err   error
+	calls     []int64
+	revisions []uint64
+	err       error
 }
 
-func (f *fakeCatalogReactivator) Reactivate(_ context.Context, _ domain.CatalogKindCode, id int64) error {
+func (f *fakeCatalogReactivator) ReactivateRevision(_ context.Context, _ domain.CatalogKindCode, id int64, expectedRevision uint64) error {
 	f.calls = append(f.calls, id)
+	f.revisions = append(f.revisions, expectedRevision)
 	return f.err
 }
 
 type fakeCatalogDeleter struct {
-	calls []int64
-	err   error
+	calls     []int64
+	revisions []uint64
+	err       error
 }
 
-func (f *fakeCatalogDeleter) Delete(_ context.Context, _ domain.CatalogKindCode, id int64) error {
+func (f *fakeCatalogDeleter) HardDeleteRevision(_ context.Context, _ domain.CatalogKindCode, id int64, expectedRevision uint64) error {
 	f.calls = append(f.calls, id)
+	f.revisions = append(f.revisions, expectedRevision)
 	return f.err
 }
 
@@ -726,7 +734,9 @@ func TestCatalogAdminDeleteAllowedWhenNoDependentsAsksConfirmation(t *testing.T)
 // TestCatalogAdminDeleteConfirmedCallsDeleter proves confirming a real
 // delete calls the deleter with the record's kind+ID.
 func TestCatalogAdminDeleteConfirmedCallsDeleter(t *testing.T) {
-	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	rec := classRecord(1, "MATERIAL", "Materiales")
+	rec.Revision = 6
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: rec}}
 	deleter := &fakeCatalogDeleter{}
 	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
 		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, &fakeCatalogDeactivator{}, &fakeCatalogReactivator{}, deleter,
@@ -745,6 +755,9 @@ func TestCatalogAdminDeleteConfirmedCallsDeleter(t *testing.T) {
 	if len(deleter.calls) != 1 || deleter.calls[0] != 1 {
 		t.Fatalf("deleter.calls = %v, want [1]", deleter.calls)
 	}
+	if len(deleter.revisions) != 1 || deleter.revisions[0] != 6 {
+		t.Fatalf("deleter.revisions = %v, want [6] (HardDeleteRevision's captured CAS revision)", deleter.revisions)
+	}
 	if _, ok := response.Messages[0].(TextMessage); !ok {
 		t.Fatalf("Messages[0] = %T, want a confirmation TextMessage", response.Messages[0])
 	}
@@ -753,7 +766,9 @@ func TestCatalogAdminDeleteConfirmedCallsDeleter(t *testing.T) {
 // TestCatalogAdminDeactivateCallsDeactivator proves the Desactivar action
 // calls the deactivator and refreshes the detail view.
 func TestCatalogAdminDeactivateCallsDeactivator(t *testing.T) {
-	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	rec := classRecord(1, "MATERIAL", "Materiales")
+	rec.Revision = 2
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: rec}}
 	deactivator := &fakeCatalogDeactivator{}
 	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
 		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, deactivator, &fakeCatalogReactivator{}, &fakeCatalogDeleter{},
@@ -768,6 +783,9 @@ func TestCatalogAdminDeactivateCallsDeactivator(t *testing.T) {
 	}
 	if len(deactivator.calls) != 1 || deactivator.calls[0] != 1 {
 		t.Fatalf("deactivator.calls = %v, want [1]", deactivator.calls)
+	}
+	if len(deactivator.revisions) != 1 || deactivator.revisions[0] != 2 {
+		t.Fatalf("deactivator.revisions = %v, want [2] (DeactivateRevision's captured CAS revision)", deactivator.revisions)
 	}
 	if adapter.activeRecord.Active {
 		t.Fatal("adapter.activeRecord.Active = true, want false after Desactivar")
@@ -792,6 +810,7 @@ func TestCatalogAdminDeactivateCallsDeactivator(t *testing.T) {
 func TestCatalogAdminReactivateCallsReactivator(t *testing.T) {
 	rec := classRecord(1, "MATERIAL", "Materiales")
 	rec.Active = false
+	rec.Revision = 8
 	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: rec}}
 	reactivator := &fakeCatalogReactivator{}
 	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
@@ -807,17 +826,56 @@ func TestCatalogAdminReactivateCallsReactivator(t *testing.T) {
 	if len(reactivator.calls) != 1 || reactivator.calls[0] != 1 {
 		t.Fatalf("reactivator.calls = %v, want [1]", reactivator.calls)
 	}
+	if len(reactivator.revisions) != 1 || reactivator.revisions[0] != 8 {
+		t.Fatalf("reactivator.revisions = %v, want [8] (ReactivateRevision's captured CAS revision)", reactivator.revisions)
+	}
 	if !adapter.activeRecord.Active {
 		t.Fatal("adapter.activeRecord.Active = false, want true after Reactivar")
 	}
 }
 
-// TestCatalogAdminDeactivateNotOfferedForNonSoftDeleteKind proves the
-// action menu never offers Desactivar/Reactivar for a kind whose
-// CatalogKind.SoftDelete is false (e.g. Aplicabilidad) — Service.Deactivate
-// would just fail with ErrSoftDeleteUnsupported for those, so the UI never
-// exposes an action guaranteed to fail (Generic Descriptor-Driven Engine).
-func TestCatalogAdminDeactivateNotOfferedForNonSoftDeleteKind(t *testing.T) {
+// TestCatalogAdminDeactivateRevisionConflictPreservesStateAndHidesRawError is
+// 4G's TRIANGULATE case for a stale/rejected CAS revision at the TUI wiring
+// level: the exact captured a.activeRecord.Revision (here 0, an unset/stale
+// value) is threaded through to DeactivateRevision unchanged — proving 4G
+// never coerces a zero/stale revision — and a repository-side rejection
+// (standing in for a stale-CAS conflict; its exact classification is
+// Service.DeactivateRevision's own concern, already proven in
+// internal/app/catalogo/service_test.go) never leaks raw error text nor
+// flips activeRecord.Active.
+func TestCatalogAdminDeactivateRevisionConflictPreservesStateAndHidesRawError(t *testing.T) {
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: classRecord(1, "MATERIAL", "Materiales")}}
+	deactivator := &fakeCatalogDeactivator{err: errors.New("catalog revision conflict: expected 0 got 3")}
+	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, deactivator, &fakeCatalogReactivator{}, &fakeCatalogDeleter{},
+		domain.NewCatalogRegistry())
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	response, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordDeactivateActionID})
+	if err != nil {
+		t.Fatalf("Respond(deactivate) error = %v", err)
+	}
+	if len(deactivator.revisions) != 1 || deactivator.revisions[0] != 0 {
+		t.Fatalf("deactivator.revisions = %v, want [0] (the captured, unset revision passed through as-is)", deactivator.revisions)
+	}
+	message, ok := response.Messages[0].(ErrorMessage)
+	if !ok {
+		t.Fatalf("Messages[0] = %T, want ErrorMessage", response.Messages[0])
+	}
+	if containsAll(message.Text, "revision conflict") {
+		t.Fatalf("message = %q, must not leak the raw error", message.Text)
+	}
+	if !adapter.activeRecord.Active {
+		t.Fatal("activeRecord.Active = false, want it to stay true after a failed Desactivar")
+	}
+}
+
+// TestCatalogAdminDeactivateOfferedForApplicability proves the all-11
+// lifecycle registry exposes deactivation for an active Aplicabilidad record,
+// while the action menu does not offer reactivation until the record is inactive.
+func TestCatalogAdminDeactivateOfferedForApplicability(t *testing.T) {
 	rec := attributeBindingRecord(1, "MATERIAL", "CONDUCTORES", "CABLE", "COLOR", false)
 	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: rec}}
 	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
@@ -826,10 +884,20 @@ func TestCatalogAdminDeactivateNotOfferedForNonSoftDeleteKind(t *testing.T) {
 		t.Fatalf("openRecordDetail() error = %v", err)
 	}
 	actions := adapter.recordDetailResponse().Pending.(ActionRequest)
+	var gotDeactivate, gotReactivate bool
 	for _, action := range actions.Actions {
-		if action.ID == catalogRecordDeactivateActionID || action.ID == catalogRecordReactivateActionID {
-			t.Fatalf("actions = %#v, must not offer Desactivar/Reactivar for a non-SoftDelete kind", actions.Actions)
+		switch action.ID {
+		case catalogRecordDeactivateActionID:
+			gotDeactivate = true
+		case catalogRecordReactivateActionID:
+			gotReactivate = true
 		}
+	}
+	if !gotDeactivate {
+		t.Fatalf("actions = %#v, want Desactivar for active Aplicabilidad", actions.Actions)
+	}
+	if gotReactivate {
+		t.Fatalf("actions = %#v, must not offer Reactivar for active Aplicabilidad", actions.Actions)
 	}
 }
 
@@ -1240,5 +1308,126 @@ func TestCatalogAdminIdentityLeafOpensAttributeBindingKind(t *testing.T) {
 	}
 	if adapter.activeKind != domain.KindAttributeBinding {
 		t.Fatalf("adapter.activeKind = %q, want KindAttributeBinding", adapter.activeKind)
+	}
+}
+
+// --- 4F: TUI revision state compatibility — catalogEditorState captures and
+// carries domain.CatalogRecord.Revision through create/edit; no *Revision
+// service method is called (that's 4G's job).
+
+// TestCatalogAdminEditFlowCapturesRevisionFromLoadedRecord proves opening an
+// existing record for edit captures its Revision into the editor state.
+func TestCatalogAdminEditFlowCapturesRevisionFromLoadedRecord(t *testing.T) {
+	rec := classRecord(7, "MATERIAL", "Materiales")
+	rec.Revision = 5
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{7: rec}}
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	if _, err := adapter.openRecordForEdit(context.Background(), domain.KindClass, "7"); err != nil {
+		t.Fatalf("openRecordForEdit() error = %v", err)
+	}
+	if adapter.editor.revision != 5 {
+		t.Fatalf("adapter.editor.revision = %d, want 5 (captured from the loaded record)", adapter.editor.revision)
+	}
+}
+
+// TestCatalogAdminCreateFlowLeavesRevisionZero: a brand-new record has no
+// meaningful prior revision, so catalogEditorCreate leaves it at zero.
+func TestCatalogAdminCreateFlowLeavesRevisionZero(t *testing.T) {
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, &fakeCatalogGetter{}, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	if _, err := adapter.startCreateFlow(context.Background(), domain.KindClass); err != nil {
+		t.Fatalf("startCreateFlow() error = %v", err)
+	}
+	if adapter.editor.revision != 0 {
+		t.Fatalf("adapter.editor.revision = %d, want 0 for a brand-new record", adapter.editor.revision)
+	}
+}
+
+// TestCatalogAdminUpdateCallsUpdaterWithCapturedRevision proves finishing an
+// edit flow threads the captured revision onto the outgoing CatalogRecord —
+// service call signature/behavior unchanged, value just not dropped.
+func TestCatalogAdminUpdateCallsUpdaterWithCapturedRevision(t *testing.T) {
+	rec := classRecord(7, "MATERIAL", "Materiales")
+	rec.Revision = 5
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{7: rec}}
+	updater := &fakeCatalogUpdater{}
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, updater)
+	ctx := context.Background()
+	if _, err := adapter.openRecordForEdit(ctx, domain.KindClass, "7"); err != nil {
+		t.Fatalf("openRecordForEdit() error = %v", err)
+	}
+	for _, answer := range []string{"MATERIAL", "Materiales", "Materiales", "materiales", "", "", ""} {
+		if _, err := adapter.answerField(ctx, answer); err != nil {
+			t.Fatalf("answerField(%q) error = %v", answer, err)
+		}
+	}
+	if len(updater.calls) != 1 {
+		t.Fatalf("updater.calls = %d, want 1", len(updater.calls))
+	}
+	if updater.calls[0].Revision != 5 {
+		t.Fatalf("updater.calls[0].Revision = %d, want 5 (captured from the loaded record)", updater.calls[0].Revision)
+	}
+	if len(updater.revisions) != 1 || updater.revisions[0] != 5 {
+		t.Fatalf("updater.revisions = %v, want [5] (UpdateRevision's expectedRevision, not just the record field)", updater.revisions)
+	}
+}
+
+// TestCatalogAdminEditingTwoRecordsDoesNotLeakRevisionBetweenThem proves
+// switching records starts a genuinely fresh editor state (no stale revision).
+func TestCatalogAdminEditingTwoRecordsDoesNotLeakRevisionBetweenThem(t *testing.T) {
+	recA := classRecord(1, "MATERIAL", "Materiales")
+	recA.Revision = 3
+	recB := classRecord(2, "MANO_OBRA", "Mano de obra")
+	recB.Revision = 9
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: recA, 2: recB}}
+	adapter := newCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{})
+	ctx := context.Background()
+	if _, err := adapter.openRecordForEdit(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordForEdit(1) error = %v", err)
+	}
+	if adapter.editor.revision != 3 {
+		t.Fatalf("adapter.editor.revision = %d, want 3 for record 1", adapter.editor.revision)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputCancel}); err != nil {
+		t.Fatalf("Respond(cancel) error = %v", err)
+	}
+	if adapter.editor != nil {
+		t.Fatal("adapter.editor != nil after cancel, want nil")
+	}
+	if _, err := adapter.openRecordForEdit(ctx, domain.KindClass, "2"); err != nil {
+		t.Fatalf("openRecordForEdit(2) error = %v", err)
+	}
+	if adapter.editor.revision != 9 {
+		t.Fatalf("adapter.editor.revision = %d, want 9 for record 2 (no leak from record 1's revision 3)", adapter.editor.revision)
+	}
+}
+
+// TestCatalogAdminActiveRecordRevisionSurvivesDeactivateReactivate proves
+// a.activeRecord (already domain.CatalogRecord-typed, carrying Revision since
+// 3C) keeps the correct Revision through Desactivar/Reactivar transitions.
+func TestCatalogAdminActiveRecordRevisionSurvivesDeactivateReactivate(t *testing.T) {
+	rec := classRecord(1, "MATERIAL", "Materiales")
+	rec.Revision = 4
+	getter := &fakeCatalogGetter{records: map[int64]domain.CatalogRecord{1: rec}}
+	adapter := NewCatalogAdminAdapter(&fakeCatalogLister{}, getter, &fakeCatalogCreator{}, &fakeCatalogUpdater{},
+		&fakeCatalogDependencyChecker{}, &fakeCatalogReferenceChecker{}, &fakeCatalogDeactivator{}, &fakeCatalogReactivator{}, &fakeCatalogDeleter{},
+		domain.NewCatalogRegistry())
+	ctx := context.Background()
+	if _, err := adapter.openRecordDetail(ctx, domain.KindClass, "1"); err != nil {
+		t.Fatalf("openRecordDetail() error = %v", err)
+	}
+	if adapter.activeRecord.Revision != 4 {
+		t.Fatalf("adapter.activeRecord.Revision = %d, want 4 right after opening detail", adapter.activeRecord.Revision)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordDeactivateActionID}); err != nil {
+		t.Fatalf("Respond(deactivate) error = %v", err)
+	}
+	if adapter.activeRecord.Revision != 4 {
+		t.Fatalf("adapter.activeRecord.Revision = %d after Desactivar, want it to stay 4", adapter.activeRecord.Revision)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: catalogRecordReactivateActionID}); err != nil {
+		t.Fatalf("Respond(reactivate) error = %v", err)
+	}
+	if adapter.activeRecord.Revision != 4 {
+		t.Fatalf("adapter.activeRecord.Revision = %d after Reactivar, want it to stay 4", adapter.activeRecord.Revision)
 	}
 }

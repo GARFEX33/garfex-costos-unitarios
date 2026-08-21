@@ -120,7 +120,7 @@ func (s *catalogRefreshStore) List(context.Context, domain.CatalogKindCode, doma
 func (s *catalogRefreshStore) Get(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) {
 	return s.read(), nil
 }
-func (s *catalogRefreshStore) Update(_ context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+func (s *catalogRefreshStore) UpdateRevision(_ context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, _ uint64) (domain.CatalogRecord, error) {
 	rec.Kind, s.record = kind, rec
 	return rec, nil
 }

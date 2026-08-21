@@ -64,11 +64,13 @@ func (f *fakeResourceCreator) Create(_ context.Context, command domain.CreateCom
 type fakeResourceUpdater struct {
 	callCount   int
 	gotResource domain.Resource
+	gotRevision uint64
 	err         error
 }
 
-func (f *fakeResourceUpdater) Update(_ context.Context, command domain.UpdateCommand) (domain.Resource, error) {
+func (f *fakeResourceUpdater) UpdateRevision(_ context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
 	f.callCount++
+	f.gotRevision = expectedRevision
 	resource, err := domain.NewResource(domain.SeedResourceCatalog(), command.Scope, command.NaturalUnit, command.Attributes)
 	if err != nil {
 		if command.Scope.ClassCode == "MATERIAL" {
@@ -545,6 +547,7 @@ func TestResourceEditorEditFullHappyPathReproducesSameResource(t *testing.T) {
 		t.Fatalf("NewResource(existing) error = %v, want nil", err)
 	}
 	existing.ID = 42
+	existing.Revision = 5
 
 	creator := &fakeResourceCreator{}
 	updater := &fakeResourceUpdater{}
@@ -582,6 +585,9 @@ func TestResourceEditorEditFullHappyPathReproducesSameResource(t *testing.T) {
 	}
 	if updater.gotResource.ID != 42 {
 		t.Fatalf("gotResource.ID = %d, want 42 (the original Resource.ID)", updater.gotResource.ID)
+	}
+	if updater.gotRevision != 5 {
+		t.Fatalf("gotRevision = %d, want 5 (UpdateRevision's expectedRevision, captured from startEditEditor's load)", updater.gotRevision)
 	}
 	if updater.gotResource.IdentityKey != existing.IdentityKey {
 		t.Fatalf("gotResource.IdentityKey = %q, want %q (an unchanged answer reproduces the same identity)", updater.gotResource.IdentityKey, existing.IdentityKey)
@@ -1054,5 +1060,46 @@ func TestResourceEditorFinishEditorSurfacesTheSpecificValidationReason(t *testin
 	}
 	if !strings.Contains(message.Text, "diameter_inch") || !strings.Contains(message.Text, "diameter_mm") {
 		t.Fatalf("Text = %q, want it to name the actual conflicting attributes", message.Text)
+	}
+}
+
+// --- 4F: TUI revision state compatibility (resource side) — resource_editor.go's
+// own load site is out of this slice's edit surface (4G wires population
+// there), so these are direct white-box state-construction tests, not
+// through openEditFor/startEditEditor.
+
+// TestResourceEditorStatePersistenceRevisionReturnsCapturedValue proves
+// persistenceRevision reads back whatever originalRevision an edit carries.
+func TestResourceEditorStatePersistenceRevisionReturnsCapturedValue(t *testing.T) {
+	state := &resourceEditorState{mode: editorModeEdit, originalID: 7, originalRevision: 5}
+	if got := state.persistenceRevision(); got != 5 {
+		t.Fatalf("persistenceRevision() = %d, want 5", got)
+	}
+}
+
+// TestResourceEditorStateCreateAndDuplicateLeaveRevisionZero: same
+// create-vs-edit sentinel as catalog_admin.go — a brand-new/duplicated
+// resource has no meaningful prior revision.
+func TestResourceEditorStateCreateAndDuplicateLeaveRevisionZero(t *testing.T) {
+	create := &resourceEditorState{mode: editorModeCreate}
+	if got := create.persistenceRevision(); got != 0 {
+		t.Fatalf("create persistenceRevision() = %d, want 0", got)
+	}
+	duplicate := &resourceEditorState{mode: editorModeDuplicate, originalValues: cableAttributeValues()}
+	if got := duplicate.persistenceRevision(); got != 0 {
+		t.Fatalf("duplicate persistenceRevision() = %d, want 0", got)
+	}
+}
+
+// TestResourceEditorStateRevisionDoesNotLeakBetweenIndependentStates proves
+// two independent edit sessions never share the captured revision.
+func TestResourceEditorStateRevisionDoesNotLeakBetweenIndependentStates(t *testing.T) {
+	stateA := &resourceEditorState{mode: editorModeEdit, originalID: 1, originalRevision: 3}
+	stateB := &resourceEditorState{mode: editorModeEdit, originalID: 2, originalRevision: 9}
+	if stateA.persistenceRevision() != 3 {
+		t.Fatalf("stateA.persistenceRevision() = %d, want 3", stateA.persistenceRevision())
+	}
+	if stateB.persistenceRevision() != 9 {
+		t.Fatalf("stateB.persistenceRevision() = %d, want 9 (independent of stateA)", stateB.persistenceRevision())
 	}
 }

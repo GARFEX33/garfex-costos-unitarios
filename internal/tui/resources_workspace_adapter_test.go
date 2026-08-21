@@ -43,25 +43,26 @@ func (f *fakeResourceSearcher) SearchPage(ctx context.Context, criteria domain.S
 type fakeResourceDeleter struct {
 	callCount int
 	gotID     int64
+	revisions []uint64
 	err       error
+	// revision, when non-zero, is set on the returned LifecycleResult.Resource
+	// (4F's revision-carry-through proof below); every pre-existing test
+	// leaves this zero, preserving prior behavior.
+	revision uint64
 }
 
-func (f *fakeResourceDeleter) Deactivate(_ context.Context, id int64) (domain.LifecycleResult, error) {
+func (f *fakeResourceDeleter) DeactivateRevision(_ context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
 	f.callCount++
 	f.gotID = id
-	return domain.LifecycleResult{Resource: domain.Resource{ID: id, Active: false}, Changed: true}, f.err
+	f.revisions = append(f.revisions, expectedRevision)
+	return domain.LifecycleResult{Resource: domain.Resource{ID: id, Active: false, Revision: f.revision}, Changed: true}, f.err
 }
 
-func (f *fakeResourceDeleter) Reactivate(_ context.Context, id int64) (domain.LifecycleResult, error) {
+func (f *fakeResourceDeleter) ReactivateRevision(_ context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
 	f.callCount++
 	f.gotID = id
-	return domain.LifecycleResult{Resource: domain.Resource{ID: id, Active: true}, Changed: true}, f.err
-}
-
-func (f *fakeResourceDeleter) Delete(_ context.Context, id int64) error {
-	f.callCount++
-	f.gotID = id
-	return f.err
+	f.revisions = append(f.revisions, expectedRevision)
+	return domain.LifecycleResult{Resource: domain.Resource{ID: id, Active: true, Revision: f.revision}, Changed: true}, f.err
 }
 
 // newDispatchAdapter builds a ResourcesWorkspaceAdapter against the real
@@ -746,6 +747,53 @@ func TestResourcesWorkspaceAdapterRespondDeleteThenSearchStillWorks(t *testing.T
 	}
 	if _, ok := searchResponse.Pending.(QuestionRequest); !ok {
 		t.Fatalf("Pending = %T, want a normal search-results QuestionRequest", searchResponse.Pending)
+	}
+}
+
+// TestResourcesWorkspaceAdapterLastDetailRevisionSurvivesDeactivateReactivate
+// proves a.lastDetail (already domain.Resource-typed, carrying Revision since
+// 3C) captures the loaded resource's Revision on open and keeps it correct
+// through Desactivar/Reactivar (a.lastDetail is replaced by whatever
+// LifecycleResult.Resource the repository returns) — no production change,
+// this proves the existing behavior with real evidence.
+func TestResourcesWorkspaceAdapterLastDetailRevisionSurvivesDeactivateReactivate(t *testing.T) {
+	resource := domain.Resource{
+		ID: 42, ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", NaturalUnit: "M", IdentityKey: "CONDUCTORES|M|1", Revision: 4,
+	}
+	getter := &fakeResourceGetter{resource: resource}
+	deleter := &fakeResourceDeleter{revision: 4}
+	adapter := newDispatchAdapter(&fakeResourceSearcher{}, getter, &fakeResourceDescriber{}, &fakeResourceCreator{}, &fakeResourceUpdater{}, deleter, "")
+	ctx := context.Background()
+
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputSelection, Key: searchResultsKey, Value: "MATERIAL|CONDUCTORES|M|1"}); err != nil {
+		t.Fatalf("Respond(open detail) error = %v, want nil", err)
+	}
+	if adapter.lastDetail.Revision != 4 {
+		t.Fatalf("adapter.lastDetail.Revision = %d right after opening detail, want 4", adapter.lastDetail.Revision)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: deactivateActionID}); err != nil {
+		t.Fatalf("Respond(deactivate action) error = %v, want nil", err)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputSelection, Key: resourcesLifecycleConfirmKey, Value: "yes"}); err != nil {
+		t.Fatalf("Respond(confirm yes) error = %v, want nil", err)
+	}
+	if adapter.lastDetail.Revision != 4 {
+		t.Fatalf("adapter.lastDetail.Revision = %d after Desactivar, want it to stay 4", adapter.lastDetail.Revision)
+	}
+	if len(deleter.revisions) != 1 || deleter.revisions[0] != 4 {
+		t.Fatalf("deleter.revisions after Desactivar = %v, want [4] (DeactivateRevision's captured CAS revision)", deleter.revisions)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputAction, ActionID: reactivateActionID}); err != nil {
+		t.Fatalf("Respond(reactivate action) error = %v, want nil", err)
+	}
+	if _, err := adapter.Respond(ctx, InteractionInput{Kind: InputSelection, Key: resourcesLifecycleConfirmKey, Value: "yes"}); err != nil {
+		t.Fatalf("Respond(confirm yes) error = %v, want nil", err)
+	}
+	if adapter.lastDetail.Revision != 4 {
+		t.Fatalf("adapter.lastDetail.Revision = %d after Reactivar, want it to stay 4", adapter.lastDetail.Revision)
+	}
+	if len(deleter.revisions) != 2 || deleter.revisions[1] != 4 {
+		t.Fatalf("deleter.revisions after Reactivar = %v, want [4, 4] (ReactivateRevision's captured CAS revision)", deleter.revisions)
 	}
 }
 

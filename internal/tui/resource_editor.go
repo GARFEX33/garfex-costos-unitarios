@@ -117,13 +117,20 @@ type resourceCreator interface {
 
 // resourceUpdater is the minimal surface the generic resource editor needs
 // to submit update intent with its stable ID; identity is application-owned.
+// UpdateRevision is Update's CAS-aware additive V2 sibling (4G):
+// expectedRevision is always the edited resource's own captured
+// domain.Resource.Revision (resourceEditorState.persistenceRevision).
 type resourceUpdater interface {
-	Update(ctx context.Context, command domain.UpdateCommand) (domain.Resource, error)
+	UpdateRevision(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error)
 }
 
+// resourceLifecycle's DeactivateRevision/ReactivateRevision are
+// Deactivate/Reactivate's CAS-aware additive V2 siblings (4G): expectedRevision
+// is always a.lastDetail.Revision, the value captured when the resource's
+// detail was opened.
 type resourceLifecycle interface {
-	Deactivate(ctx context.Context, id int64) (domain.LifecycleResult, error)
-	Reactivate(ctx context.Context, id int64) (domain.LifecycleResult, error)
+	DeactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error)
+	ReactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error)
 }
 
 // ResourcesWorkspaceAdapter is the production InteractionAgent shape for a
@@ -248,17 +255,18 @@ func (a *ResourcesWorkspaceAdapter) startEditEditor() (InteractionResponse, erro
 	}
 	scope := domain.ResourceScope{ClassCode: resource.ClassCode, FamilyCode: resource.FamilyCode, TypeCode: resource.TypeCode}
 	a.editor = &resourceEditorState{
-		mode:           editorModeEdit,
-		step:           editorStepAttributePicker,
-		class:          resource.ClassCode,
-		family:         resource.FamilyCode,
-		itemType:       resource.TypeCode,
-		attributes:     a.catalog.AttributesFor(scope),
-		values:         append([]domain.ResourceAttributeValue(nil), resource.Attributes...),
-		originalID:     resource.ID,
-		originalValues: resource.Attributes,
-		originalUnit:   resource.NaturalUnit,
-		currentUnit:    resource.NaturalUnit,
+		mode:             editorModeEdit,
+		step:             editorStepAttributePicker,
+		class:            resource.ClassCode,
+		family:           resource.FamilyCode,
+		itemType:         resource.TypeCode,
+		attributes:       a.catalog.AttributesFor(scope),
+		values:           append([]domain.ResourceAttributeValue(nil), resource.Attributes...),
+		originalID:       resource.ID,
+		originalRevision: resource.Revision,
+		originalValues:   resource.Attributes,
+		originalUnit:     resource.NaturalUnit,
+		currentUnit:      resource.NaturalUnit,
 	}
 	return a.attributePickerQuestion(), nil
 }
@@ -883,7 +891,7 @@ func (a *ResourcesWorkspaceAdapter) finishEditor(ctx context.Context, unit strin
 	var opErr error
 	switch state.mode {
 	case editorModeEdit:
-		resource, opErr = a.updater.Update(ctx, domain.UpdateCommand{ID: state.originalID, Scope: scope, NaturalUnit: unit, Attributes: values})
+		resource, opErr = a.updater.UpdateRevision(ctx, domain.UpdateCommand{ID: state.originalID, Scope: scope, NaturalUnit: unit, Attributes: values}, state.persistenceRevision())
 	default:
 		resource, opErr = a.creator.Create(ctx, domain.CreateCommand{Scope: scope, NaturalUnit: unit, Attributes: values})
 	}

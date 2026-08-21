@@ -62,11 +62,18 @@ func TestU3DetailLifecycleIsTruthful(t *testing.T) {
 		t.Fatalf("supported inactive detail = %#v", response)
 	}
 
-	unsupported := definitionRecord(8, "ATTR", "Característica")
-	unsupported.Active = false
-	response = (&CatalogAdminAdapter{registry: domain.NewCatalogRegistry(), activeKind: domain.KindAttributeDefinition, activeRecord: unsupported}).recordDetailResponse()
-	if !responseContains(response, "Reactivación no disponible para este tipo de catálogo") || actionsContain(response.Pending.(ActionRequest).Actions, "Reactivar") {
-		t.Fatalf("unsupported inactive detail = %#v", response)
+	inactiveCharacteristic := definitionRecord(8, "ATTR", "Característica")
+	inactiveCharacteristic.Active = false
+	response = (&CatalogAdminAdapter{registry: domain.NewCatalogRegistry(), activeKind: domain.KindAttributeDefinition, activeRecord: inactiveCharacteristic}).recordDetailResponse()
+	result, ok := response.Messages[0].(StructuredResult)
+	if !ok || !fieldsContain(result.Fields, "Estado", "Inactivo") {
+		t.Fatalf("inactive characteristic detail = %#v, want Estado Inactivo", response)
+	}
+	if responseContains(response, "Reactivación no disponible para este tipo de catálogo") {
+		t.Fatalf("inactive characteristic detail = %#v, must not show unavailable lifecycle message", response)
+	}
+	if !actionsContain(response.Pending.(ActionRequest).Actions, "Reactivar") {
+		t.Fatalf("inactive characteristic detail = %#v, want Reactivar action", response)
 	}
 }
 
