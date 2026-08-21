@@ -40,3 +40,21 @@ type ResourceUpdateRequest struct {
 	NaturalUnit      string
 	Attributes       []AttributeValue
 }
+
+// CatalogLifecycleRequest deactivates or reactivates one existing catalog
+// record of any registered kind under optimistic concurrency. No content
+// fields — Deactivate/Reactivate never touch Values/Rules.
+type CatalogLifecycleRequest struct {
+	Actor            string
+	Kind             KindCode
+	ID               int64
+	ExpectedRevision uint64
+}
+
+// ResourceLifecycleRequest deactivates or reactivates one existing resource
+// under optimistic concurrency. No content fields.
+type ResourceLifecycleRequest struct {
+	Actor            string
+	ID               int64
+	ExpectedRevision uint64
+}

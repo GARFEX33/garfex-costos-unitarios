@@ -7,10 +7,14 @@ import (
 )
 
 type fakeWriteCapabilities struct {
-	createCatalog  func(ctx context.Context, req CatalogWriteRequest) (CatalogRecord, error)
-	createResource func(ctx context.Context, req ResourceWriteRequest) (Resource, error)
-	updateCatalog  func(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error)
-	updateResource func(ctx context.Context, req ResourceUpdateRequest) (Resource, error)
+	createCatalog      func(ctx context.Context, req CatalogWriteRequest) (CatalogRecord, error)
+	createResource     func(ctx context.Context, req ResourceWriteRequest) (Resource, error)
+	updateCatalog      func(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error)
+	updateResource     func(ctx context.Context, req ResourceUpdateRequest) (Resource, error)
+	deactivateCatalog  func(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error)
+	reactivateCatalog  func(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error)
+	deactivateResource func(ctx context.Context, req ResourceLifecycleRequest) (Resource, error)
+	reactivateResource func(ctx context.Context, req ResourceLifecycleRequest) (Resource, error)
 }
 
 func (f *fakeWriteCapabilities) CreateCatalog(ctx context.Context, req CatalogWriteRequest) (CatalogRecord, error) {
@@ -27,6 +31,22 @@ func (f *fakeWriteCapabilities) UpdateCatalog(ctx context.Context, req CatalogUp
 
 func (f *fakeWriteCapabilities) UpdateResource(ctx context.Context, req ResourceUpdateRequest) (Resource, error) {
 	return f.updateResource(ctx, req)
+}
+
+func (f *fakeWriteCapabilities) DeactivateCatalog(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error) {
+	return f.deactivateCatalog(ctx, req)
+}
+
+func (f *fakeWriteCapabilities) ReactivateCatalog(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error) {
+	return f.reactivateCatalog(ctx, req)
+}
+
+func (f *fakeWriteCapabilities) DeactivateResource(ctx context.Context, req ResourceLifecycleRequest) (Resource, error) {
+	return f.deactivateResource(ctx, req)
+}
+
+func (f *fakeWriteCapabilities) ReactivateResource(ctx context.Context, req ResourceLifecycleRequest) (Resource, error) {
+	return f.reactivateResource(ctx, req)
 }
 
 func validCatalogWriteRequest() CatalogWriteRequest {
@@ -190,21 +210,197 @@ func TestWriter_CreateResource_ShapeValidation(t *testing.T) {
 
 func TestWriter_NoUngraduatedMethodExported(t *testing.T) {
 	typ := reflect.TypeOf((*WriteCapabilities)(nil)).Elem()
-	if typ.NumMethod() != 4 {
-		t.Fatalf("expected exactly 4 methods on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
+	if typ.NumMethod() != 8 {
+		t.Fatalf("expected exactly 8 methods on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
 	}
-	for _, name := range []string{"CreateCatalog", "CreateResource", "UpdateCatalog", "UpdateResource"} {
+	want := []string{"CreateCatalog", "CreateResource", "UpdateCatalog", "UpdateResource", "DeactivateCatalog", "ReactivateCatalog", "DeactivateResource", "ReactivateResource"}
+	for _, name := range want {
 		if _, ok := typ.MethodByName(name); !ok {
 			t.Fatalf("expected WriteCapabilities to declare %s", name)
 		}
 	}
 	writerType := reflect.TypeOf((*Writer)(nil))
-	allowed := map[string]bool{"CreateCatalog": true, "CreateResource": true, "UpdateCatalog": true, "UpdateResource": true}
+	allowed := map[string]bool{}
+	for _, name := range want {
+		allowed[name] = true
+	}
 	for i := 0; i < writerType.NumMethod(); i++ {
 		name := writerType.Method(i).Name
 		if !allowed[name] {
-			t.Fatalf("unexpected exported Writer method %s; only Create/Update Catalog/Resource may be graduated in this change", name)
+			t.Fatalf("unexpected exported Writer method %s; only Create/Update/Deactivate/Reactivate Catalog/Resource may be graduated so far; no HardDelete stub allowed", name)
 		}
+	}
+}
+
+func validCatalogLifecycleRequest() CatalogLifecycleRequest {
+	return CatalogLifecycleRequest{Actor: "PI", Kind: KindClass, ID: 1, ExpectedRevision: 1}
+}
+
+func validResourceLifecycleRequest() ResourceLifecycleRequest {
+	return ResourceLifecycleRequest{Actor: "PI", ID: 1, ExpectedRevision: 1}
+}
+
+func TestWriter_LifecycleRequest_NoContentField(t *testing.T) {
+	forbidden := map[string]bool{"Values": true, "Rules": true, "Scope": true, "Attributes": true}
+	for _, typ := range []reflect.Type{reflect.TypeOf(CatalogLifecycleRequest{}), reflect.TypeOf(ResourceLifecycleRequest{})} {
+		for i := 0; i < typ.NumField(); i++ {
+			name := typ.Field(i).Name
+			if forbidden[name] {
+				t.Fatalf("%s must not declare content field %s", typ.Name(), name)
+			}
+		}
+	}
+}
+
+func TestWriter_DeactivateCatalog_ShapeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*CatalogLifecycleRequest)
+		wantErr bool
+	}{
+		{"valid", func(r *CatalogLifecycleRequest) {}, false},
+		{"blank actor", func(r *CatalogLifecycleRequest) { r.Actor = " " }, true},
+		{"zero id", func(r *CatalogLifecycleRequest) { r.ID = 0 }, true},
+		{"zero expected revision", func(r *CatalogLifecycleRequest) { r.ExpectedRevision = 0 }, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validCatalogLifecycleRequest()
+			tt.mutate(&req)
+			cap := &fakeWriteCapabilities{
+				deactivateCatalog: func(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error) {
+					return CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1, Active: false}, nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			_, err = w.DeactivateCatalog(context.Background(), req)
+			if tt.wantErr {
+				if !IsCode(err, InvalidArgument) {
+					t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriter_ReactivateCatalog_ShapeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*CatalogLifecycleRequest)
+		wantErr bool
+	}{
+		{"valid", func(r *CatalogLifecycleRequest) {}, false},
+		{"blank actor", func(r *CatalogLifecycleRequest) { r.Actor = "" }, true},
+		{"zero id", func(r *CatalogLifecycleRequest) { r.ID = 0 }, true},
+		{"zero expected revision", func(r *CatalogLifecycleRequest) { r.ExpectedRevision = 0 }, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validCatalogLifecycleRequest()
+			tt.mutate(&req)
+			cap := &fakeWriteCapabilities{
+				reactivateCatalog: func(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error) {
+					return CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1, Active: true}, nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			_, err = w.ReactivateCatalog(context.Background(), req)
+			if tt.wantErr {
+				if !IsCode(err, InvalidArgument) {
+					t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriter_DeactivateResource_ShapeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ResourceLifecycleRequest)
+		wantErr bool
+	}{
+		{"valid", func(r *ResourceLifecycleRequest) {}, false},
+		{"blank actor", func(r *ResourceLifecycleRequest) { r.Actor = "" }, true},
+		{"zero id", func(r *ResourceLifecycleRequest) { r.ID = 0 }, true},
+		{"zero expected revision", func(r *ResourceLifecycleRequest) { r.ExpectedRevision = 0 }, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validResourceLifecycleRequest()
+			tt.mutate(&req)
+			cap := &fakeWriteCapabilities{
+				deactivateResource: func(ctx context.Context, req ResourceLifecycleRequest) (Resource, error) {
+					return Resource{ID: req.ID, Revision: req.ExpectedRevision + 1, Active: false}, nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			_, err = w.DeactivateResource(context.Background(), req)
+			if tt.wantErr {
+				if !IsCode(err, InvalidArgument) {
+					t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriter_ReactivateResource_ShapeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ResourceLifecycleRequest)
+		wantErr bool
+	}{
+		{"valid", func(r *ResourceLifecycleRequest) {}, false},
+		{"blank actor", func(r *ResourceLifecycleRequest) { r.Actor = "" }, true},
+		{"zero id", func(r *ResourceLifecycleRequest) { r.ID = 0 }, true},
+		{"zero expected revision", func(r *ResourceLifecycleRequest) { r.ExpectedRevision = 0 }, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validResourceLifecycleRequest()
+			tt.mutate(&req)
+			cap := &fakeWriteCapabilities{
+				reactivateResource: func(ctx context.Context, req ResourceLifecycleRequest) (Resource, error) {
+					return Resource{ID: req.ID, Revision: req.ExpectedRevision + 1, Active: true}, nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			_, err = w.ReactivateResource(context.Background(), req)
+			if tt.wantErr {
+				if !IsCode(err, InvalidArgument) {
+					t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
