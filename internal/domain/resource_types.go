@@ -249,6 +249,7 @@ type SearchCriteria struct {
 	Text       string
 	ClassCode  string
 	FamilyCode string
+	TypeCode   string
 	// Filters requires an exact, canonical match per attribute: each entry
 	// is ANDed as its own existence check against the resource's attribute
 	// values.

@@ -71,6 +71,11 @@ type Adapter struct {
 	kinds     map[domain.CatalogKindCode]domain.CatalogKind
 }
 
+var (
+	_ public.ReadCapabilities  = (*Adapter)(nil)
+	_ public.WriteCapabilities = (*Adapter)(nil)
+)
+
 // NewAdapter returns a ReadCapabilities/WriteCapabilities implementation
 // backed by catalog and resources. Neither dependency may be nil.
 func NewAdapter(catalog catalogPort, resources resourcePort) *Adapter {
@@ -267,13 +272,11 @@ func (a *Adapter) SearchResources(ctx context.Context, q public.ResourceQuery) (
 	if q.Scope == public.ScopeAll {
 		return public.ResourcePage{}, public.NewError(public.InvalidArgument, "ScopeAll is not supported for resource search")
 	}
-	if q.TypeCode != "" {
-		return public.ResourcePage{}, public.NewError(public.InvalidArgument, "TypeCode filtering is not supported for resource search")
-	}
 	criteria := domain.SearchCriteria{
 		LifecycleScope: resourceLifecycleFromPublic(q.Scope),
 		ClassCode:      q.ClassCode,
 		FamilyCode:     q.FamilyCode,
+		TypeCode:       q.TypeCode,
 		Text:           q.Text,
 		Limit:          q.Limit,
 		Offset:         q.Offset,
@@ -562,6 +565,7 @@ func mapResourceQuery(criteria domain.SearchCriteria) public.ResourceQuery {
 		Scope:      publicScopeFromResourceLifecycle(criteria.LifecycleScope),
 		ClassCode:  criteria.ClassCode,
 		FamilyCode: criteria.FamilyCode,
+		TypeCode:   criteria.TypeCode,
 		Text:       criteria.Text,
 		Limit:      criteria.Limit,
 		Offset:     criteria.Offset,

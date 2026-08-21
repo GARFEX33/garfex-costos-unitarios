@@ -276,7 +276,7 @@ func TestAdapter_SearchResources(t *testing.T) {
 			if criteria.LifecycleScope != domain.LifecycleScopeInactive {
 				t.Fatalf("expected inactive scope, got %v", criteria.LifecycleScope)
 			}
-			if criteria.ClassCode != "MAT" || criteria.FamilyCode != "F" || criteria.Text != "cable" {
+			if criteria.ClassCode != "MAT" || criteria.FamilyCode != "F" || criteria.TypeCode != "T" || criteria.Text != "cable" {
 				t.Fatalf("unexpected criteria: %+v", criteria)
 			}
 			return domain.ResourcePage{
@@ -289,7 +289,7 @@ func TestAdapter_SearchResources(t *testing.T) {
 	}
 	adapter := newTestAdapter(nil, resources)
 	page, err := adapter.SearchResources(context.Background(), public.ResourceQuery{
-		Scope: public.ScopeInactive, ClassCode: "MAT", FamilyCode: "F", Text: "cable", Limit: 10, Offset: 5,
+		Scope: public.ScopeInactive, ClassCode: "MAT", FamilyCode: "F", TypeCode: "T", Text: "cable", Limit: 10, Offset: 5,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -310,11 +310,22 @@ func TestAdapter_SearchResourcesAllScopeNotSupported(t *testing.T) {
 	}
 }
 
-func TestAdapter_SearchResourcesTypeCodeNotSupported(t *testing.T) {
-	adapter := newTestAdapter(nil, nil)
-	_, err := adapter.SearchResources(context.Background(), public.ResourceQuery{TypeCode: "CABLE"})
-	if !public.IsCode(err, public.InvalidArgument) {
-		t.Fatalf("expected INVALID_ARGUMENT for unsupported TypeCode filter, got %v", err)
+func TestAdapter_SearchResourcesTypeCodeFiltered(t *testing.T) {
+	resources := &fakeResourceReader{
+		search: func(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error) {
+			if criteria.TypeCode != "CABLE" {
+				t.Fatalf("expected TypeCode forwarded to criteria, got %+v", criteria)
+			}
+			return domain.ResourcePage{Criteria: criteria}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	page, err := adapter.SearchResources(context.Background(), public.ResourceQuery{TypeCode: "CABLE"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if page.Query.TypeCode != "CABLE" {
+		t.Fatalf("expected TypeCode round-tripped in response query, got %+v", page.Query)
 	}
 }
 

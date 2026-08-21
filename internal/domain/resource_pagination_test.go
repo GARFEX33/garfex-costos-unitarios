@@ -24,8 +24,8 @@ func TestSearchCriteriaNormalizeBoundsPageInputs(t *testing.T) {
 	}
 }
 func TestResourcePageCarriesCriteriaAndBoundaries(t *testing.T) {
-	p := ResourcePage{Criteria: SearchCriteria{Text: "cable", ClassCode: "MATERIAL", Limit: 10, Offset: 10}, Resources: []Resource{{ID: 2}}, HasPrevious: true, HasNext: true}
-	if p.Criteria.Text != "cable" || p.Criteria.ClassCode != "MATERIAL" || p.Criteria.Offset != 10 || !p.HasPrevious || !p.HasNext || p.Resources[0].ID != 2 {
+	p := ResourcePage{Criteria: SearchCriteria{Text: "cable", ClassCode: "MATERIAL", TypeCode: "CABLE", Limit: 10, Offset: 10}, Resources: []Resource{{ID: 2}}, HasPrevious: true, HasNext: true}
+	if p.Criteria.Text != "cable" || p.Criteria.ClassCode != "MATERIAL" || p.Criteria.TypeCode != "CABLE" || p.Criteria.Offset != 10 || !p.HasPrevious || !p.HasNext || p.Resources[0].ID != 2 {
 		t.Fatalf("page = %+v, want preserved criteria, resource, and boundaries", p)
 	}
 }
