@@ -9,6 +9,8 @@ import (
 type fakeWriteCapabilities struct {
 	createCatalog  func(ctx context.Context, req CatalogWriteRequest) (CatalogRecord, error)
 	createResource func(ctx context.Context, req ResourceWriteRequest) (Resource, error)
+	updateCatalog  func(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error)
+	updateResource func(ctx context.Context, req ResourceUpdateRequest) (Resource, error)
 }
 
 func (f *fakeWriteCapabilities) CreateCatalog(ctx context.Context, req CatalogWriteRequest) (CatalogRecord, error) {
@@ -17,6 +19,14 @@ func (f *fakeWriteCapabilities) CreateCatalog(ctx context.Context, req CatalogWr
 
 func (f *fakeWriteCapabilities) CreateResource(ctx context.Context, req ResourceWriteRequest) (Resource, error) {
 	return f.createResource(ctx, req)
+}
+
+func (f *fakeWriteCapabilities) UpdateCatalog(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error) {
+	return f.updateCatalog(ctx, req)
+}
+
+func (f *fakeWriteCapabilities) UpdateResource(ctx context.Context, req ResourceUpdateRequest) (Resource, error) {
+	return f.updateResource(ctx, req)
 }
 
 func validCatalogWriteRequest() CatalogWriteRequest {
@@ -34,6 +44,28 @@ func validResourceWriteRequest() ResourceWriteRequest {
 		Actor:       "PI",
 		Scope:       ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
 		NaturalUnit: "m",
+	}
+}
+
+func validCatalogUpdateRequest() CatalogUpdateRequest {
+	return CatalogUpdateRequest{
+		Actor:            "PI",
+		Kind:             KindClass,
+		ID:               1,
+		ExpectedRevision: 1,
+		Values: map[string]Value{
+			"code": {Kind: ValueCode, Text: "MAT"},
+		},
+	}
+}
+
+func validResourceUpdateRequest() ResourceUpdateRequest {
+	return ResourceUpdateRequest{
+		Actor:            "PI",
+		ID:               1,
+		ExpectedRevision: 1,
+		Scope:            ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit:      "m",
 	}
 }
 
@@ -158,20 +190,176 @@ func TestWriter_CreateResource_ShapeValidation(t *testing.T) {
 
 func TestWriter_NoUngraduatedMethodExported(t *testing.T) {
 	typ := reflect.TypeOf((*WriteCapabilities)(nil)).Elem()
-	if typ.NumMethod() != 2 {
-		t.Fatalf("expected exactly 2 methods on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
+	if typ.NumMethod() != 4 {
+		t.Fatalf("expected exactly 4 methods on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
 	}
-	for _, name := range []string{"CreateCatalog", "CreateResource"} {
+	for _, name := range []string{"CreateCatalog", "CreateResource", "UpdateCatalog", "UpdateResource"} {
 		if _, ok := typ.MethodByName(name); !ok {
 			t.Fatalf("expected WriteCapabilities to declare %s", name)
 		}
 	}
 	writerType := reflect.TypeOf((*Writer)(nil))
+	allowed := map[string]bool{"CreateCatalog": true, "CreateResource": true, "UpdateCatalog": true, "UpdateResource": true}
 	for i := 0; i < writerType.NumMethod(); i++ {
 		name := writerType.Method(i).Name
-		if name != "CreateCatalog" && name != "CreateResource" {
-			t.Fatalf("unexpected exported Writer method %s; only CreateCatalog/CreateResource may be graduated in this change", name)
+		if !allowed[name] {
+			t.Fatalf("unexpected exported Writer method %s; only Create/Update Catalog/Resource may be graduated in this change", name)
 		}
+	}
+}
+
+func TestWriter_UpdateCatalog_ShapeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*CatalogUpdateRequest)
+		wantErr bool
+	}{
+		{"valid", func(r *CatalogUpdateRequest) {}, false},
+		{"blank actor", func(r *CatalogUpdateRequest) { r.Actor = " " }, true},
+		{"zero id", func(r *CatalogUpdateRequest) { r.ID = 0 }, true},
+		{"zero expected revision", func(r *CatalogUpdateRequest) { r.ExpectedRevision = 0 }, true},
+		{"unknown kind", func(r *CatalogUpdateRequest) { r.Kind = "NOPE" }, true},
+		{"empty values", func(r *CatalogUpdateRequest) { r.Values = map[string]Value{} }, true},
+		{"unknown value kind", func(r *CatalogUpdateRequest) { r.Values["code"] = Value{Kind: "BOGUS", Text: "x"} }, true},
+		{"applicability equals not text", func(r *CatalogUpdateRequest) {
+			r.Rules = []ApplicabilityRule{{AttributeCode: "insulation", Equals: Value{Kind: ValueBool, Bool: true}, Mode: "FORBIDDEN"}}
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validCatalogUpdateRequest()
+			tt.mutate(&req)
+			cap := &fakeWriteCapabilities{
+				updateCatalog: func(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error) {
+					return CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1}, nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			_, err = w.UpdateCatalog(context.Background(), req)
+			if tt.wantErr {
+				if !IsCode(err, InvalidArgument) {
+					t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriter_UpdateResource_ShapeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ResourceUpdateRequest)
+		wantErr bool
+	}{
+		{"valid", func(r *ResourceUpdateRequest) {}, false},
+		{"blank actor", func(r *ResourceUpdateRequest) { r.Actor = "" }, true},
+		{"zero id", func(r *ResourceUpdateRequest) { r.ID = 0 }, true},
+		{"zero expected revision", func(r *ResourceUpdateRequest) { r.ExpectedRevision = 0 }, true},
+		{"blank class code", func(r *ResourceUpdateRequest) { r.Scope.ClassCode = "" }, true},
+		{"blank family code", func(r *ResourceUpdateRequest) { r.Scope.FamilyCode = "" }, true},
+		{"blank type code", func(r *ResourceUpdateRequest) { r.Scope.TypeCode = "" }, true},
+		{"blank natural unit", func(r *ResourceUpdateRequest) { r.NaturalUnit = "" }, true},
+		{"attribute value quantity missing unit code", func(r *ResourceUpdateRequest) {
+			r.Attributes = []AttributeValue{{Code: "length", Value: Value{Kind: ValueQuantity, Text: "1"}}}
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validResourceUpdateRequest()
+			tt.mutate(&req)
+			cap := &fakeWriteCapabilities{
+				updateResource: func(ctx context.Context, req ResourceUpdateRequest) (Resource, error) {
+					return Resource{ID: req.ID, Scope: req.Scope, Revision: req.ExpectedRevision + 1}, nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			_, err = w.UpdateResource(context.Background(), req)
+			if tt.wantErr {
+				if !IsCode(err, InvalidArgument) {
+					t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriter_UpdateCatalog_RevisionIncreasesOverExpected(t *testing.T) {
+	cap := &fakeWriteCapabilities{
+		updateCatalog: func(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error) {
+			return CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1, Values: req.Values}, nil
+		},
+	}
+	w, err := NewWriter(cap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := validCatalogUpdateRequest()
+	rec, err := w.UpdateCatalog(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Revision <= req.ExpectedRevision {
+		t.Fatalf("expected returned revision > supplied ExpectedRevision, got %d vs %d", rec.Revision, req.ExpectedRevision)
+	}
+}
+
+func TestWriter_UpdateResource_RevisionIncreasesOverExpected(t *testing.T) {
+	cap := &fakeWriteCapabilities{
+		updateResource: func(ctx context.Context, req ResourceUpdateRequest) (Resource, error) {
+			return Resource{ID: req.ID, Scope: req.Scope, Revision: req.ExpectedRevision + 1, Attributes: req.Attributes}, nil
+		},
+	}
+	w, err := NewWriter(cap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := validResourceUpdateRequest()
+	res, err := w.UpdateResource(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Revision <= req.ExpectedRevision {
+		t.Fatalf("expected returned revision > supplied ExpectedRevision, got %d vs %d", res.Revision, req.ExpectedRevision)
+	}
+}
+
+func TestWriteUpdateRequestCopy_CallerMutationAfterCall_NoEffect(t *testing.T) {
+	var captured CatalogUpdateRequest
+	cap := &fakeWriteCapabilities{
+		updateCatalog: func(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error) {
+			captured = req
+			return CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1, Values: req.Values}, nil
+		},
+	}
+	w, err := NewWriter(cap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := validCatalogUpdateRequest()
+	rec, err := w.UpdateCatalog(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req.Values["code"] = Value{Kind: ValueCode, Text: "MUTATED"}
+	rec.Values["code"] = Value{Kind: ValueCode, Text: "MUTATED"}
+
+	if captured.Values["code"].Text != "MAT" {
+		t.Fatalf("caller mutation after call leaked into the capability call: %+v", captured.Values["code"])
 	}
 }
 

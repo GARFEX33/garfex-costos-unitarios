@@ -12,6 +12,8 @@ import (
 type WriteCapabilities interface {
 	CreateCatalog(context.Context, CatalogWriteRequest) (CatalogRecord, error)
 	CreateResource(context.Context, ResourceWriteRequest) (Resource, error)
+	UpdateCatalog(context.Context, CatalogUpdateRequest) (CatalogRecord, error)
+	UpdateResource(context.Context, ResourceUpdateRequest) (Resource, error)
 }
 
 // Writer is the public write-only Resource Master contract. It validates
@@ -54,6 +56,32 @@ func (w *Writer) CreateResource(ctx context.Context, req ResourceWriteRequest) (
 	return CloneResource(res), nil
 }
 
+// UpdateCatalog replaces one existing catalog record under optimistic
+// concurrency.
+func (w *Writer) UpdateCatalog(ctx context.Context, req CatalogUpdateRequest) (CatalogRecord, error) {
+	if err := validateCatalogUpdateRequest(req); err != nil {
+		return CatalogRecord{}, err
+	}
+	rec, err := w.cap.UpdateCatalog(ctx, CloneCatalogUpdateRequest(req))
+	if err != nil {
+		return CatalogRecord{}, err
+	}
+	return CloneCatalogRecord(rec), nil
+}
+
+// UpdateResource replaces one existing resource under optimistic
+// concurrency.
+func (w *Writer) UpdateResource(ctx context.Context, req ResourceUpdateRequest) (Resource, error) {
+	if err := validateResourceUpdateRequest(req); err != nil {
+		return Resource{}, err
+	}
+	res, err := w.cap.UpdateResource(ctx, CloneResourceUpdateRequest(req))
+	if err != nil {
+		return Resource{}, err
+	}
+	return CloneResource(res), nil
+}
+
 func validateCatalogWriteRequest(req CatalogWriteRequest) error {
 	if strings.TrimSpace(req.Actor) == "" {
 		return NewError(InvalidArgument, "actor is required")
@@ -83,6 +111,68 @@ func validateCatalogWriteRequest(req CatalogWriteRequest) error {
 func validateResourceWriteRequest(req ResourceWriteRequest) error {
 	if strings.TrimSpace(req.Actor) == "" {
 		return NewError(InvalidArgument, "actor is required")
+	}
+	if strings.TrimSpace(req.Scope.ClassCode) == "" {
+		return NewError(InvalidArgument, "class code is required")
+	}
+	if strings.TrimSpace(req.Scope.FamilyCode) == "" {
+		return NewError(InvalidArgument, "family code is required")
+	}
+	if strings.TrimSpace(req.Scope.TypeCode) == "" {
+		return NewError(InvalidArgument, "type code is required")
+	}
+	if strings.TrimSpace(req.NaturalUnit) == "" {
+		return NewError(InvalidArgument, "natural unit is required")
+	}
+	for _, av := range req.Attributes {
+		if err := validateValueShape(av.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCatalogUpdateRequest(req CatalogUpdateRequest) error {
+	if strings.TrimSpace(req.Actor) == "" {
+		return NewError(InvalidArgument, "actor is required")
+	}
+	if req.ID == 0 {
+		return NewError(InvalidArgument, "id is required")
+	}
+	if req.ExpectedRevision == 0 {
+		return NewError(InvalidArgument, "expected revision is required")
+	}
+	if !isKnownKind(req.Kind) {
+		return NewError(InvalidArgument, "invalid catalog kind")
+	}
+	if len(req.Values) == 0 {
+		return NewError(InvalidArgument, "values are required")
+	}
+	for _, v := range req.Values {
+		if err := validateValueShape(v); err != nil {
+			return err
+		}
+	}
+	for _, rule := range req.Rules {
+		if rule.Equals.Kind != ValueText {
+			return NewError(InvalidArgument, "applicability rule equals must be a TEXT value")
+		}
+		if !isKnownAttributeMode(rule.Mode) {
+			return NewError(InvalidArgument, "invalid applicability rule mode")
+		}
+	}
+	return nil
+}
+
+func validateResourceUpdateRequest(req ResourceUpdateRequest) error {
+	if strings.TrimSpace(req.Actor) == "" {
+		return NewError(InvalidArgument, "actor is required")
+	}
+	if req.ID == 0 {
+		return NewError(InvalidArgument, "id is required")
+	}
+	if req.ExpectedRevision == 0 {
+		return NewError(InvalidArgument, "expected revision is required")
 	}
 	if strings.TrimSpace(req.Scope.ClassCode) == "" {
 		return NewError(InvalidArgument, "class code is required")

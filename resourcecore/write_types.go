@@ -16,3 +16,27 @@ type ResourceWriteRequest struct {
 	NaturalUnit string
 	Attributes  []AttributeValue
 }
+
+// CatalogUpdateRequest replaces one existing catalog record of any
+// registered kind under optimistic concurrency.
+type CatalogUpdateRequest struct {
+	Actor            string
+	Kind             KindCode
+	ID               int64
+	ExpectedRevision uint64
+	Active           bool
+	Values           map[string]Value
+	Rules            []ApplicabilityRule // APLICABILIDAD aggregate; nil and empty differ
+}
+
+// ResourceUpdateRequest replaces one existing resource under optimistic
+// concurrency. ID is a stable BIGSERIAL primary key, obtainable today only
+// as a byproduct of a prior GetResource/SearchResources call.
+type ResourceUpdateRequest struct {
+	Actor            string
+	ID               int64
+	ExpectedRevision uint64
+	Scope            ResourceScope
+	NaturalUnit      string
+	Attributes       []AttributeValue
+}

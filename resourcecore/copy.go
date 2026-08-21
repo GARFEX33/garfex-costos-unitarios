@@ -89,3 +89,38 @@ func CloneResourceWriteRequest(req ResourceWriteRequest) ResourceWriteRequest {
 	}
 	return out
 }
+
+// CloneCatalogUpdateRequest defensively copies an update request so the
+// caller cannot mutate an in-flight or already-submitted request. Nil
+// versus non-nil-empty Rules is preserved, same as CloneCatalogWriteRequest.
+func CloneCatalogUpdateRequest(req CatalogUpdateRequest) CatalogUpdateRequest {
+	out := req
+	if req.Values != nil {
+		out.Values = make(map[string]Value, len(req.Values))
+		for k, v := range req.Values {
+			out.Values[k] = CloneValue(v)
+		}
+	}
+	if req.Rules != nil {
+		out.Rules = make([]ApplicabilityRule, len(req.Rules))
+		for i := range req.Rules {
+			r := req.Rules[i]
+			out.Rules[i] = ApplicabilityRule{AttributeCode: r.AttributeCode, Equals: CloneValue(r.Equals), Mode: r.Mode, IdentityParticipates: r.IdentityParticipates, NotApplicable: r.NotApplicable, Active: r.Active}
+		}
+	}
+	return out
+}
+
+// CloneResourceUpdateRequest defensively copies an update request so the
+// caller cannot mutate an in-flight or already-submitted request.
+func CloneResourceUpdateRequest(req ResourceUpdateRequest) ResourceUpdateRequest {
+	out := req
+	if req.Attributes != nil {
+		out.Attributes = make([]AttributeValue, len(req.Attributes))
+		for i := range req.Attributes {
+			a := req.Attributes[i]
+			out.Attributes[i] = AttributeValue{Code: a.Code, Value: CloneValue(a.Value), UnitCode: a.UnitCode}
+		}
+	}
+	return out
+}
