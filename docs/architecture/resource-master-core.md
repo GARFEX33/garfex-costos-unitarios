@@ -26,7 +26,7 @@ external consumer
 
 - `Reader` never imports `internal`; it is constructed with any `ReadCapabilities` implementation, but the only implementation shipped and integration-tested is `internal/bridge/resourcecore.Adapter`.
 - The adapter maps every public query to a domain call, translates errors through `internal/core.Map`, and defensively copies data at both edges — it holds no business rule of its own (lifecycle, presentation, dependency, or validation policy stays in `internal/app/catalogo` and `internal/app/recursos`).
-- `cmd/garfex/main.go`, the TUI, and the shipped CLI do not construct or wire a `Reader`. There is no concrete consumer yet; a future composition root may instantiate the bridge when one exists.
+- This repository contains no interface layer (no CLI, TUI, or other driving adapter) and therefore no consumer that constructs or wires a `Reader`. A composition root in a separate, consuming repository instantiates the bridge.
 
 ## Lifecycle semantics through READ
 
