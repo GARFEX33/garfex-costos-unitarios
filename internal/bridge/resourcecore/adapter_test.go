@@ -29,11 +29,15 @@ type fakeCatalogReader struct {
 	updateRevision     func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
 	deactivateRevision func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 	reactivateRevision func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
+	hardDeleteRevision func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 	getCalls           int
+	listCalls          int
+	hardDeleteCalls    int
 }
 
 func (f *fakeCatalogReader) Kinds() []domain.CatalogKind { return f.kinds }
 func (f *fakeCatalogReader) List(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+	f.listCalls++
 	return f.list(ctx, kind, filter)
 }
 func (f *fakeCatalogReader) Get(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
@@ -51,6 +55,10 @@ func (f *fakeCatalogReader) DeactivateRevision(ctx context.Context, kind domain.
 }
 func (f *fakeCatalogReader) ReactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
 	return f.reactivateRevision(ctx, kind, id, expectedRevision)
+}
+func (f *fakeCatalogReader) HardDeleteRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+	f.hardDeleteCalls++
+	return f.hardDeleteRevision(ctx, kind, id, expectedRevision)
 }
 
 type fakeResourceReader struct {
@@ -1173,6 +1181,223 @@ func TestCatalogLifecycle_ActorReachesDiagnosticSeam(t *testing.T) {
 	}
 	adapter := newTestAdapter(catalog, nil)
 	_, err := adapter.DeactivateCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if core.ActorFrom(capturedCtx) != "PI" {
+		t.Fatalf("expected Actor to reach the diagnostic seam via ctx, got %q", core.ActorFrom(capturedCtx))
+	}
+}
+
+func TestWriteBridge_CatalogWriter_HardDeleteRevisionFakeAdapted(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHardDeleteCatalog_FieldCompleteness_KindIDExpectedRevision(t *testing.T) {
+	var capturedKind domain.CatalogKindCode
+	var capturedID int64
+	var capturedExpected uint64
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			capturedKind, capturedID, capturedExpected = kind, id, expectedRevision
+			return nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 42, ExpectedRevision: 7})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedKind != domain.KindClass {
+		t.Fatalf("Kind not mapped: got %q", capturedKind)
+	}
+	if capturedID != 42 {
+		t.Fatalf("ID not mapped: got %d", capturedID)
+	}
+	if capturedExpected != 7 {
+		t.Fatalf("ExpectedRevision not mapped: got %d", capturedExpected)
+	}
+}
+
+func TestHardDeleteCatalog_EightCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"XX000", "", "", "", "unclassified driver failure"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrCatalogRecordNotFound, public.NotFound},
+		{"invalid catalog", domain.WrapInvalidCatalog(domain.ErrResourceValidation), public.InvalidCatalog},
+		{"invalid lifecycle", domain.ErrInvalidLifecycle, public.InvalidLifecycle},
+		{"in use", domain.ErrCatalogInUse, public.InUse},
+		{"conflict", domain.ErrRevisionConflict, public.Conflict},
+		{"unavailable", catalogo.ErrCatalogWriterUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+	}
+	seen := map[public.ErrorCode]struct{}{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &fakeCatalogReader{
+				kinds: []domain.CatalogKind{classKind()},
+				hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+					return tt.err
+				},
+			}
+			adapter := newTestAdapter(catalog, nil)
+			err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v, got %v", tt.wantCode, err)
+			}
+			var publicErr public.Error
+			if !errors.As(err, &publicErr) {
+				t.Fatalf("expected public.Error, got %T", err)
+			}
+			if errors.Unwrap(publicErr) != nil {
+				t.Fatalf("public error must not unwrap")
+			}
+			for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+				if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+					t.Fatalf("leaked technical detail %q in %v", leak, err)
+				}
+			}
+			seen[tt.wantCode] = struct{}{}
+		})
+	}
+	if len(seen) != len(tests) {
+		t.Fatalf("expected %d distinct categories, got %d: %+v", len(tests), len(seen), seen)
+	}
+}
+
+// TestHardDeleteCatalog_EightCategoryTable_ExcludesUnreachable proves that
+// every category the spec forbids claiming from HardDeleteCatalog still gets
+// its own distinct category (not silently collapsed into an unrelated one)
+// if it ever leaked through, per the pattern established by the Create and
+// Update category-exclusion tests.
+func TestHardDeleteCatalog_EightCategoryTable_ExcludesUnreachable(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"duplicate", domain.ErrCatalogDuplicate, public.Duplicate},
+		{"invalid reference", domain.ErrCatalogReference, public.InvalidReference},
+		{"validation", domain.ErrResourceValidation, public.Validation},
+		{"integrity", domain.ErrResourceIntegrity, public.Integrity},
+		{"identity conflict", domain.ErrIdentityConflict, public.IdentityConflict},
+		{"reactivation impossible", domain.ErrReactivationImpossible, public.ReactivationImpossible},
+		{"immutable code", domain.ErrCodeImmutable, public.ImmutableCode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &fakeCatalogReader{
+				kinds: []domain.CatalogKind{classKind()},
+				hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+					return tt.err
+				},
+			}
+			adapter := newTestAdapter(catalog, nil)
+			err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v (never claimed reachable from HardDeleteCatalog in production, but must not silently misclassify if it ever leaked through), got %v", tt.wantCode, err)
+			}
+		})
+	}
+}
+
+// TestHardDeleteCatalog_NoGuardChainDuplication_OneSeamCallZeroReads is
+// mechanism 3 from design.md: the falsifiable proof that the bridge never
+// re-implements the internal service's guard chain. The fake succeeds even
+// though a hypothetical read would report the target as active; if the
+// bridge ever inlined its own "reject if active" check it would have to call
+// Get first, which this test would catch.
+func TestHardDeleteCatalog_NoGuardChainDuplication_OneSeamCallZeroReads(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+		get: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
+			return domain.CatalogRecord{Kind: kind, ID: id, Revision: 1, Active: true}, nil
+		},
+		list: func(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error) {
+			return nil, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalog.hardDeleteCalls != 1 {
+		t.Fatalf("expected exactly one HardDeleteRevision call, got %d", catalog.hardDeleteCalls)
+	}
+	if catalog.getCalls != 0 || catalog.listCalls != 0 {
+		t.Fatalf("expected zero Get/List calls (no re-implemented guard), got getCalls=%d listCalls=%d", catalog.getCalls, catalog.listCalls)
+	}
+}
+
+// TestHardDeleteCatalog_StaleExpectedRevision_AlwaysConflict_NoBypass is the
+// CAS contrast with the lifecycle precedent: unlike Deactivate/Reactivate,
+// HardDeleteCatalog has no idempotent no-op target, so a stale
+// ExpectedRevision always yields CONFLICT.
+func TestHardDeleteCatalog_StaleExpectedRevision_AlwaysConflict_NoBypass(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return domain.ErrRevisionConflict
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 3})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("expected CONFLICT on a stale ExpectedRevision with no idempotent bypass, got %v", err)
+	}
+}
+
+// TestHardDeleteCatalog_NoConfirmReadAfterSuccess proves the operative
+// contrast with DeactivateCatalog/ReactivateCatalog: HardDeleteRevision
+// returns only error and the deleted record no longer exists to read back,
+// so the bridge must not follow success with a Get.
+func TestHardDeleteCatalog_NoConfirmReadAfterSuccess(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			return nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalog.getCalls != 0 {
+		t.Fatalf("expected zero Get calls after a successful delete (nothing left to read back), got %d", catalog.getCalls)
+	}
+}
+
+func TestHardDeleteCatalog_ActorReachesDiagnosticSeam(t *testing.T) {
+	var capturedCtx context.Context
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		hardDeleteRevision: func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error {
+			capturedCtx = ctx
+			return domain.ErrRevisionConflict
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	err := adapter.HardDeleteCatalog(context.Background(), public.CatalogLifecycleRequest{Actor: "PI", Kind: public.KindClass, ID: 1, ExpectedRevision: 1})
 	if !public.IsCode(err, public.Conflict) {
 		t.Fatalf("unexpected error: %v", err)
 	}
