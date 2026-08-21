@@ -17,7 +17,7 @@ import (
 var (
 	errApplicabilityRulesOmitted     = errors.New("applicability rules are omitted")
 	errApplicabilityRevisionRequired = errors.New("applicability update requires a non-zero expected revision")
-	errApplicabilityStaleRevision    = errors.New("applicability revision conflict") // stand-in for future domain.ErrRevisionConflict
+	errApplicabilityStaleRevision    = domain.ErrRevisionConflict
 
 	// errCatalogCandidateMismatchV2 is 4B's replacement for 3E's bounded,
 	// APLICABILIDAD-only errApplicabilityCandidateMismatch/
@@ -190,10 +190,12 @@ func updateApplicabilityAggregateV2(ctx context.Context, pool *pgxpool.Pool, rec
 
 var errCatalogRevisionRequiredV2 = errors.New("catalog update requires a non-zero expected revision")
 
-// errCatalogStaleRevisionV2 is a local, unexported sentinel — stand-in for
-// the future domain.ErrRevisionConflict (stage 5), same rationale as 3E's
-// errApplicabilityStaleRevision.
-var errCatalogStaleRevisionV2 = errors.New("catalog revision conflict")
+// errCatalogStaleRevisionV2 aliases domain.ErrRevisionConflict directly
+// (stage-5 fix, resource-master-core-write-update): the "future" the prior
+// comment named has arrived. Kept as a local name — not deleted — because
+// casUpdateRevision and its 20+ call sites/tests below still read most
+// clearly with the local, purpose-scoped identifier.
+var errCatalogStaleRevisionV2 = domain.ErrRevisionConflict
 
 // casUpdateRevision executes updateSQL (which must end
 // "... WHERE <key predicate> AND revision=$expected RETURNING revision")
