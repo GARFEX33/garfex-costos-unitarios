@@ -41,11 +41,11 @@ Every PR targets `main`; PR N starts only after PR N-1 merges. Each stays under 
 - [x] 3.1 **PR 3**: Test and enforce active-chain eligibility with historical reads in `internal/postgres/catalog_loader.go` and `resource_repository_crud.go` (debt 4); release gate before refactors.
 - [x] 4.1 **PR 4**: Test exact class/family/type/definition resolution and atomic cardinality in `internal/postgres/resource_repository_crud.go` (debts 2, 3).
 - [x] 5.1 **PR 5**: Characterize then extract state, transitions, persistence mapping, and presentation across `internal/tui/resource_editor*.go`, preserving behavior (debt 10).
-- [ ] 6.1 **PR 6**: Add explicit `Deactivate`/`Reactivate`, inactive discovery, active-only defaults, and visible state in app, CRUD, and TUI dispatch (debts 5, 6).
-- [ ] 7.1 **PR 7**: Replace per-row reads with bounded set hydration in `internal/postgres/resource_repository_search.go`; prove query-count and parity scenarios (debt 9).
-- [ ] 8.1 **PR 8**: Add `SearchCriteria`/`ResourcePage` navigation and TUI filter/selection preservation in domain, app, repository ports, and TUI (debt 12).
-- [ ] 9.1 **PR 9 / final gate**: Correct Resource Master comments and `docs/architecture/catalog-source-of-truth.md`; run full verification and smoke (debt 11).
+- [x] 6.1 **PR 6**: Add explicit `Deactivate`/`Reactivate`, inactive discovery, active-only defaults, and visible state in app, CRUD, and TUI dispatch (debts 5, 6). Merged as #119 `feat(resources): add explicit lifecycle backend` and #121 `feat(resources): expose lifecycle controls in TUI`.
+- [x] 7.1 **PR 7**: Replace per-row reads with bounded set hydration in `internal/postgres/resource_repository_search.go`; prove query-count and parity scenarios (debt 9). Merged as #123 `perf(resources): hydrate search attributes in sets`.
+- [x] 8.1 **PR 8**: Add `SearchCriteria`/`ResourcePage` navigation and TUI filter/selection preservation in domain, app, repository ports, and TUI (debt 12). Merged as #125 `feat(resources): add stable search pagination`.
+- [x] 9.1 **PR 9 / final gate**: Correct Resource Master comments and `docs/architecture/catalog-source-of-truth.md`; run full verification and smoke (debt 11). Merged as #127 `docs(resources): document catalog source of truth`.
 
 ### Current apply slice
 
-PR 5 / checkbox 5.1 is complete after PR 4 merged; PR 6+ remain ordered follow-ups and are out of scope.
+All 9 PRs (1.1–9.1) are merged to `main`. This checklist lagged its own bookkeeping — checkboxes 6.1–9.1 were never marked despite the corresponding PRs (#119, #121, #123, #125, #127) already being merged, discovered and corrected 2026-08-21 while auditing this change before starting new work on it. `resource-master-technical-debt` is fully complete; nothing remains to implement here.
