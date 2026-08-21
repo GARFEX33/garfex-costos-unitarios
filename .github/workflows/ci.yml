@@ -14,8 +14,6 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    env:
-      IMAGE: garfex-ci:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -31,11 +29,5 @@ jobs:
           version: v2.12.2
       - name: Test with race detector
         run: go test ./... -race -count=1
-      - name: Build Go binary
+      - name: Build
         run: go build ./...
-      - name: Build container image
-        run: docker build --tag "$IMAGE" .
-      - name: Verify container runs as non-root
-        run: test "$(docker inspect --format '{{.Config.User}}' "$IMAGE")" = "65532:65532"
-      - name: Smoke test container CLI
-        run: docker run --rm "$IMAGE" version

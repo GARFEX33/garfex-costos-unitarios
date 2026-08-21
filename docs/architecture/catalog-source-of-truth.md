@@ -6,17 +6,17 @@ This guide records the decisions reviewers and operators must use when tracing R
 
 | Concern | Authoritative decision | Concrete boundary |
 |---|---|---|
-| Construction | The application owns canonical Resource construction and validation. The TUI submits intent; it does not establish validity. | `internal/app/recursos/service.go`, `internal/domain/resource_validation.go` |
+| Construction | The application owns canonical Resource construction and validation. The consumer submits intent; it does not establish validity. | `internal/app/recursos/service.go`, `internal/domain/resource_validation.go` |
 | Identity | A v1 key is derived from class, family, type, and identity-participating canonical attributes. Natural unit, display data, and non-identity attributes do not change it. | `internal/domain/resource_validation.go`, `internal/domain/resource_types.go` |
 | Persistence | PostgreSQL is the source of truth for Resource instances and attribute values. The repository is reached through the domain port. | `internal/domain/resource_types.go`, `internal/postgres/resource_repository_crud.go` |
 | Lifecycle | Deactivation is non-destructive. `Deactivate` and `Reactivate` are explicit transitions; historical rows remain readable. | `internal/app/recursos/service.go`, `internal/postgres/resource_repository_crud.go` |
-| Search | Active resources are the default. Inactive discovery is explicit. Search pages are bounded, stable, filter-preserving, and set-hydrated. | `internal/domain/resource_types.go`, `internal/postgres/resource_repository_search.go`, `internal/tui/resources_workspace_dispatch.go` |
+| Search | Active resources are the default. Inactive discovery is explicit. Search pages are bounded, stable, filter-preserving, and set-hydrated. | `internal/domain/resource_types.go`, `internal/postgres/resource_repository_search.go` |
 | Supplier | Supplier data and behavior are not Resource Master authority. Do not infer a shared model or workflow. | `internal/modules/suppliers/` |
 
 ## Authority boundaries
 
 ```text
-TUI intent
+Consumer intent
   -> internal/app/recursos.Service
   -> internal/domain.NewResource / ResourceRepository port
   -> PostgreSQL recursos + resource_attribute_values
@@ -24,13 +24,13 @@ TUI intent
 
 - `Service.Create` and `Service.Update` load the current `CatalogAuthority`, call `domain.NewResource`, and only then invoke the repository. The caller-provided update ID is the stable storage identity; the v1 `IdentityKey` is re-derived.
 - `domain.HydrateResource` accepts repository snapshots only when the stored identity is v1 and the required resource fields are present. `SeedResourceCatalog` is fixture/seed data, not a replacement for persisted Resource rows.
-- The TUI uses application contracts for create, update, get, lifecycle, and `SearchPage`. `ResourcesWorkspaceAdapter.searchPage` rejects a legacy collection-only dependency instead of fabricating page metadata.
+- Any consumer reaches Resource Master only through application contracts for create, update, get, lifecycle, and `SearchPage` — never by importing `internal/domain` or `internal/postgres` directly.
 
 ## Write and read flow
 
 | Flow | Steps | Failure boundary |
 |---|---|---|
-| Create/update | TUI intent → application catalog validation → canonical domain Resource → repository transaction → PostgreSQL | Invalid or forged input fails before persistence; scoped target/cardinality failures roll back the transaction. |
+| Create/update | Consumer intent → application catalog validation → canonical domain Resource → repository transaction → PostgreSQL | Invalid or forged input fails before persistence; scoped target/cardinality failures roll back the transaction. |
 | Get | Class + v1 identity → PostgreSQL base row → shared effective-value loader → domain hydration | Inactive catalog references do not hide a historical Resource; effective-attribute ambiguity or effective-value metadata/decode/required-value integrity failures return `ErrResourceIntegrity`. Malformed base snapshots may return domain validation errors. |
 | SearchPage | Normalized criteria → bounded base/filter query → one set-based effective-value query → canonical page | No partial page is returned when an effective winner is ambiguous or effective-value metadata, decode, or required-value integrity is inconsistent. Malformed base snapshots may return domain validation errors. |
 
@@ -66,7 +66,7 @@ The shared CTE and loader live in `internal/postgres/resource_repository_attribu
 - `SearchCriteria.Normalize` supplies a default size of 50 when `Limit` is zero, rejects `Limit > 50` with `ErrInvalidSearch` rather than capping it, rejects negative bounds, and validates lifecycle scope.
 - PostgreSQL fetches `limit + 1` rows and reports `HasNext`; `HasPrevious` is true only when the normalized offset is positive.
 - Ordering is `identity_key ASC, id ASC`, so equal display values have a stable tie-breaker.
-- `ResourcePage.Criteria` retains text, class, family, attribute filters, lifecycle scope, limit, and offset. TUI next/previous changes only the offset and retains that context.
+- `ResourcePage.Criteria` retains text, class, family, attribute filters, lifecycle scope, limit, and offset. Paging forward/backward changes only the offset and retains that context.
 - A boundary request is a no-op. A navigation failure retains the current page and selection context.
 
 ## Integrity failures
@@ -76,15 +76,13 @@ The shared CTE and loader live in `internal/postgres/resource_repository_attribu
 | Invalid/forged write | Validation error; repository is not called. | `internal/app/recursos/service.go`, domain tests |
 | Zero or multiple `(class, family, type, definition)` targets | `ErrResourceIntegrity`; transaction rolls back. | `internal/postgres/resource_repository_crud.go` |
 | Ambiguous effective winner, effective-value metadata/decode/required-value failure | `ErrResourceIntegrity`; Get/SearchPage returns no partial Resource/page. Malformed base snapshots may instead return a domain validation error. | `internal/postgres/resource_repository_attributes.go`, `resource_repository_search.go` |
-| Legacy TUI search dependency | Deterministic error; no fabricated page or navigation state. | `internal/tui/resources_workspace_dispatch.go` |
 
 ## Operator path: verify, troubleshoot, rollback
 
 1. Confirm the branch and clean scope: `git status --short --branch` and `git diff --stat`.
 2. Run static checks: `gofmt -l .`, `go vet ./...`, and `golangci-lint run ./...`.
-3. Run focused tests, then the full suite: `go test ./internal/domain ./internal/app/recursos ./internal/postgres ./internal/tui -count=1` and `go test ./... -count=1`.
+3. Run focused tests, then the full suite: `go test ./internal/domain ./internal/app/recursos ./internal/postgres -count=1` and `go test ./... -count=1`.
 4. For PostgreSQL evidence, treat `sh scripts/db/integration_test.sh` only as the isolated harness/migration-lifecycle check: its database has no host port, so the script neither exposes a host DSN nor runs Resource tests. Resource-focused evidence comes from the recorded isolated CI run (migrations 000001–000007, with separate app/admin DSNs), or an equivalently isolated database; with `GARFEX_TEST_DSN` and `GARFEX_ADMIN_TEST_DSN` pointed there, run `go test ./internal/postgres -run 'TestResourceRepository(LifecycleIntegration|AttributeCardinalityIntegration|SearchSetHydrationIntegration|Integration)$' -count=1`. Never point these tests at the normal `garfex_pgdata` volume.
-5. Check the CLI with `go run ./cmd/garfex version` and `go run ./cmd/garfex config check` after loading all required `GARFEX_DB_*` variables. Run `go run ./cmd/garfex` for the documented non-destructive TUI smoke.
 
 Rollback for this documentation slice is limited to the changed comments and this guide. Reverting it does not alter Resource behavior, schema, migrations, PostgreSQL data, Supplier code, `.atl`, or pagination/lifecycle implementation. For a runtime integrity incident, preserve the failing evidence, stop writes if necessary, and roll back the owning code slice—not by deleting catalog or Resource rows.
 
