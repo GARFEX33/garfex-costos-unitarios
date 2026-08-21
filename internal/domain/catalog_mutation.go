@@ -31,9 +31,9 @@ var (
 	// ErrCatalogRecordNotFound is returned when Update/Deactivate/
 	// Reactivate/Delete cannot find a matching element by IdentityFields.
 	ErrCatalogRecordNotFound = errors.New("catalog record not found")
-	// ErrSoftDeleteUnsupported is returned when Deactivate/Reactivate
-	// targets a kind whose underlying ResourceCatalog struct has no Active
-	// field yet (see CatalogKind.SoftDelete's doc comment).
+	// ErrSoftDeleteUnsupported remains for source compatibility with legacy
+	// callers; no registered kind returns it now that lifecycle support is
+	// complete.
 	ErrSoftDeleteUnsupported = errors.New("catalog kind does not support deactivate/reactivate")
 	// ErrMutationOpUnknown is returned for an out-of-range MutationOp.
 	ErrMutationOpUnknown = errors.New("unknown catalog mutation op")
@@ -46,6 +46,7 @@ var (
 // — call the returned catalog's Validate() separately (design D9) before
 // persisting.
 func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m CatalogMutation) (ResourceCatalog, error) {
+	m = cloneCatalogMutation(m)
 	if _, ok := registry.Kind(m.Record.Kind); !ok {
 		return c, fmt.Errorf("%w: %q", ErrCatalogKindUnknown, m.Record.Kind)
 	}
@@ -54,7 +55,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 	if m.Replacement != nil {
 		buildRecord = *m.Replacement
 	}
-	next := c
+	next := cloneMutationCatalog(c)
 	var err error
 	switch m.Record.Kind {
 	case KindClass:
@@ -87,22 +88,31 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 				return canonicalAttribute(v.Code) == canonicalAttribute(text(m.Record, "code"))
 			},
 			func() AttributeDefinition { return definitionFromRecord(buildRecord) },
-			nil, // no Active field on this Go struct yet (see CatalogKind.SoftDelete doc)
+			func(v *AttributeDefinition, active bool) { v.Active = active },
 		)
+		if err == nil {
+			code := canonicalAttribute(text(m.Record, "code"))
+			switch m.Op {
+			case OpUpdate:
+				err = rebuildEmbeddedDefinitions(&next, code, definitionFromRecord(buildRecord))
+			case OpDeactivate, OpReactivate:
+				synchronizeEmbeddedDefinitionActive(&next, code)
+			}
+		}
 	case KindOptionSet:
-		// No ResourceCatalog slice represents named option sets: OptionSet
-		// is a denormalized string tag on Options/Attributes/Relations, not
-		// its own entity in the pure domain snapshot (design §3's own
-		// File Changes table adds no such domain file). Nothing to mutate
-		// here — the repository (a later PR) persists resource_option_sets
-		// rows independently of this snapshot.
-		return c, nil
+		next.OptionSets, err = mutateSlice(c.OptionSets, m.Op,
+			func(v ResourceOptionSet) bool {
+				return canonicalOptionSet(v.Code) == canonicalOptionSet(text(m.Record, "code"))
+			},
+			func() ResourceOptionSet { return optionSetFromRecord(buildRecord) },
+			func(v *ResourceOptionSet, active bool) { v.Active = active },
+		)
 	case KindOption:
 		next.Options, err = mutateSlice(c.Options, m.Op,
 			func(v AttributeOption) bool {
 				return canonicalOptionSet(v.OptionSet) == canonicalOptionSet(ref(m.Record, "optionSet")) &&
 					canonicalAttribute(v.AttributeCode) == canonicalAttribute(ref(m.Record, "characteristic")) &&
-					v.Code == text(m.Record, "code")
+					canonical(v.Code) == canonical(text(m.Record, "code"))
 			},
 			func() AttributeOption { return optionFromRecord(buildRecord) },
 			func(v *AttributeOption, active bool) { v.Active = active },
@@ -111,10 +121,10 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 		next.Relations, err = mutateSlice(c.Relations, m.Op,
 			func(v AttributeOptionRelation) bool {
 				return canonicalOptionSet(v.OptionSet) == canonicalOptionSet(ref(m.Record, "optionSet")) &&
-					v.FromOption == ref(m.Record, "fromOption") && v.ToOption == ref(m.Record, "toOption")
+					canonical(v.FromOption) == canonical(ref(m.Record, "fromOption")) && canonical(v.ToOption) == canonical(ref(m.Record, "toOption"))
 			},
 			func() AttributeOptionRelation { return optionRelationFromRecord(buildRecord) },
-			nil,
+			func(v *AttributeOptionRelation, active bool) { v.Active = active },
 		)
 	case KindUnit:
 		next.Units, err = mutateSlice(c.Units, m.Op,
@@ -130,9 +140,14 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonical(v.UnitCode) == canonical(ref(m.Record, "unit"))
 			},
 			func() ResourceUnitPolicy { return unitPolicyFromRecord(buildRecord) },
-			nil,
+			func(v *ResourceUnitPolicy, active bool) { v.Active = active },
 		)
 	case KindAttributeBinding:
+		if m.Op == OpInsert || m.Op == OpUpdate {
+			if err = validateApplicabilityRecord(c, buildRecord); err != nil {
+				return c, err
+			}
+		}
 		next.Attributes, err = mutateSlice(c.Attributes, m.Op,
 			func(v ResourceAttribute) bool {
 				return canonical(v.ClassCode) == canonical(ref(m.Record, "class")) &&
@@ -141,7 +156,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonicalAttribute(v.Definition.Code) == canonicalAttribute(ref(m.Record, "characteristic"))
 			},
 			func() ResourceAttribute { return c.attributeBindingFromRecord(buildRecord) },
-			nil,
+			func(v *ResourceAttribute, active bool) { v.Active = active },
 		)
 	case KindPresentationField:
 		next.PresentationFields, err = mutateSlice(c.PresentationFields, m.Op,
@@ -152,7 +167,7 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 					canonicalAttribute(v.AttributeCode) == canonicalAttribute(ref(m.Record, "characteristic"))
 			},
 			func() PresentationField { return presentationFieldFromRecord(buildRecord) },
-			nil,
+			func(v *PresentationField, active bool) { v.Active = active },
 		)
 	default:
 		return c, fmt.Errorf("%w: %q", ErrCatalogKindUnknown, m.Record.Kind)
@@ -160,7 +175,48 @@ func ApplyCatalogMutation(c ResourceCatalog, registry CatalogRegistry, m Catalog
 	if err != nil {
 		return c, err
 	}
-	return next, nil
+	return cloneMutationCatalog(next), nil
+}
+
+func cloneCatalogMutation(mutation CatalogMutation) CatalogMutation {
+	mutation.Record = cloneCatalogRecord(mutation.Record)
+	if mutation.Replacement != nil {
+		replacement := cloneCatalogRecord(*mutation.Replacement)
+		mutation.Replacement = &replacement
+	}
+	return mutation
+}
+
+func cloneMutationSlice[T any](values []T) []T {
+	if values == nil {
+		return nil
+	}
+	copyOfValues := make([]T, len(values))
+	copy(copyOfValues, values)
+	return copyOfValues
+}
+
+func cloneMutationCatalog(catalog ResourceCatalog) ResourceCatalog {
+	next := catalog
+	next.Classes = cloneMutationSlice(catalog.Classes)
+	for i := range next.Classes {
+		next.Classes[i].Aliases = cloneCatalogStrings(catalog.Classes[i].Aliases)
+		next.Classes[i].Keywords = cloneCatalogStrings(catalog.Classes[i].Keywords)
+	}
+	next.Families = cloneMutationSlice(catalog.Families)
+	next.Types = cloneMutationSlice(catalog.Types)
+	next.PresentationFields = cloneMutationSlice(catalog.PresentationFields)
+	next.Units = cloneMutationSlice(catalog.Units)
+	next.UnitPolicies = cloneMutationSlice(catalog.UnitPolicies)
+	next.Definitions = cloneMutationSlice(catalog.Definitions)
+	next.Attributes = cloneMutationSlice(catalog.Attributes)
+	for i := range next.Attributes {
+		next.Attributes[i].Rules = cloneMutationSlice(catalog.Attributes[i].Rules)
+	}
+	next.Options = cloneMutationSlice(catalog.Options)
+	next.Relations = cloneMutationSlice(catalog.Relations)
+	next.OptionSets = cloneMutationSlice(catalog.OptionSets)
+	return next
 }
 
 // --- CatalogRecord field accessors -----------------------------------
@@ -196,7 +252,12 @@ func definitionFromRecord(rec CatalogRecord) AttributeDefinition {
 		ValueType:                   AttributeValueType(text(rec, "valueType")),
 		Dimension:                   text(rec, "dimension"),
 		DefaultIdentityParticipates: boolean(rec, "defaultIdentityParticipates"),
+		Active:                      rec.Active,
 	}
+}
+
+func optionSetFromRecord(rec CatalogRecord) ResourceOptionSet {
+	return ResourceOptionSet{Code: text(rec, "code"), Name: text(rec, "name"), Active: rec.Active}
 }
 
 func unitFromRecord(rec CatalogRecord) UnitDefinition {
@@ -214,14 +275,14 @@ func optionRelationFromRecord(rec CatalogRecord) AttributeOptionRelation {
 	return AttributeOptionRelation{
 		OptionSet:     ref(rec, "optionSet"),
 		FromAttribute: ref(rec, "fromCharacteristic"), FromOption: ref(rec, "fromOption"),
-		ToAttribute: ref(rec, "toCharacteristic"), ToOption: ref(rec, "toOption"),
+		ToAttribute: ref(rec, "toCharacteristic"), ToOption: ref(rec, "toOption"), Active: rec.Active,
 	}
 }
 
 func unitPolicyFromRecord(rec CatalogRecord) ResourceUnitPolicy {
 	return ResourceUnitPolicy{
 		ClassCode: ref(rec, "class"), FamilyCode: ref(rec, "family"), UnitCode: ref(rec, "unit"),
-		Allowed: boolean(rec, "allowed"), Suggested: boolean(rec, "suggested"),
+		Allowed: boolean(rec, "allowed"), Suggested: boolean(rec, "suggested"), Active: rec.Active,
 	}
 }
 
@@ -238,22 +299,192 @@ func (c ResourceCatalog) attributeBindingFromRecord(rec CatalogRecord) ResourceA
 		Definition:           c.definitionFor(ref(rec, "characteristic")),
 		Mode:                 AttributeMode(text(rec, "mode")),
 		IdentityParticipates: boolean(rec, "identityParticipates"),
+		Rules:                attributeRulesFromRecords(rec.Rules),
+		Active:               rec.Active,
 	}
 }
 
 func presentationFieldFromRecord(rec CatalogRecord) PresentationField {
 	return PresentationField{
 		ClassCode: ref(rec, "class"), FamilyCode: ref(rec, "family"), TypeCode: ref(rec, "type"),
-		AttributeCode: ref(rec, "characteristic"), Position: integer(rec, "position"),
+		AttributeCode: ref(rec, "characteristic"), Position: integer(rec, "position"), Active: rec.Active,
 	}
+}
+
+func attributeRulesFromRecords(records []CatalogRuleRecord) []AttributeRule {
+	if records == nil {
+		return nil
+	}
+	rules := make([]AttributeRule, len(records))
+	for i, record := range records {
+		rules[i] = AttributeRule(record)
+	}
+	return rules
+}
+
+func synchronizeEmbeddedDefinitionActive(catalog *ResourceCatalog, code string) {
+	var active bool
+	for _, definition := range catalog.Definitions {
+		if canonicalAttribute(definition.Code) == code {
+			active = definition.Active
+			break
+		}
+	}
+	for i := range catalog.Attributes {
+		if canonicalAttribute(catalog.Attributes[i].Definition.Code) == code {
+			catalog.Attributes[i].Definition.Active = active
+		}
+	}
+}
+
+func rebuildEmbeddedDefinitions(catalog *ResourceCatalog, oldCode string, replacement AttributeDefinition) error {
+	newCode := canonicalAttribute(replacement.Code)
+	if newCode != oldCode && definitionHasReferences(*catalog, oldCode) {
+		return fmt.Errorf("%w: definition %q is referenced", ErrCodeImmutable, oldCode)
+	}
+	if newCode == oldCode {
+		for i := range catalog.Attributes {
+			if canonicalAttribute(catalog.Attributes[i].Definition.Code) == oldCode {
+				catalog.Attributes[i].Definition = replacement
+			}
+		}
+	}
+	return nil
+}
+
+func definitionHasReferences(catalog ResourceCatalog, code string) bool {
+	for _, attribute := range catalog.Attributes {
+		if canonicalAttribute(attribute.Definition.Code) == code {
+			return true
+		}
+	}
+	for _, option := range catalog.Options {
+		if canonicalAttribute(option.AttributeCode) == code {
+			return true
+		}
+	}
+	for _, relation := range catalog.Relations {
+		if canonicalAttribute(relation.FromAttribute) == code || canonicalAttribute(relation.ToAttribute) == code {
+			return true
+		}
+	}
+	for _, field := range catalog.PresentationFields {
+		if canonicalAttribute(field.AttributeCode) == code {
+			return true
+		}
+	}
+	return false
+}
+
+func validateApplicabilityRecord(c ResourceCatalog, record CatalogRecord) error {
+	if record.Rules == nil {
+		return fmt.Errorf("%w: applicability rules are omitted", ErrResourceValidation)
+	}
+	classCode, err := requiredCatalogRef(record, "class", KindClass)
+	if err != nil {
+		return err
+	}
+	familyCode, err := requiredCatalogRef(record, "family", KindFamily)
+	if err != nil {
+		return err
+	}
+	if !c.hasFamilyIn(classCode, familyCode) {
+		return fmt.Errorf("%w: applicability references unknown family %q", ErrResourceReference, familyCode)
+	}
+	if typeCode, err := optionalCatalogRef(record, "type", KindType); err != nil {
+		return err
+	} else if typeCode != "" && !c.hasTypeIn(classCode, familyCode, typeCode) {
+		return fmt.Errorf("%w: applicability references unknown type %q", ErrResourceReference, typeCode)
+	}
+	characteristic, err := requiredCatalogRef(record, "characteristic", KindAttributeDefinition)
+	if err != nil {
+		return err
+	}
+	if !hasDefinition(c, characteristic) {
+		return fmt.Errorf("%w: applicability references unknown characteristic %q", ErrResourceReference, characteristic)
+	}
+	if optionSet, err := optionalCatalogRef(record, "optionSet", KindOptionSet); err != nil {
+		return err
+	} else if optionSet != "" && !hasCatalogOptionSet(c, optionSet) {
+		return fmt.Errorf("%w: applicability references unknown option set %q", ErrResourceReference, optionSet)
+	}
+	mode := AttributeMode(text(record, "mode"))
+	if !validAttributeMode(mode) {
+		return fmt.Errorf("%w: applicability mode is invalid", ErrResourceValidation)
+	}
+	if mode == ModeConditional && len(record.Rules) == 0 {
+		return fmt.Errorf("%w: conditional applicability has no rules", ErrResourceValidation)
+	}
+	if mode != ModeConditional && len(record.Rules) > 0 {
+		return fmt.Errorf("%w: non-conditional applicability has rules", ErrResourceValidation)
+	}
+	for _, rule := range record.Rules {
+		if canonicalAttribute(rule.When.AttributeCode) == "" || canonical(rule.When.Equals) == "" || !validAttributeMode(rule.Mode) {
+			return fmt.Errorf("%w: applicability rule is incomplete", ErrResourceValidation)
+		}
+		if !hasDefinition(c, rule.When.AttributeCode) {
+			return fmt.Errorf("%w: applicability rule references unknown characteristic %q", ErrResourceReference, rule.When.AttributeCode)
+		}
+	}
+	return nil
+}
+
+func requiredCatalogRef(record CatalogRecord, field string, kind CatalogKindCode) (string, error) {
+	code, err := optionalCatalogRef(record, field, kind)
+	if err != nil {
+		return "", err
+	}
+	if code == "" {
+		return "", fmt.Errorf("%w: applicability field %q is required", ErrResourceValidation, field)
+	}
+	return code, nil
+}
+
+func optionalCatalogRef(record CatalogRecord, field string, kind CatalogKindCode) (string, error) {
+	value, ok := record.Values[field]
+	if !ok {
+		return "", nil
+	}
+	if value.Ref.Kind != "" && value.Ref.Kind != kind {
+		return "", fmt.Errorf("%w: applicability field %q has the wrong reference kind", ErrResourceReference, field)
+	}
+	return value.Ref.Code, nil
+}
+
+func hasDefinition(c ResourceCatalog, code string) bool {
+	code = canonicalAttribute(code)
+	for _, definition := range c.Definitions {
+		if canonicalAttribute(definition.Code) == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCatalogOptionSet(c ResourceCatalog, code string) bool {
+	code = canonicalOptionSet(code)
+	for _, optionSet := range c.OptionSets {
+		if canonicalOptionSet(optionSet.Code) == code {
+			return true
+		}
+	}
+	for _, option := range c.Options {
+		if canonicalOptionSet(option.OptionSet) == code {
+			return true
+		}
+	}
+	return false
+}
+
+func validAttributeMode(mode AttributeMode) bool {
+	return mode == ModeRequired || mode == ModeOptional || mode == ModeConditional || mode == ModeForbidden
 }
 
 // --- generic copy-on-write slice engine --------------------------------
 
 // mutateSlice applies op to slice without ever modifying slice's own backing
-// array: every branch builds a brand new slice before returning it. setActive
-// may be nil for kinds with no Go Active field yet (Deactivate/Reactivate
-// then return ErrSoftDeleteUnsupported).
+// array: every branch builds a brand new slice before returning it. Every
+// registered catalog kind supplies an active-state setter.
 func mutateSlice[T any](slice []T, op MutationOp, matches func(T) bool, build func() T, setActive func(*T, bool)) ([]T, error) {
 	switch op {
 	case OpInsert:
@@ -269,9 +500,6 @@ func mutateSlice[T any](slice []T, op MutationOp, matches func(T) bool, build fu
 		next[idx] = build()
 		return next, nil
 	case OpDeactivate, OpReactivate:
-		if setActive == nil {
-			return nil, ErrSoftDeleteUnsupported
-		}
 		idx := indexOf(slice, matches)
 		if idx < 0 {
 			return nil, ErrCatalogRecordNotFound

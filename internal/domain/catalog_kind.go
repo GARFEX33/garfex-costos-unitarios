@@ -89,14 +89,9 @@ type CatalogKind struct {
 	IdentityFields []string // uniqueness key, e.g. {"class", "code"}
 	ParentKind     CatalogKindCode
 	ParentField    string
-	// SoftDelete is true only for kinds whose underlying ResourceCatalog
-	// struct actually carries an Active field today (design Risk#3): Clase
-	// (pre-existing), Familia/Tipo/Opción/Unidad (task 3.4 of this PR).
-	// AttributeDefinition/OptionSet/OptionRelation/UnitPolicy/
-	// AttributeBinding/PresentationField gained a DB-level `active` column
-	// in migration 000003 but have no Go Active field yet — a later PR's
-	// job, not this one's (see catalog_mutation.go's Deactivate/Reactivate
-	// handling for the resulting explicit error on those kinds).
+	// SoftDelete marks whether the kind participates in the complete domain
+	// lifecycle. Every registered kind has an Active field and supports
+	// deactivate/reactivate alongside create, update, and delete.
 	SoftDelete bool
 	Children   []RelationDescriptor
 }
@@ -213,8 +208,7 @@ func catalogKinds() []CatalogKind {
 				{Name: "defaultIdentityParticipates", Label: "Participa en Identidad por defecto", Kind: FieldBool},
 			},
 			IdentityFields: []string{"code"},
-			// SoftDelete: not yet — AttributeDefinition has no Go Active
-			// field in this PR (see CatalogKind.SoftDelete doc comment).
+			SoftDelete:     true,
 			Children: []RelationDescriptor{
 				{Kind: KindAttributeBinding, ViaFields: []string{"characteristic"}, Blocking: true},
 				{Kind: KindOption, ViaFields: []string{"characteristic"}, Blocking: true},
@@ -227,6 +221,7 @@ func catalogKinds() []CatalogKind {
 				{Name: "name", Label: "Nombre", Kind: FieldText, Required: true, Searchable: true},
 			},
 			IdentityFields: []string{"code"},
+			SoftDelete:     true,
 			Children: []RelationDescriptor{
 				{Kind: KindOption, ViaFields: []string{"optionSet"}, Blocking: true},
 				{Kind: KindOptionRelation, ViaFields: []string{"optionSet"}, Blocking: true},
@@ -258,6 +253,7 @@ func catalogKinds() []CatalogKind {
 			},
 			IdentityFields: []string{"optionSet", "fromOption", "toOption"},
 			ParentKind:     KindOptionSet, ParentField: "optionSet",
+			SoftDelete: true,
 		},
 		{
 			Code: KindUnit, Singular: "Unidad", Plural: "Unidades",
@@ -284,6 +280,7 @@ func catalogKinds() []CatalogKind {
 			},
 			IdentityFields: []string{"class", "family", "unit"},
 			ParentKind:     KindFamily, ParentField: "family",
+			SoftDelete: true,
 		},
 		{
 			Code: KindAttributeBinding, Singular: "Aplicabilidad", Plural: "Aplicabilidades",
@@ -298,6 +295,7 @@ func catalogKinds() []CatalogKind {
 			},
 			IdentityFields: []string{"class", "family", "type", "characteristic"},
 			ParentKind:     KindFamily, ParentField: "family",
+			SoftDelete: true,
 		},
 		{
 			Code: KindPresentationField, Singular: "Campo de Presentación", Plural: "Campos de Presentación",
@@ -310,6 +308,7 @@ func catalogKinds() []CatalogKind {
 			},
 			IdentityFields: []string{"class", "family", "type", "characteristic"},
 			ParentKind:     KindType, ParentField: "type",
+			SoftDelete: true,
 		},
 	}
 }
