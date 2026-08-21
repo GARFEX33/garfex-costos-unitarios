@@ -94,8 +94,33 @@ func TestCodeThroughRecursiveChain(t *testing.T) {
 
 type spySink struct{ records []DiagnosticRecord }
 
-func (s *spySink) Record(_ context.Context, op Operation, kind string, id int64, cause error) {
-	s.records = append(s.records, DiagnosticRecord{Op: op, Kind: kind, ID: id, Cause: cause})
+func (s *spySink) Record(ctx context.Context, op Operation, kind string, id int64, cause error) {
+	s.records = append(s.records, NewDiagnosticRecord(ctx, op, kind, id, cause))
+}
+
+func TestActor_WithActor_ActorFrom_RoundTrip(t *testing.T) {
+	if got := ActorFrom(context.Background()); got != "" {
+		t.Fatalf("expected empty actor on bare context, got %q", got)
+	}
+	ctx := WithActor(context.Background(), "PI")
+	if got := ActorFrom(ctx); got != "PI" {
+		t.Fatalf("ActorFrom() = %q, want %q", got, "PI")
+	}
+	if got := WithActor(context.Background(), ""); ActorFrom(got) != "" {
+		t.Fatalf("blank actor must not attach to the context")
+	}
+}
+
+func TestActor_NewDiagnosticRecord_IncludesActorAndBlankNoop(t *testing.T) {
+	ctx := WithActor(context.Background(), "PI")
+	rec := NewDiagnosticRecord(ctx, Operation("catalog.create"), "CLASE", 7, errors.New("boom"))
+	if rec.Actor != "PI" || rec.Op != "catalog.create" || rec.Kind != "CLASE" || rec.ID != 7 {
+		t.Fatalf("unexpected diagnostic record: %+v", rec)
+	}
+	blank := NewDiagnosticRecord(context.Background(), Operation("catalog.create"), "", 0, errors.New("boom"))
+	if blank.Actor != "" {
+		t.Fatalf("expected empty actor when context carries none, got %q", blank.Actor)
+	}
 }
 
 func TestDiagnosticSinkRetainsCauseWithoutLeaking(t *testing.T) {
