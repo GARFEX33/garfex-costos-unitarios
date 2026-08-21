@@ -125,6 +125,22 @@ func (f *externalFakeWriteCapabilities) UpdateResource(ctx context.Context, req 
 	return resourcecore.Resource{ID: req.ID, IdentityV1: "v1|x", Scope: req.Scope, Revision: req.ExpectedRevision + 1, Attributes: req.Attributes}, nil
 }
 
+func (f *externalFakeWriteCapabilities) DeactivateCatalog(ctx context.Context, req resourcecore.CatalogLifecycleRequest) (resourcecore.CatalogRecord, error) {
+	return resourcecore.CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1, Active: false}, nil
+}
+
+func (f *externalFakeWriteCapabilities) ReactivateCatalog(ctx context.Context, req resourcecore.CatalogLifecycleRequest) (resourcecore.CatalogRecord, error) {
+	return resourcecore.CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1, Active: true}, nil
+}
+
+func (f *externalFakeWriteCapabilities) DeactivateResource(ctx context.Context, req resourcecore.ResourceLifecycleRequest) (resourcecore.Resource, error) {
+	return resourcecore.Resource{ID: req.ID, IdentityV1: "v1|x", Revision: req.ExpectedRevision + 1, Active: false}, nil
+}
+
+func (f *externalFakeWriteCapabilities) ReactivateResource(ctx context.Context, req resourcecore.ResourceLifecycleRequest) (resourcecore.Resource, error) {
+	return resourcecore.Resource{ID: req.ID, IdentityV1: "v1|x", Revision: req.ExpectedRevision + 1, Active: true}, nil
+}
+
 func TestExternalWrite_ConsumerConstructsWriterUsingPublicTypesOnly(t *testing.T) {
 	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
 	if err != nil {
@@ -192,6 +208,60 @@ func TestExternalWrite_ConsumerUpdatesCatalogAndResourceUsingPublicTypesOnly(t *
 	}
 	if res.ID != 1 || res.Revision <= 1 {
 		t.Fatalf("unexpected resource: %+v", res)
+	}
+}
+
+func TestExternalWrite_ConsumerDeactivatesAndReactivatesCatalogAndResourceUnderCAS(t *testing.T) {
+	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec, err := writer.DeactivateCatalog(context.Background(), resourcecore.CatalogLifecycleRequest{
+		Actor: "PI", Kind: resourcecore.KindClass, ID: 1, ExpectedRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Active {
+		t.Fatalf("expected deactivated catalog record, got %+v", rec)
+	}
+
+	res, err := writer.DeactivateResource(context.Background(), resourcecore.ResourceLifecycleRequest{
+		Actor: "PI", ID: 1, ExpectedRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Active {
+		t.Fatalf("expected deactivated resource, got %+v", res)
+	}
+}
+
+func TestExternalWrite_ConsumerReactivatesPreviouslyDeactivatedCatalogAndResource(t *testing.T) {
+	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec, err := writer.ReactivateCatalog(context.Background(), resourcecore.CatalogLifecycleRequest{
+		Actor: "PI", Kind: resourcecore.KindClass, ID: 1, ExpectedRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !rec.Active {
+		t.Fatalf("expected reactivated catalog record, got %+v", rec)
+	}
+
+	res, err := writer.ReactivateResource(context.Background(), resourcecore.ResourceLifecycleRequest{
+		Actor: "PI", ID: 1, ExpectedRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Active {
+		t.Fatalf("expected reactivated resource, got %+v", res)
 	}
 }
 

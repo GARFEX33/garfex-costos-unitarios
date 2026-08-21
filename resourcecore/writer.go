@@ -14,6 +14,10 @@ type WriteCapabilities interface {
 	CreateResource(context.Context, ResourceWriteRequest) (Resource, error)
 	UpdateCatalog(context.Context, CatalogUpdateRequest) (CatalogRecord, error)
 	UpdateResource(context.Context, ResourceUpdateRequest) (Resource, error)
+	DeactivateCatalog(context.Context, CatalogLifecycleRequest) (CatalogRecord, error)
+	ReactivateCatalog(context.Context, CatalogLifecycleRequest) (CatalogRecord, error)
+	DeactivateResource(context.Context, ResourceLifecycleRequest) (Resource, error)
+	ReactivateResource(context.Context, ResourceLifecycleRequest) (Resource, error)
 }
 
 // Writer is the public write-only Resource Master contract. It validates
@@ -80,6 +84,84 @@ func (w *Writer) UpdateResource(ctx context.Context, req ResourceUpdateRequest) 
 		return Resource{}, err
 	}
 	return CloneResource(res), nil
+}
+
+// DeactivateCatalog deactivates one existing catalog record under
+// optimistic concurrency.
+func (w *Writer) DeactivateCatalog(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error) {
+	if err := validateCatalogLifecycleRequest(req); err != nil {
+		return CatalogRecord{}, err
+	}
+	rec, err := w.cap.DeactivateCatalog(ctx, req)
+	if err != nil {
+		return CatalogRecord{}, err
+	}
+	return CloneCatalogRecord(rec), nil
+}
+
+// ReactivateCatalog reactivates one existing catalog record under
+// optimistic concurrency.
+func (w *Writer) ReactivateCatalog(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error) {
+	if err := validateCatalogLifecycleRequest(req); err != nil {
+		return CatalogRecord{}, err
+	}
+	rec, err := w.cap.ReactivateCatalog(ctx, req)
+	if err != nil {
+		return CatalogRecord{}, err
+	}
+	return CloneCatalogRecord(rec), nil
+}
+
+// DeactivateResource deactivates one existing resource under optimistic
+// concurrency.
+func (w *Writer) DeactivateResource(ctx context.Context, req ResourceLifecycleRequest) (Resource, error) {
+	if err := validateResourceLifecycleRequest(req); err != nil {
+		return Resource{}, err
+	}
+	res, err := w.cap.DeactivateResource(ctx, req)
+	if err != nil {
+		return Resource{}, err
+	}
+	return CloneResource(res), nil
+}
+
+// ReactivateResource reactivates one existing resource under optimistic
+// concurrency.
+func (w *Writer) ReactivateResource(ctx context.Context, req ResourceLifecycleRequest) (Resource, error) {
+	if err := validateResourceLifecycleRequest(req); err != nil {
+		return Resource{}, err
+	}
+	res, err := w.cap.ReactivateResource(ctx, req)
+	if err != nil {
+		return Resource{}, err
+	}
+	return CloneResource(res), nil
+}
+
+func validateCatalogLifecycleRequest(req CatalogLifecycleRequest) error {
+	if strings.TrimSpace(req.Actor) == "" {
+		return NewError(InvalidArgument, "actor is required")
+	}
+	if req.ID == 0 {
+		return NewError(InvalidArgument, "id is required")
+	}
+	if req.ExpectedRevision == 0 {
+		return NewError(InvalidArgument, "expected revision is required")
+	}
+	return nil
+}
+
+func validateResourceLifecycleRequest(req ResourceLifecycleRequest) error {
+	if strings.TrimSpace(req.Actor) == "" {
+		return NewError(InvalidArgument, "actor is required")
+	}
+	if req.ID == 0 {
+		return NewError(InvalidArgument, "id is required")
+	}
+	if req.ExpectedRevision == 0 {
+		return NewError(InvalidArgument, "expected revision is required")
+	}
+	return nil
 }
 
 func validateCatalogWriteRequest(req CatalogWriteRequest) error {
