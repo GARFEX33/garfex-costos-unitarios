@@ -47,6 +47,25 @@ func main() {
 
 func newProgram(model tea.Model) program { return tea.NewProgram(model) }
 
+// newCatalogService is the single production/integration composition root
+// for internal/app/catalogo.Service (design "Composition and authority
+// switch", stage 4D): it wires BOTH the legacy domain.CatalogAdminRepository
+// and the additive, revision-aware domain.CatalogAdminRepositoryV2 onto the
+// same pool, so Service.Create (the one write operation that needs no CAS
+// expected-revision) is now backed by the committed-coherent-result V2
+// writer instead of a hand-built candidate. Update/Deactivate/Reactivate/
+// Delete keep their legacy candidate-publish path in this slice — the
+// existing legacy repository read functions (internal/postgres/
+// catalog_admin_kinds.go) never populate domain.CatalogRecord.Revision, so
+// there is no real expected-revision available to those callers yet; TUI
+// revision-state plumbing (stage 4F) and its caller migration (stage 4G)
+// complete that switch. Extracted so a DB-less unit test
+// (cmd/garfex/main_test.go) can assert the exact production wiring.
+func newCatalogService(pool *pgxpool.Pool, registry domain.CatalogRegistry, authority *domain.CatalogAuthority) *catalogo.Service {
+	return catalogo.NewServiceWithCatalogAuthority(postgres.NewCatalogAdminRepository(pool), registry, authority).
+		WithCatalogAdminRepositoryV2(postgres.NewCatalogAdminRepositoryV2(pool))
+}
+
 func newPostgresInfra(ctx context.Context, dsn string) (*pgxpool.Pool, domain.ResourceRepository, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -94,7 +113,7 @@ func run(args []string, look func(string) (string, bool), out, errw io.Writer, l
 		}
 		assistantAgent := tui.NewAssistantShellAgent()
 		registry := domain.NewCatalogRegistry()
-		catalogService := catalogo.NewServiceWithCatalogAuthority(postgres.NewCatalogAdminRepository(pool), registry, authority)
+		catalogService := newCatalogService(pool, registry, authority)
 		catalogAgent := tui.NewCatalogAdminAdapter(catalogService, catalogService, catalogService, catalogService,
 			catalogService, catalogService, catalogService, catalogService, catalogService, registry)
 		model := tui.NewWithCatalogAuthority(tui.Handlers{

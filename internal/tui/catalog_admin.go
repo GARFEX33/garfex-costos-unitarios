@@ -41,8 +41,13 @@ type catalogRecordCreator interface {
 	Create(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
 }
 
+// catalogRecordUpdater's UpdateRevision is Update's CAS-aware additive
+// sibling (design "Catalog transaction and coherent publication", stage
+// 4C/4G): expectedRevision must be the record's own captured
+// domain.CatalogRecord.Revision, never zero — insertion (catalogRecordCreator
+// above) needs no such CAS predicate, which is why only Update migrated here.
 type catalogRecordUpdater interface {
-	Update(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
+	UpdateRevision(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
 }
 
 // catalogDependencyChecker is the minimal surface the guarded-delete flow
@@ -63,17 +68,20 @@ type catalogReferenceChecker interface {
 // catalogDeactivator/catalogReactivator/catalogDeleter are the minimal
 // surfaces the Desactivar/Reactivar/Eliminar lifecycle actions (task 7.1)
 // need — each a narrow, single-method interface following this file's own
-// established convention (catalogLister/catalogGetter/...).
+// established convention (catalogLister/catalogGetter/...). All three are the
+// CAS-aware additive V2 siblings (4G): expectedRevision is always
+// a.activeRecord.Revision, the value captured when the record's detail was
+// opened (openRecordDetail).
 type catalogDeactivator interface {
-	Deactivate(ctx context.Context, kind domain.CatalogKindCode, id int64) error
+	DeactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 }
 
 type catalogReactivator interface {
-	Reactivate(ctx context.Context, kind domain.CatalogKindCode, id int64) error
+	ReactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 }
 
 type catalogDeleter interface {
-	Delete(ctx context.Context, kind domain.CatalogKindCode, id int64) error
+	HardDeleteRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 }
 
 // catalogEditorState is the in-progress create/edit flow for ONE record of
@@ -106,6 +114,14 @@ type catalogEditorState struct {
 	// id is the repository-assigned CatalogRecord.ID — 0 for create, the
 	// existing record's ID for edit (finishEditor's Update target).
 	id int64
+	// revision is the migration-8 CAS domain.CatalogRecord.Revision captured
+	// from the existing record at startEditFlow time — 0 for
+	// catalogEditorCreate (no meaningful prior revision), the existing
+	// record's own Revision for catalogEditorEdit. finishEditor threads it
+	// onto the outgoing CatalogRecord so a later slice (4G) can pass it to
+	// the revision-aware V2 service methods; dormant, no current service call
+	// reads or checks it (mirrors CatalogRecord.Revision's own doc comment).
+	revision uint64
 	// parent is the PAUSED outer flow this editor was nested from (task 8.1:
 	// reuse-before-create's nested create sub-flow) — nil for every top-level
 	// flow (startCreateFlow/startEditFlow). A single linked pointer supports
@@ -178,6 +194,7 @@ func (a *CatalogAdminAdapter) startEditFlow(ctx context.Context, kind domain.Cat
 		values:   cloneCatalogEditorValues(rec.Values),
 		original: cloneCatalogEditorValues(rec.Values),
 		id:       rec.ID,
+		revision: rec.Revision,
 	}
 	response, err := a.nextFieldQuestion(ctx)
 	if err != nil {
@@ -473,7 +490,12 @@ func (a *CatalogAdminAdapter) finishEditor(ctx context.Context) (InteractionResp
 	var err error
 	if state.mode == catalogEditorEdit {
 		rec.ID = state.id
-		result, err = a.updater.Update(ctx, state.def.Code, rec)
+		// Thread the captured revision onto the outgoing record AND pass it
+		// as UpdateRevision's CAS expectedRevision (see
+		// catalogEditorState.revision's doc comment) — 4G's revision-aware
+		// call.
+		rec.Revision = state.revision
+		result, err = a.updater.UpdateRevision(ctx, state.def.Code, rec, state.revision)
 	} else {
 		result, err = a.creator.Create(ctx, state.def.Code, rec)
 	}

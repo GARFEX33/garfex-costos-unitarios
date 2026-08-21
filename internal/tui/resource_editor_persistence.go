@@ -10,6 +10,14 @@ func (state *resourceEditorState) persistenceValues() []domain.ResourceAttribute
 	return filterApplicableValues(state.attributes, state.values)
 }
 
+// persistenceRevision returns state.originalRevision — the single defined
+// read path for the captured CAS revision (see resourceEditorState's own doc
+// comment), mirroring persistenceValues above. finishEditor (resource_editor.go)
+// passes this as UpdateRevision's expectedRevision for editorModeEdit.
+func (state *resourceEditorState) persistenceRevision() uint64 {
+	return state.originalRevision
+}
+
 func filterApplicableValues(attributes []domain.ResourceAttribute, values []domain.ResourceAttributeValue) []domain.ResourceAttributeValue {
 	applicable := map[string]bool{}
 	for _, attribute := range attributes {

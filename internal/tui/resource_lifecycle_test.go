@@ -39,7 +39,7 @@ func TestResourcesWorkspaceLifecycleShowsStateAndPreservesCancellation(t *testin
 }
 
 func TestResourcesWorkspaceLifecycleDiscoversInactiveAndReactivates(t *testing.T) {
-	inactive := domain.Resource{ID: 43, ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", NaturalUnit: "M", IdentityKey: "v1|inactive", Active: false}
+	inactive := domain.Resource{ID: 43, ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", NaturalUnit: "M", IdentityKey: "v1|inactive", Active: false, Revision: 7}
 	active := inactive
 	active.Active = true
 	lifecycle := &fakeResourceLifecycle{resource: inactive, reactivateResult: domain.LifecycleResult{Resource: active, Changed: true}}
@@ -68,6 +68,9 @@ func TestResourcesWorkspaceLifecycleDiscoversInactiveAndReactivates(t *testing.T
 	response, err = adapter.Respond(context.Background(), InteractionInput{Kind: InputSelection, Key: resourcesLifecycleConfirmKey, Value: "yes"})
 	if err != nil || lifecycle.reactivateCalls != 1 {
 		t.Fatalf("reactivation = %+v, %v; calls = %d", response, err, lifecycle.reactivateCalls)
+	}
+	if len(lifecycle.reactivateRevisions) != 1 || lifecycle.reactivateRevisions[0] != 7 {
+		t.Fatalf("reactivateRevisions = %v, want [7] (ReactivateRevision's captured CAS revision)", lifecycle.reactivateRevisions)
 	}
 	if !strings.Contains(response.Messages[0].(StructuredResult).Title, "Activo") {
 		t.Fatalf("reactivated detail = %+v, want active state", response.Messages[0])
@@ -109,17 +112,20 @@ func (p *lifecycleModelProbe) Respond(_ context.Context, input InteractionInput)
 }
 
 type fakeResourceLifecycle struct {
-	resource         domain.Resource
-	deactivateResult domain.LifecycleResult
-	deactivateErr    error
-	deactivateCalls  int
-	reactivateResult domain.LifecycleResult
-	reactivateErr    error
-	reactivateCalls  int
+	resource            domain.Resource
+	deactivateResult    domain.LifecycleResult
+	deactivateErr       error
+	deactivateCalls     int
+	deactivateRevisions []uint64
+	reactivateResult    domain.LifecycleResult
+	reactivateErr       error
+	reactivateCalls     int
+	reactivateRevisions []uint64
 }
 
-func (f *fakeResourceLifecycle) Deactivate(context.Context, int64) (domain.LifecycleResult, error) {
+func (f *fakeResourceLifecycle) DeactivateRevision(_ context.Context, _ int64, expectedRevision uint64) (domain.LifecycleResult, error) {
 	f.deactivateCalls++
+	f.deactivateRevisions = append(f.deactivateRevisions, expectedRevision)
 	result := f.deactivateResult
 	if result.Resource.ID == 0 {
 		result.Resource = f.resource
@@ -128,8 +134,9 @@ func (f *fakeResourceLifecycle) Deactivate(context.Context, int64) (domain.Lifec
 	return result, f.deactivateErr
 }
 
-func (f *fakeResourceLifecycle) Reactivate(context.Context, int64) (domain.LifecycleResult, error) {
+func (f *fakeResourceLifecycle) ReactivateRevision(_ context.Context, _ int64, expectedRevision uint64) (domain.LifecycleResult, error) {
 	f.reactivateCalls++
+	f.reactivateRevisions = append(f.reactivateRevisions, expectedRevision)
 	result := f.reactivateResult
 	if result.Resource.ID == 0 {
 		result.Resource = f.resource

@@ -199,3 +199,20 @@ func TestRun(t *testing.T) {
 func mapLook(values map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) { value, ok := values[name]; return value, ok }
 }
+
+// TestNewCatalogServiceWiresV2WriteAuthority proves the real production
+// composition root (design "Composition and authority switch", stage 4D)
+// wires WithCatalogAdminRepositoryV2 — the single writer authority switch —
+// without touching a real database: a nil pool is enough because neither
+// postgres.NewCatalogAdminRepository nor postgres.NewCatalogAdminRepositoryV2
+// dials at construction time.
+func TestNewCatalogServiceWiresV2WriteAuthority(t *testing.T) {
+	registry := domain.NewCatalogRegistry()
+	authority := domain.NewCatalogAuthority(domain.SeedResourceCatalog())
+
+	svc := newCatalogService(nil, registry, authority)
+
+	if !svc.CatalogAdminRepositoryV2Configured() {
+		t.Fatal("newCatalogService() must wire WithCatalogAdminRepositoryV2 so the shipped composition owns the V2 write authority")
+	}
+}
