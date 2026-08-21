@@ -117,6 +117,14 @@ func (f *externalFakeWriteCapabilities) CreateResource(ctx context.Context, req 
 	return resourcecore.Resource{ID: 1, IdentityV1: "v1|x", Scope: req.Scope, Revision: 1, Attributes: req.Attributes}, nil
 }
 
+func (f *externalFakeWriteCapabilities) UpdateCatalog(ctx context.Context, req resourcecore.CatalogUpdateRequest) (resourcecore.CatalogRecord, error) {
+	return resourcecore.CatalogRecord{Kind: req.Kind, ID: req.ID, Revision: req.ExpectedRevision + 1, Values: req.Values}, nil
+}
+
+func (f *externalFakeWriteCapabilities) UpdateResource(ctx context.Context, req resourcecore.ResourceUpdateRequest) (resourcecore.Resource, error) {
+	return resourcecore.Resource{ID: req.ID, IdentityV1: "v1|x", Scope: req.Scope, Revision: req.ExpectedRevision + 1, Attributes: req.Attributes}, nil
+}
+
 func TestExternalWrite_ConsumerConstructsWriterUsingPublicTypesOnly(t *testing.T) {
 	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
 	if err != nil {
@@ -146,6 +154,43 @@ func TestExternalWrite_ConsumerConstructsWriterUsingPublicTypesOnly(t *testing.T
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if res.ID != 1 || res.IdentityV1 != "v1|x" {
+		t.Fatalf("unexpected resource: %+v", res)
+	}
+}
+
+func TestExternalWrite_ConsumerUpdatesCatalogAndResourceUsingPublicTypesOnly(t *testing.T) {
+	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec, err := writer.UpdateCatalog(context.Background(), resourcecore.CatalogUpdateRequest{
+		Actor:            "PI",
+		Kind:             resourcecore.KindClass,
+		ID:               1,
+		ExpectedRevision: 1,
+		Values: map[string]resourcecore.Value{
+			"code": {Kind: resourcecore.ValueCode, Text: "MAT"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.ID != 1 || rec.Revision <= 1 {
+		t.Fatalf("unexpected catalog record: %+v", rec)
+	}
+
+	res, err := writer.UpdateResource(context.Background(), resourcecore.ResourceUpdateRequest{
+		Actor:            "PI",
+		ID:               1,
+		ExpectedRevision: 1,
+		Scope:            resourcecore.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit:      "m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID != 1 || res.Revision <= 1 {
 		t.Fatalf("unexpected resource: %+v", res)
 	}
 }
