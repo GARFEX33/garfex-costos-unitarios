@@ -31,6 +31,7 @@ type catalogWriter interface {
 	UpdateRevision(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogRecord, error)
 	DeactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 	ReactivateRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
+	HardDeleteRevision(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) error
 }
 
 // catalogPort is the complete catalog seam: reads plus the one graduated
@@ -248,6 +249,17 @@ func (a *Adapter) ReactivateResource(ctx context.Context, req public.ResourceLif
 		return public.Resource{}, mapError(err)
 	}
 	return mapResource(result.Resource), nil
+}
+
+// HardDeleteCatalog permanently removes one existing catalog record under
+// optimistic concurrency. No confirm-read: HardDeleteRevision returns only
+// error, and the deleted record no longer exists to read back. The bridge
+// evaluates no guard of its own — active-target, dependents, and
+// resource-reference rejection all belong to catalogo.Service.HardDeleteRevision
+// alone; this method is a pure translate-and-delegate pass-through.
+func (a *Adapter) HardDeleteCatalog(ctx context.Context, req public.CatalogLifecycleRequest) error {
+	kind := domain.CatalogKindCode(req.Kind)
+	return mapError(a.catalog.HardDeleteRevision(core.WithActor(ctx, req.Actor), kind, req.ID, req.ExpectedRevision))
 }
 
 // SearchResources returns a page of resources matching the query.
