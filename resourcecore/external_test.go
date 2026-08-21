@@ -141,6 +141,10 @@ func (f *externalFakeWriteCapabilities) ReactivateResource(ctx context.Context, 
 	return resourcecore.Resource{ID: req.ID, IdentityV1: "v1|x", Revision: req.ExpectedRevision + 1, Active: true}, nil
 }
 
+func (f *externalFakeWriteCapabilities) HardDeleteCatalog(ctx context.Context, req resourcecore.CatalogLifecycleRequest) error {
+	return nil
+}
+
 func TestExternalWrite_ConsumerConstructsWriterUsingPublicTypesOnly(t *testing.T) {
 	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
 	if err != nil {
@@ -262,6 +266,20 @@ func TestExternalWrite_ConsumerReactivatesPreviouslyDeactivatedCatalogAndResourc
 	}
 	if !res.Active {
 		t.Fatalf("expected reactivated resource, got %+v", res)
+	}
+}
+
+func TestExternalWrite_ConsumerHardDeletesInactiveUnreferencedCatalog(t *testing.T) {
+	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	err = writer.HardDeleteCatalog(context.Background(), resourcecore.CatalogLifecycleRequest{
+		Actor: "PI", Kind: resourcecore.KindClass, ID: 1, ExpectedRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

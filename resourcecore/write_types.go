@@ -41,9 +41,10 @@ type ResourceUpdateRequest struct {
 	Attributes       []AttributeValue
 }
 
-// CatalogLifecycleRequest deactivates or reactivates one existing catalog
-// record of any registered kind under optimistic concurrency. No content
-// fields — Deactivate/Reactivate never touch Values/Rules.
+// CatalogLifecycleRequest deactivates, reactivates, or hard-deletes one
+// existing catalog record of any registered kind under optimistic
+// concurrency. No content fields — none of these operations touch
+// Values/Rules.
 type CatalogLifecycleRequest struct {
 	Actor            string
 	Kind             KindCode

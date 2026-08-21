@@ -15,6 +15,7 @@ type fakeWriteCapabilities struct {
 	reactivateCatalog  func(ctx context.Context, req CatalogLifecycleRequest) (CatalogRecord, error)
 	deactivateResource func(ctx context.Context, req ResourceLifecycleRequest) (Resource, error)
 	reactivateResource func(ctx context.Context, req ResourceLifecycleRequest) (Resource, error)
+	hardDeleteCatalog  func(ctx context.Context, req CatalogLifecycleRequest) error
 }
 
 func (f *fakeWriteCapabilities) CreateCatalog(ctx context.Context, req CatalogWriteRequest) (CatalogRecord, error) {
@@ -47,6 +48,10 @@ func (f *fakeWriteCapabilities) DeactivateResource(ctx context.Context, req Reso
 
 func (f *fakeWriteCapabilities) ReactivateResource(ctx context.Context, req ResourceLifecycleRequest) (Resource, error) {
 	return f.reactivateResource(ctx, req)
+}
+
+func (f *fakeWriteCapabilities) HardDeleteCatalog(ctx context.Context, req CatalogLifecycleRequest) error {
+	return f.hardDeleteCatalog(ctx, req)
 }
 
 func validCatalogWriteRequest() CatalogWriteRequest {
@@ -210,10 +215,10 @@ func TestWriter_CreateResource_ShapeValidation(t *testing.T) {
 
 func TestWriter_NoUngraduatedMethodExported(t *testing.T) {
 	typ := reflect.TypeOf((*WriteCapabilities)(nil)).Elem()
-	if typ.NumMethod() != 8 {
-		t.Fatalf("expected exactly 8 methods on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
+	if typ.NumMethod() != 9 {
+		t.Fatalf("expected exactly 9 methods on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
 	}
-	want := []string{"CreateCatalog", "CreateResource", "UpdateCatalog", "UpdateResource", "DeactivateCatalog", "ReactivateCatalog", "DeactivateResource", "ReactivateResource"}
+	want := []string{"CreateCatalog", "CreateResource", "UpdateCatalog", "UpdateResource", "DeactivateCatalog", "ReactivateCatalog", "DeactivateResource", "ReactivateResource", "HardDeleteCatalog"}
 	for _, name := range want {
 		if _, ok := typ.MethodByName(name); !ok {
 			t.Fatalf("expected WriteCapabilities to declare %s", name)
@@ -227,7 +232,7 @@ func TestWriter_NoUngraduatedMethodExported(t *testing.T) {
 	for i := 0; i < writerType.NumMethod(); i++ {
 		name := writerType.Method(i).Name
 		if !allowed[name] {
-			t.Fatalf("unexpected exported Writer method %s; only Create/Update/Deactivate/Reactivate Catalog/Resource may be graduated so far; no HardDelete stub allowed", name)
+			t.Fatalf("unexpected exported Writer method %s; only Create/Update/Deactivate/Reactivate/HardDelete Catalog/Resource may be graduated so far; no HardDeleteResource stub allowed", name)
 		}
 	}
 }
@@ -287,6 +292,66 @@ func TestWriter_DeactivateCatalog_ShapeValidation(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestWriter_HardDeleteCatalog_ShapeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*CatalogLifecycleRequest)
+		wantErr bool
+	}{
+		{"valid", func(r *CatalogLifecycleRequest) {}, false},
+		{"blank actor", func(r *CatalogLifecycleRequest) { r.Actor = " " }, true},
+		{"zero id", func(r *CatalogLifecycleRequest) { r.ID = 0 }, true},
+		{"zero expected revision", func(r *CatalogLifecycleRequest) { r.ExpectedRevision = 0 }, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validCatalogLifecycleRequest()
+			tt.mutate(&req)
+			cap := &fakeWriteCapabilities{
+				hardDeleteCatalog: func(ctx context.Context, req CatalogLifecycleRequest) error {
+					return nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			err = w.HardDeleteCatalog(context.Background(), req)
+			if tt.wantErr {
+				if !IsCode(err, InvalidArgument) {
+					t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriter_HardDeleteCatalog_ShapeValidation_NoCapabilityCallOnInvalid(t *testing.T) {
+	called := false
+	cap := &fakeWriteCapabilities{
+		hardDeleteCatalog: func(ctx context.Context, req CatalogLifecycleRequest) error {
+			called = true
+			return nil
+		},
+	}
+	w, err := NewWriter(cap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := validCatalogLifecycleRequest()
+	req.ID = 0
+	if err := w.HardDeleteCatalog(context.Background(), req); !IsCode(err, InvalidArgument) {
+		t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+	}
+	if called {
+		t.Fatalf("expected the capability to not be called for a shape-invalid request")
 	}
 }
 
