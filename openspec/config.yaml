@@ -1,0 +1,63 @@
+schema: spec-driven
+
+context: |
+  Project: GARFEX Costos Unitarios
+  Module: github.com/GARFEX33/garfex-costos-unitarios
+  Language and runtime: Go 1.26.5
+  Technical artifact language: English by default.
+
+  Current initiative boundary:
+  - Build and maintain the consumer-agnostic Resource Master Core.
+  - A Bubble Tea CLI/TUI consumer exists under cmd/garfex and internal/tui, but consumer-specific behavior is outside this initiative unless a change explicitly includes it.
+
+  Architecture and authority:
+  - Dependency direction is application services -> domain -> ports -> PostgreSQL adapters.
+  - Domain types and repository ports live under internal/domain.
+  - PostgreSQL adapters and persistence live under internal/postgres, with versioned SQL under migrations.
+  - internal/app/recursos.Service is the authoritative Resource Master application service.
+  - internal/app/catalogo.Service is the authoritative catalog administration application service.
+  - Consumers must call application services rather than bypassing them to access domain repositories or PostgreSQL.
+
+  SDD and delivery policy:
+  - artifact_store: both (OpenSpec and Engram).
+  - execution_mode: auto.
+  - delivery_strategy: auto-chain.
+  - review_budget_changed_lines: 400.
+  - strict_tdd: true wherever tests exist; preserve red-green-refactor evidence and keep tests beside Go code.
+  - Do not modify an existing change during project initialization.
+
+  Testing and verification:
+  - Primary test runner: go test ./... -count=1.
+  - Focused tests: go test ./<affected-package> -count=1.
+  - Full local checks: gofmt -l ., go vet ./..., golangci-lint run ./..., and go test ./... -count=1.
+  - golangci-lint uses .golangci.yml and is tested with v2.12.2.
+  - CI additionally runs go test ./... -race -count=1 and go build ./....
+  - PostgreSQL integration infrastructure uses compose.integration.yaml and scripts/db/integration.sh; destructive database or volume cleanup requires explicit intent.
+  - Do not run local go build or docker build after changes; those builds belong to CI.
+
+rules:
+  proposal:
+    - State the user outcome, scope, non-goals, architecture impact, risks, and rollback boundaries.
+    - Keep the Resource Master Core consumer-agnostic unless consumer work is explicitly requested.
+    - Forecast review size and use an auto-chained delivery plan when a change is expected to exceed 400 changed lines.
+  specs:
+    - Write normative requirements and scenarios in English by default.
+    - Define observable behavior at application and domain boundaries without coupling requirements to Bubble Tea or PostgreSQL implementation details.
+  design:
+    - Preserve dependency direction from application services through domain ports to PostgreSQL adapters.
+    - Treat internal/app/recursos.Service and internal/app/catalogo.Service as the authoritative application boundaries.
+    - Record persistence, migration, transaction, compatibility, and rollback decisions when relevant.
+  tasks:
+    - Order work as strict TDD slices where tests exist, with failing evidence before implementation and refactoring only after green.
+    - Keep each review unit within 400 changed lines or split it into an ordered auto-chain.
+    - Include focused tests, full verification, and documentation tasks when applicable.
+  apply:
+    - Follow strict red-green-refactor where tests exist and do not weaken or delete tests merely to obtain green results.
+    - Preserve unrelated user changes and never bypass application services from consumers or adapters.
+    - Keep Go tests in *_test.go files beside the affected package and cover both success and error paths.
+  verify:
+    - Run focused package tests first, then gofmt, vet, golangci-lint, and go test ./... -count=1 as applicable.
+    - Report CI-only race and build checks separately when they were not run locally.
+  archive:
+    - Archive only after implementation and verification evidence satisfy the accepted change artifacts.
+    - Preserve an auditable record of deviations, follow-up work, and any unexecuted CI-only checks.
