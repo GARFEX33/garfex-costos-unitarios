@@ -88,6 +88,10 @@ The shared CTE and loader live in `internal/postgres/resource_repository_attribu
 
 Rollback for this documentation slice is limited to the changed comments and this guide. Reverting it does not alter Resource behavior, schema, migrations, PostgreSQL data, Supplier code, `.atl`, or pagination/lifecycle implementation. For a runtime integrity incident, preserve the failing evidence, stop writes if necessary, and roll back the owning code slice—not by deleting catalog or Resource rows.
 
+## Public read-only contract (`resourcecore`)
+
+A consumer-neutral, importable public Go package, `resourcecore`, exposes a **read-only** view of this authority: active classes, catalog descriptors, catalog list/get, resource search/get, and canonical presentation. It is a translation boundary, not a second authority — every read still goes through `internal/app/catalogo.Service` and `internal/app/recursos.Service` above via a module-owned bridge (`internal/bridge/resourcecore.Adapter`), and it changes nothing about the write/read decisions in this document. There is no public `Create`, `Update`, `Deactivate`, `Reactivate`, `Delete`, or `Publish`; public WRITE is a distinct, later, per-operation change. Errors are one of fifteen stable `resourcecore.ErrorCode` categories with no PostgreSQL or driver detail exposed. Exactly one process is the authoritative writer; a `resourcecore.Reader` reflects a coherent snapshot as of its last read and requires an explicit reload/restart to observe a write made by another process. See [Resource Master Core — Public Read Contract](resource-master-core.md) for the complete ownership, error-reachability, identity, freshness, and migration-8-compatibility reference.
+
 ## Supplier separation
 
 Supplier Master remains under `internal/modules/suppliers/` with its own domain, application, and PostgreSQL packages. This guide intentionally does not define Supplier identity, lifecycle, catalog authority, search, pagination, or persistence semantics. Future master catalogs must establish their own authority boundary rather than extending Resource comments or contracts by implication.
