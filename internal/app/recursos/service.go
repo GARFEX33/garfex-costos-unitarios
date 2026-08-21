@@ -182,6 +182,31 @@ func (s *Service) Reactivate(ctx context.Context, id int64) (domain.LifecycleRes
 	if current.Active {
 		return domain.LifecycleResult{Resource: current}, nil
 	}
+	candidate, err := s.reactivationCandidate(current)
+	if err != nil {
+		return domain.LifecycleResult{Resource: current}, err
+	}
+	result, err := s.repo.Reactivate(ctx, id, candidate.IdentityKey)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrResourceNotFound), errors.Is(err, domain.ErrDuplicateResource):
+			return domain.LifecycleResult{Resource: current}, err
+		case errors.Is(err, domain.ErrResourceIntegrity):
+			return domain.LifecycleResult{Resource: current}, domain.ErrIdentityConflict
+		case errors.Is(err, domain.ErrResourceReference):
+			return domain.LifecycleResult{Resource: current}, domain.WrapReactivationImpossible(err)
+		default:
+			return domain.LifecycleResult{Resource: current}, fmt.Errorf("reactivate resource %d: %w", id, err)
+		}
+	}
+	return result, nil
+}
+
+// reactivationCandidate rebuilds and authoritatively re-validates current
+// against the current committed catalog, requiring the rebuilt identity-v1
+// to equal current's stored one exactly. Shared by Reactivate and
+// ReactivateRevision so both validate identically before any repository call.
+func (s *Service) reactivationCandidate(current domain.Resource) (domain.Resource, error) {
 	catalog, _ := s.authority.Current()
 	values := make([]domain.ResourceAttributeValue, 0, len(current.Attributes))
 	for _, value := range current.Attributes {
@@ -193,17 +218,105 @@ func (s *Service) Reactivate(ctx context.Context, id int64) (domain.LifecycleRes
 		ClassCode: current.ClassCode, FamilyCode: current.FamilyCode, TypeCode: current.TypeCode,
 	}, current.NaturalUnit, values)
 	if err != nil {
-		return domain.LifecycleResult{Resource: current}, err
+		return domain.Resource{}, domain.WrapReactivationImpossible(err)
 	}
 	if candidate.IdentityKey != current.IdentityKey {
-		return domain.LifecycleResult{Resource: current}, domain.ErrResourceIntegrity
+		return domain.Resource{}, domain.ErrIdentityConflict
 	}
-	result, err := s.repo.Reactivate(ctx, id, candidate.IdentityKey)
+	return candidate, nil
+}
+
+// DeactivateRevision is the additive CAS-aware sibling of Deactivate:
+// expectedRevision must be non-zero and match the persisted revision, or
+// the call is rejected as domain.ErrResourceRevisionConflict. It coexists
+// with Deactivate; the legacy path is unaffected.
+func (s *Service) DeactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+	if id <= 0 || expectedRevision == 0 {
+		return domain.LifecycleResult{}, ErrInvalidArgument
+	}
+	v2, ok := s.repo.(domain.ResourceRepositoryV2)
+	if !ok {
+		return domain.LifecycleResult{}, errors.New("resource repository does not support revision-aware lifecycle")
+	}
+	result, err := v2.DeactivateRevision(ctx, id, expectedRevision)
 	if err != nil {
-		if errors.Is(err, domain.ErrResourceNotFound) || errors.Is(err, domain.ErrDuplicateResource) || errors.Is(err, domain.ErrResourceReference) || errors.Is(err, domain.ErrResourceIntegrity) {
-			return domain.LifecycleResult{Resource: current}, err
+		if errors.Is(err, domain.ErrResourceNotFound) || errors.Is(err, domain.ErrResourceRevisionConflict) {
+			return domain.LifecycleResult{}, err
 		}
-		return domain.LifecycleResult{Resource: current}, fmt.Errorf("reactivate resource %d: %w", id, err)
+		return domain.LifecycleResult{}, fmt.Errorf("deactivate resource %d: %w", id, err)
+	}
+	return domain.LifecycleResult{Resource: result, Changed: result.Revision != expectedRevision}, nil
+}
+
+// ReactivateRevision is the additive CAS-aware sibling of Reactivate: same
+// authoritative validation (reactivationCandidate), then a
+// domain.ResourceRepositoryV2 CAS transition instead of Reactivate's
+// identity-only guard. It coexists with Reactivate.
+func (s *Service) ReactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.LifecycleResult, error) {
+	if id <= 0 || expectedRevision == 0 {
+		return domain.LifecycleResult{}, ErrInvalidArgument
+	}
+	finder, ok := s.repo.(interface {
+		GetByID(context.Context, int64) (domain.Resource, error)
+	})
+	if !ok {
+		return domain.LifecycleResult{}, errors.New("resource repository cannot load lifecycle identity")
+	}
+	current, err := finder.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrResourceNotFound) {
+			return domain.LifecycleResult{}, domain.ErrResourceNotFound
+		}
+		return domain.LifecycleResult{}, fmt.Errorf("load resource %d for reactivation: %w", id, err)
+	}
+	if current.Active {
+		return domain.LifecycleResult{Resource: current}, nil
+	}
+	candidate, err := s.reactivationCandidate(current)
+	if err != nil {
+		return domain.LifecycleResult{Resource: current}, err
+	}
+	v2, ok := s.repo.(domain.ResourceRepositoryV2)
+	if !ok {
+		return domain.LifecycleResult{Resource: current}, errors.New("resource repository does not support revision-aware lifecycle")
+	}
+	result, err := v2.ReactivateRevision(ctx, id, candidate.IdentityKey, expectedRevision)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrResourceRevisionConflict), errors.Is(err, domain.ErrResourceNotFound):
+			return domain.LifecycleResult{Resource: current}, err
+		case errors.Is(err, domain.ErrResourceIntegrity):
+			return domain.LifecycleResult{Resource: current}, domain.ErrIdentityConflict
+		case errors.Is(err, domain.ErrResourceReference):
+			return domain.LifecycleResult{Resource: current}, domain.WrapReactivationImpossible(err)
+		default:
+			return domain.LifecycleResult{Resource: current}, fmt.Errorf("reactivate resource %d: %w", id, err)
+		}
+	}
+	return domain.LifecycleResult{Resource: result, Changed: result.Revision != expectedRevision}, nil
+}
+
+// UpdateRevision is Update's CAS-aware sibling: same authoritative validation, then ResourceRepositoryV2's atomic CAS.
+func (s *Service) UpdateRevision(ctx context.Context, command domain.UpdateCommand, expectedRevision uint64) (domain.Resource, error) {
+	if command.ID <= 0 || expectedRevision == 0 {
+		return domain.Resource{}, ErrInvalidArgument
+	}
+	catalog, _ := s.authority.Current()
+	resource, err := domain.NewResource(catalog, command.Scope, command.NaturalUnit, command.Attributes)
+	if err != nil {
+		return domain.Resource{}, err
+	}
+	resource.ID = command.ID
+	v2, ok := s.repo.(domain.ResourceRepositoryV2)
+	if !ok {
+		return resource, errors.New("resource repository does not support revision-aware update")
+	}
+	result, err := v2.UpdateRevision(ctx, resource, expectedRevision)
+	if err != nil {
+		if errors.Is(err, domain.ErrResourceNotFound) || errors.Is(err, domain.ErrDuplicateResource) || errors.Is(err, domain.ErrResourceReference) || errors.Is(err, domain.ErrResourceIntegrity) || errors.Is(err, domain.ErrResourceRevisionConflict) {
+			return resource, err
+		}
+		return resource, fmt.Errorf("update resource %d: %w", resource.ID, err)
 	}
 	return result, nil
 }

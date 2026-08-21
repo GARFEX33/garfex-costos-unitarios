@@ -119,6 +119,66 @@ func (f *fakeCatalogAdminRepository) ReferencedByResources(ctx context.Context, 
 	return false, nil
 }
 
+// --- fake domain.CatalogAdminRepositoryV2 (4C additive write port) --------
+
+// fakeCatalogAdminRepositoryV2 is a fixture-driven test double for
+// domain.CatalogAdminRepositoryV2, adapted alongside 4C's service methods —
+// same optional-func-field/call-counter convention as
+// fakeCatalogAdminRepository above.
+type fakeCatalogAdminRepositoryV2 struct {
+	mu sync.Mutex
+
+	insertFn    func(ctx context.Context, rec domain.CatalogRecord) (domain.CatalogWriteResult, error)
+	updateFn    func(ctx context.Context, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogWriteResult, error)
+	setActiveFn func(ctx context.Context, kind domain.CatalogKindCode, id int64, active bool, expectedRevision uint64) (domain.CatalogWriteResult, error)
+	deleteFn    func(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) (domain.CatalogWriteResult, error)
+
+	insertCalls, updateCalls, setActiveCalls, deleteCalls int
+}
+
+var _ domain.CatalogAdminRepositoryV2 = (*fakeCatalogAdminRepositoryV2)(nil)
+
+func (f *fakeCatalogAdminRepositoryV2) Insert(ctx context.Context, rec domain.CatalogRecord) (domain.CatalogWriteResult, error) {
+	f.mu.Lock()
+	f.insertCalls++
+	f.mu.Unlock()
+	if f.insertFn != nil {
+		return f.insertFn(ctx, rec)
+	}
+	return domain.NewCatalogWriteResult(&rec, domain.ResourceCatalog{}), nil
+}
+
+func (f *fakeCatalogAdminRepositoryV2) Update(ctx context.Context, rec domain.CatalogRecord, expectedRevision uint64) (domain.CatalogWriteResult, error) {
+	f.mu.Lock()
+	f.updateCalls++
+	f.mu.Unlock()
+	if f.updateFn != nil {
+		return f.updateFn(ctx, rec, expectedRevision)
+	}
+	return domain.NewCatalogWriteResult(&rec, domain.ResourceCatalog{}), nil
+}
+
+func (f *fakeCatalogAdminRepositoryV2) SetActive(ctx context.Context, kind domain.CatalogKindCode, id int64, active bool, expectedRevision uint64) (domain.CatalogWriteResult, error) {
+	f.mu.Lock()
+	f.setActiveCalls++
+	f.mu.Unlock()
+	if f.setActiveFn != nil {
+		return f.setActiveFn(ctx, kind, id, active, expectedRevision)
+	}
+	rec := domain.CatalogRecord{Kind: kind, ID: id, Active: active, Revision: expectedRevision + 1}
+	return domain.NewCatalogWriteResult(&rec, domain.ResourceCatalog{}), nil
+}
+
+func (f *fakeCatalogAdminRepositoryV2) Delete(ctx context.Context, kind domain.CatalogKindCode, id int64, expectedRevision uint64) (domain.CatalogWriteResult, error) {
+	f.mu.Lock()
+	f.deleteCalls++
+	f.mu.Unlock()
+	if f.deleteFn != nil {
+		return f.deleteFn(ctx, kind, id, expectedRevision)
+	}
+	return domain.NewCatalogWriteResult(nil, domain.ResourceCatalog{}), nil
+}
+
 // --- fixtures --------------------------------------------------------------
 
 // baseSnapshot mirrors catalog_mutation_test.go's baseMutationCatalog shape:
@@ -326,8 +386,37 @@ func TestServiceCreateRejectsDuplicateClassCodeWithoutPersisting(t *testing.T) {
 	if !errors.Is(err, domain.ErrResourceValidation) {
 		t.Fatalf("Create error = %v, want it to wrap domain.ErrResourceValidation", err)
 	}
+	// 5A: the candidate catalog's own Validate() failure is additionally
+	// classified ErrInvalidCatalog (design "Internal Core outcomes and
+	// mapping") — never a collapse, both sentinels are reachable via
+	// errors.Is on the same returned error.
+	if !errors.Is(err, domain.ErrInvalidCatalog) {
+		t.Fatalf("Create error = %v, want it to also wrap domain.ErrInvalidCatalog", err)
+	}
 	if repo.insertCalls != 0 {
 		t.Fatalf("repo.Insert called %d times, want 0", repo.insertCalls)
+	}
+}
+
+// TestLifecycleInvalidHardDeleteOfActiveTargetIsDistinctFromInvalidCatalog is
+// the RED/TRIANGULATE evidence that a hard-delete-of-active rejection is
+// ErrInvalidLifecycle, distinct from the candidate-catalog-invalid
+// ErrInvalidCatalog outcome a later Validate() failure would produce.
+func TestLifecycleInvalidHardDeleteOfActiveTargetIsDistinctFromInvalidCatalog(t *testing.T) {
+	repo := &fakeCatalogAdminRepository{getFn: func(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) {
+		return familyRecord(5, "CONDUCTORES", "Conductores", true), nil
+	}}
+	svc := newTestService(repo)
+
+	err := svc.Delete(context.Background(), domain.KindFamily, 5)
+	if !errors.Is(err, domain.ErrInvalidLifecycle) {
+		t.Fatalf("Delete() error = %v, want ErrInvalidLifecycle", err)
+	}
+	if errors.Is(err, domain.ErrInvalidCatalog) || errors.Is(err, domain.ErrResourceValidation) {
+		t.Fatalf("Delete() error = %v, must not also match ErrInvalidCatalog/ErrResourceValidation", err)
+	}
+	if repo.deleteCalls != 0 {
+		t.Fatalf("repo.Delete called %d times, want 0", repo.deleteCalls)
 	}
 }
 
@@ -559,28 +648,34 @@ func TestServiceDeactivateRejectsZeroID(t *testing.T) {
 	}
 }
 
-func TestServiceDeactivateOnUnsupportedKindReturnsErrSoftDeleteUnsupported(t *testing.T) {
-	// AttributeDefinition has no Go Active field yet (catalog_kind.go's own
-	// documented gap) — ApplyCatalogMutation's mutateSlice returns
-	// domain.ErrSoftDeleteUnsupported, and the service must propagate it
-	// WITHOUT calling repo.SetActive.
+func TestServiceDeactivateOnLifecycleCapableKindCommitsOnPersist(t *testing.T) {
 	current := domain.CatalogRecord{
 		Kind: domain.KindAttributeDefinition, ID: 9, Active: true,
-		Values: map[string]domain.CatalogValue{"code": {Text: "COLOR"}, "name": {Text: "Color"}, "valueType": {Text: "CONTROLLED_OPTION"}},
+		Values: map[string]domain.CatalogValue{"code": {Text: "COLOR"}, "name": {Text: "Color"}, "valueType": {Text: "CONTROLLED_TEXT"}},
 	}
 	repo := &fakeCatalogAdminRepository{
 		getFn: func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
 			return current, nil
 		},
 	}
-	svc := newTestService(repo)
+	snapshot := baseSnapshot()
+	snapshot.Definitions = []domain.AttributeDefinition{{
+		Code: "COLOR", Name: "Color", ValueType: domain.ValueTypeControlledText, Active: true,
+	}}
+	svc := NewService(repo, domain.NewCatalogRegistry(), snapshot)
 
-	err := svc.Deactivate(context.Background(), domain.KindAttributeDefinition, 9)
-	if !errors.Is(err, domain.ErrSoftDeleteUnsupported) {
-		t.Fatalf("Deactivate error = %v, want domain.ErrSoftDeleteUnsupported", err)
+	if err := svc.Deactivate(context.Background(), domain.KindAttributeDefinition, 9); err != nil {
+		t.Fatalf("Deactivate returned error: %v", err)
 	}
-	if repo.setActiveCalls != 0 {
-		t.Fatalf("repo.SetActive called %d times, want 0", repo.setActiveCalls)
+	if repo.setActiveCalls != 1 {
+		t.Fatalf("repo.SetActive called %d times, want 1", repo.setActiveCalls)
+	}
+	if len(svc.snapshot.Definitions) != 1 || svc.snapshot.Definitions[0].Active {
+		t.Fatalf("service snapshot Definitions = %#v, want inactive COLOR definition", svc.snapshot.Definitions)
+	}
+	published, _ := svc.authority.Current()
+	if len(published.Definitions) != 1 || published.Definitions[0].Active {
+		t.Fatalf("published Definitions = %#v, want inactive COLOR definition", published.Definitions)
 	}
 }
 
@@ -609,7 +704,7 @@ func TestServiceReactivateCommitsOnPersist(t *testing.T) {
 
 func TestServiceDeleteRejectsWhenItWouldOrphanChildren(t *testing.T) {
 	current := domain.CatalogRecord{
-		Kind: domain.KindClass, ID: 1, Active: true,
+		Kind: domain.KindClass, ID: 1, Active: false,
 		Values: map[string]domain.CatalogValue{
 			"code": {Text: "MATERIAL"}, "name": {Text: "Material"}, "plural": {Text: "Materiales"}, "slug": {Text: "materiales"},
 		},
@@ -632,7 +727,7 @@ func TestServiceDeleteRejectsWhenItWouldOrphanChildren(t *testing.T) {
 
 func TestServiceDeleteCommitsOnPersist(t *testing.T) {
 	current := domain.CatalogRecord{
-		Kind: domain.KindFamily, ID: 5, Active: true,
+		Kind: domain.KindFamily, ID: 5, Active: false,
 		Values: map[string]domain.CatalogValue{
 			"class": {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: "MATERIAL"}},
 			"code":  {Text: "CONDUCTORES"}, "name": {Text: "Conductores"},
@@ -660,6 +755,217 @@ func TestServiceDeleteRejectsZeroID(t *testing.T) {
 	svc := newTestService(&fakeCatalogAdminRepository{})
 	if err := svc.Delete(context.Background(), domain.KindClass, 0); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Delete(id=0) error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestServiceDeleteConservativeGuards(t *testing.T) {
+	repoErr := errors.New("repository probe failed")
+	cases := []struct {
+		name           string
+		kind           domain.CatalogKindCode
+		id             int64
+		current        domain.CatalogRecord
+		getErr         error
+		dependencies   []domain.CatalogDependency
+		dependentsErr  error
+		referenced     bool
+		referencesErr  error
+		deleteErr      error
+		wantErr        error
+		wantDeleteCall int
+		wantCalls      []string
+	}{
+		{
+			name:      "active target is rejected before dependency probes",
+			kind:      domain.KindFamily,
+			id:        5,
+			current:   familyRecord(5, "CONDUCTORES", "Conductores", true),
+			wantErr:   domain.ErrInvalidLifecycle,
+			wantCalls: []string{"Get"},
+		},
+		{
+			name: "inactive non-blocking dependency still blocks",
+			kind: domain.KindFamily, id: 5,
+			current: familyRecord(5, "CONDUCTORES", "Conductores", false),
+			dependencies: []domain.CatalogDependency{{
+				Kind: domain.KindPresentationField, Count: 1, Blocking: false,
+			}},
+			wantErr:   domain.ErrCatalogInUse,
+			wantCalls: []string{"Get", "Dependents"},
+		},
+		{
+			name: "historical dependency count still blocks",
+			kind: domain.KindFamily, id: 5,
+			current: familyRecord(5, "CONDUCTORES", "Conductores", false),
+			dependencies: []domain.CatalogDependency{{
+				Kind: domain.KindType, Count: 2, Blocking: false,
+			}},
+			wantErr:   domain.ErrCatalogInUse,
+			wantCalls: []string{"Get", "Dependents"},
+		},
+		{
+			name:       "active resource reference blocks",
+			kind:       domain.KindFamily,
+			id:         5,
+			current:    familyRecord(5, "CONDUCTORES", "Conductores", false),
+			referenced: true,
+			wantErr:    domain.ErrCatalogInUse,
+			wantCalls:  []string{"Get", "Dependents", "ReferencedByResources"},
+		},
+		{
+			name:       "inactive resource reference blocks",
+			kind:       domain.KindFamily,
+			id:         5,
+			current:    familyRecord(5, "CONDUCTORES", "Conductores", false),
+			referenced: true,
+			wantErr:    domain.ErrCatalogInUse,
+			wantCalls:  []string{"Get", "Dependents", "ReferencedByResources"},
+		},
+		{
+			name:       "historical resource reference blocks",
+			kind:       domain.KindFamily,
+			id:         5,
+			current:    familyRecord(5, "CONDUCTORES", "Conductores", false),
+			referenced: true,
+			wantErr:    domain.ErrCatalogInUse,
+			wantCalls:  []string{"Get", "Dependents", "ReferencedByResources"},
+		},
+		{
+			name:      "stale repository candidate is rejected privately",
+			kind:      domain.KindFamily,
+			id:        5,
+			current:   familyRecord(5, "STALE", "Stale", false),
+			wantErr:   domain.ErrCatalogRecordNotFound,
+			wantCalls: []string{"Get", "Dependents", "ReferencedByResources"},
+		},
+		{
+			name: "invalid private candidate is rejected before delete",
+			kind: domain.KindClass, id: 1,
+			current: domain.CatalogRecord{
+				Kind: domain.KindClass, ID: 1, Active: false,
+				Values: map[string]domain.CatalogValue{
+					"code": {Text: "MATERIAL"}, "name": {Text: "Material"},
+					"plural": {Text: "Materiales"}, "slug": {Text: "materiales"},
+				},
+			},
+			wantErr:   domain.ErrResourceReference,
+			wantCalls: []string{"Get", "Dependents", "ReferencedByResources"},
+		},
+		{
+			name:      "current state repository failure is invisible",
+			kind:      domain.KindFamily,
+			id:        5,
+			getErr:    repoErr,
+			wantErr:   repoErr,
+			wantCalls: []string{"Get"},
+		},
+		{
+			name:          "dependency repository failure is invisible",
+			kind:          domain.KindFamily,
+			id:            5,
+			current:       familyRecord(5, "CONDUCTORES", "Conductores", false),
+			dependentsErr: repoErr,
+			wantErr:       repoErr,
+			wantCalls:     []string{"Get", "Dependents"},
+		},
+		{
+			name:          "resource reference repository failure is invisible",
+			kind:          domain.KindFamily,
+			id:            5,
+			current:       familyRecord(5, "CONDUCTORES", "Conductores", false),
+			referencesErr: repoErr,
+			wantErr:       repoErr,
+			wantCalls:     []string{"Get", "Dependents", "ReferencedByResources"},
+		},
+		{
+			name:           "delete repository failure is invisible",
+			kind:           domain.KindFamily,
+			id:             5,
+			current:        familyRecord(5, "CONDUCTORES", "Conductores", false),
+			deleteErr:      repoErr,
+			wantErr:        repoErr,
+			wantDeleteCall: 1,
+			wantCalls:      []string{"Get", "Dependents", "ReferencedByResources", "Delete"},
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			calls := make([]string, 0, 4)
+			repo := &fakeCatalogAdminRepository{
+				getFn: func(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) {
+					calls = append(calls, "Get")
+					return tt.current, tt.getErr
+				},
+				dependentsFn: func(context.Context, domain.CatalogKindCode, int64) ([]domain.CatalogDependency, error) {
+					calls = append(calls, "Dependents")
+					return tt.dependencies, tt.dependentsErr
+				},
+				referencedByResourcesFn: func(context.Context, domain.CatalogKindCode, int64) (bool, error) {
+					calls = append(calls, "ReferencedByResources")
+					return tt.referenced, tt.referencesErr
+				},
+				deleteFn: func(context.Context, domain.CatalogKindCode, int64) error {
+					calls = append(calls, "Delete")
+					return tt.deleteErr
+				},
+			}
+			authority := domain.NewCatalogAuthority(baseSnapshot())
+			svc := NewServiceWithCatalogAuthority(repo, domain.NewCatalogRegistry(), authority)
+			beforeSnapshot := svc.snapshot
+			beforeAuthority, beforeVersion := authority.Current()
+
+			err := svc.Delete(context.Background(), tt.kind, tt.id)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Delete() error = %v, want %v", err, tt.wantErr)
+			}
+			if repo.deleteCalls != tt.wantDeleteCall {
+				t.Fatalf("repo.Delete called %d times, want %d", repo.deleteCalls, tt.wantDeleteCall)
+			}
+			if !reflect.DeepEqual(svc.snapshot, beforeSnapshot) {
+				t.Fatal("service snapshot changed after rejected hard delete")
+			}
+			gotAuthority, gotVersion := authority.Current()
+			if gotVersion != beforeVersion || !reflect.DeepEqual(gotAuthority, beforeAuthority) {
+				t.Fatalf("authority changed after rejected hard delete: version %d catalog=%+v", gotVersion, gotAuthority)
+			}
+			if !reflect.DeepEqual(calls, tt.wantCalls) {
+				t.Fatalf("repository calls = %v, want %v", calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+func TestServiceDeleteDoesNotTrustConsumerPreflight(t *testing.T) {
+	checks := 0
+	repo := &fakeCatalogAdminRepository{
+		getFn: func(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) {
+			return familyRecord(5, "CONDUCTORES", "Conductores", false), nil
+		},
+		referencedByResourcesFn: func(context.Context, domain.CatalogKindCode, int64) (bool, error) {
+			checks++
+			return checks > 1, nil
+		},
+	}
+	authority := domain.NewCatalogAuthority(baseSnapshot())
+	svc := NewServiceWithCatalogAuthority(repo, domain.NewCatalogRegistry(), authority)
+
+	preflight, err := svc.ReferencedByResources(context.Background(), domain.KindFamily, 5)
+	if err != nil || preflight {
+		t.Fatalf("consumer preflight = %v, error=%v; want false, nil", preflight, err)
+	}
+	if err := svc.Delete(context.Background(), domain.KindFamily, 5); !errors.Is(err, domain.ErrCatalogInUse) {
+		t.Fatalf("Delete() error = %v, want ErrCatalogInUse from authoritative recheck", err)
+	}
+	if checks != 2 {
+		t.Fatalf("resource reference checks = %d, want consumer preflight plus service guard", checks)
+	}
+	if repo.deleteCalls != 0 {
+		t.Fatalf("repo.Delete called %d times, want 0", repo.deleteCalls)
+	}
+	if _, version := authority.Current(); version != 1 {
+		t.Fatalf("authority version = %d, want 1 after rejected delete", version)
 	}
 }
 
@@ -747,5 +1053,153 @@ func TestServiceUnitNameUpdateRejectsReferencedCodeChange(t *testing.T) {
 	}
 	if repo.updateCalls != 0 {
 		t.Fatalf("repo.Update calls = %d, want 0 after rejected stable-code change", repo.updateCalls)
+	}
+}
+
+// --- 4C: V2 additive path (design "Catalog transaction and coherent
+// publication") ------------------------------------------------------------
+
+// repoV2 is *fakeCatalogAdminRepositoryV2, not the domain.CatalogAdminRepositoryV2
+// interface: comparing a nil *fakeCatalogAdminRepositoryV2 against nil after
+// it were already boxed into the interface would always be false (typed-nil
+// gotcha) and silently defeat the "no repoV2 configured" test row below.
+func newV2TestService(repo domain.CatalogAdminRepository, repoV2 *fakeCatalogAdminRepositoryV2, authority *domain.CatalogAuthority) *Service {
+	svc := NewServiceWithCatalogAuthority(repo, domain.NewCatalogRegistry(), authority)
+	if repoV2 != nil {
+		svc.WithCatalogAdminRepositoryV2(repoV2)
+	}
+	return svc
+}
+
+var v2FamilyCurrent = domain.CatalogRecord{Kind: domain.KindFamily, ID: 5, Active: false, Values: map[string]domain.CatalogValue{
+	"class": {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: "MATERIAL"}}, "code": {Text: "CONDUCTORES"}, "name": {Text: "Conductores"},
+}}
+
+func v2GetFn(rec domain.CatalogRecord) func(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) {
+	return func(context.Context, domain.CatalogKindCode, int64) (domain.CatalogRecord, error) { return rec, nil }
+}
+
+func totalV2Calls(r *fakeCatalogAdminRepositoryV2) int {
+	return r.insertCalls + r.updateCalls + r.setActiveCalls + r.deleteCalls
+}
+
+type v2WriteCase struct {
+	name        string
+	repo        *fakeCatalogAdminRepository
+	repoV2      *fakeCatalogAdminRepositoryV2
+	action      func(*Service) error
+	wantErr     error
+	wantV2Calls int
+}
+
+// TestServiceV2WritesPublishOnlyOnConfirmedCommit is the single table
+// covering every no-publication case the design mandates: an unconfigured
+// repoV2, an invalid private candidate, HardDeleteRevision's conservative
+// guard chain (mirroring TestServiceDeleteConservativeGuards), every
+// repository-classified failure category for UpdateRevision/
+// HardDeleteRevision (stale CAS, SQL, reload, equivalence, commit — all
+// routed through the SAME shared classifyV2WriteError path), and the
+// idempotent no-op. In every row, the authority must stay at version 1.
+func TestServiceV2WritesPublishOnlyOnConfirmedCommit(t *testing.T) {
+	invalidFamily := domain.CatalogRecord{Active: true, Values: map[string]domain.CatalogValue{
+		"class": {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: "NO_EXISTE"}}, "code": {Text: "NUEVA"}, "name": {Text: "Nueva Familia"},
+	}}
+	activeTarget := familyRecord(5, "CONDUCTORES", "Conductores", true)
+	blockedDeps := []domain.CatalogDependency{{Kind: domain.KindType, Count: 1}}
+
+	cases := []v2WriteCase{
+		{"CreateV2 without repoV2 configured", &fakeCatalogAdminRepository{}, nil,
+			func(s *Service) error {
+				_, err := s.CreateV2(context.Background(), domain.KindUnit, domain.CatalogRecord{})
+				return err
+			},
+			ErrCatalogAdminRepositoryV2Unavailable, 0},
+		{"CreateV2 rejects invalid candidate", &fakeCatalogAdminRepository{}, &fakeCatalogAdminRepositoryV2{},
+			func(s *Service) error {
+				_, err := s.CreateV2(context.Background(), domain.KindFamily, invalidFamily)
+				return err
+			},
+			domain.ErrResourceReference, 0},
+		{"HardDeleteRevision rejects active target", &fakeCatalogAdminRepository{getFn: v2GetFn(activeTarget)}, &fakeCatalogAdminRepositoryV2{},
+			func(s *Service) error { return s.HardDeleteRevision(context.Background(), domain.KindFamily, 5, 3) },
+			domain.ErrInvalidLifecycle, 0},
+		{"HardDeleteRevision rejects blocking dependency", &fakeCatalogAdminRepository{
+			getFn: v2GetFn(v2FamilyCurrent),
+			dependentsFn: func(context.Context, domain.CatalogKindCode, int64) ([]domain.CatalogDependency, error) {
+				return blockedDeps, nil
+			},
+		}, &fakeCatalogAdminRepositoryV2{},
+			func(s *Service) error { return s.HardDeleteRevision(context.Background(), domain.KindFamily, 5, 3) },
+			domain.ErrCatalogInUse, 0},
+		{"HardDeleteRevision rejects resource reference", &fakeCatalogAdminRepository{
+			getFn:                   v2GetFn(v2FamilyCurrent),
+			referencedByResourcesFn: func(context.Context, domain.CatalogKindCode, int64) (bool, error) { return true, nil },
+		}, &fakeCatalogAdminRepositoryV2{},
+			func(s *Service) error { return s.HardDeleteRevision(context.Background(), domain.KindFamily, 5, 3) },
+			domain.ErrCatalogInUse, 0},
+		{"ReactivateRevision on an already-active record is an idempotent no-op", &fakeCatalogAdminRepository{getFn: v2GetFn(activeTarget)}, &fakeCatalogAdminRepositoryV2{},
+			func(s *Service) error { return s.ReactivateRevision(context.Background(), domain.KindFamily, 5, 7) },
+			nil, 0},
+	}
+	for _, category := range []string{"stale CAS/conflict", "SQL failure", "reload failure", "equivalence mismatch", "commit failure"} {
+		wantErr := errors.New(category)
+		cases = append(cases,
+			v2WriteCase{"UpdateRevision/" + category, &fakeCatalogAdminRepository{getFn: v2GetFn(v2FamilyCurrent)},
+				&fakeCatalogAdminRepositoryV2{updateFn: func(context.Context, domain.CatalogRecord, uint64) (domain.CatalogWriteResult, error) {
+					return domain.CatalogWriteResult{}, wantErr
+				}},
+				func(s *Service) error {
+					_, err := s.UpdateRevision(context.Background(), domain.KindFamily, v2FamilyCurrent, 3)
+					return err
+				},
+				wantErr, 1},
+			v2WriteCase{"HardDeleteRevision/" + category, &fakeCatalogAdminRepository{getFn: v2GetFn(v2FamilyCurrent)},
+				&fakeCatalogAdminRepositoryV2{deleteFn: func(context.Context, domain.CatalogKindCode, int64, uint64) (domain.CatalogWriteResult, error) {
+					return domain.CatalogWriteResult{}, wantErr
+				}},
+				func(s *Service) error { return s.HardDeleteRevision(context.Background(), domain.KindFamily, 5, 3) },
+				wantErr, 1},
+		)
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			authority := domain.NewCatalogAuthority(baseSnapshot())
+			svc := newV2TestService(tt.repo, tt.repoV2, authority)
+			if err := tt.action(svc); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.repoV2 != nil && totalV2Calls(tt.repoV2) != tt.wantV2Calls {
+				t.Fatalf("repoV2 calls = %d, want %d", totalV2Calls(tt.repoV2), tt.wantV2Calls)
+			}
+			if _, version := authority.Current(); version != 1 {
+				t.Fatalf("authority version = %d, want 1 (nothing published)", version)
+			}
+		})
+	}
+}
+
+// TestServiceV2CreatePublishesOnlyRepositoryCoherentResult proves the
+// success path publishes ONLY the repository's own coherent
+// CatalogWriteResult.Catalog — deliberately divergent (empty Families) from
+// the hand-built local candidate — never the candidate itself.
+func TestServiceV2CreatePublishesOnlyRepositoryCoherentResult(t *testing.T) {
+	coherent := baseSnapshot()
+	coherent.Families = nil
+	repoV2 := &fakeCatalogAdminRepositoryV2{insertFn: func(ctx context.Context, rec domain.CatalogRecord) (domain.CatalogWriteResult, error) {
+		rec.ID = 42
+		return domain.NewCatalogWriteResult(&rec, coherent), nil
+	}}
+	authority := domain.NewCatalogAuthority(baseSnapshot())
+	valid := domain.CatalogRecord{Active: true, Values: map[string]domain.CatalogValue{
+		"class": {Ref: domain.CatalogRef{Kind: domain.KindClass, Code: "MATERIAL"}}, "code": {Text: "CANALIZACIONES"}, "name": {Text: "Canalizaciones"},
+	}}
+	got, err := newV2TestService(&fakeCatalogAdminRepository{}, repoV2, authority).CreateV2(context.Background(), domain.KindFamily, valid)
+	if err != nil || got.ID != 42 {
+		t.Fatalf("CreateV2 = %+v, err=%v, want ID 42, nil error", got, err)
+	}
+	published, version := authority.Current()
+	if version != 2 || len(published.Families) != 0 {
+		t.Fatalf("published = %+v at v%d, want the repository's coherent (empty-Families) result at v2", published.Families, version)
 	}
 }

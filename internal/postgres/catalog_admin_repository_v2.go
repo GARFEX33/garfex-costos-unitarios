@@ -224,6 +224,27 @@ func casUpdateRevision(ctx context.Context, tx pgx.Tx, updateSQL string, args []
 	return 0, errCatalogStaleRevisionV2
 }
 
+// runCatalogWriteTxV2 begins/commits/rolls back a transaction around one
+// insert/update apply closure — no reload/validate/compare steps (see the
+// section doc comment above for why this 3F-scoped slice omits them; 4B's
+// runV2CoherentTx below is the full coherent-result protocol every concrete
+// catalogAdminRepositoryV2 method now uses instead).
+func runCatalogWriteTxV2(ctx context.Context, pool *pgxpool.Pool, apply func(context.Context, pgx.Tx) (int64, uint64, error)) (int64, uint64, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin catalog v2 transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, revision, err := apply(ctx, tx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("commit catalog v2 transaction: %w", err)
+	}
+	return id, revision, nil
+}
+
 // --- CLASE ------------------------------------------------------------
 
 func insertClassV2(ctx context.Context, tx pgx.Tx, rec domain.CatalogRecord) (id int64, revision uint64, err error) {

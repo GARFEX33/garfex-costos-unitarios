@@ -313,6 +313,93 @@ func TestServiceDelete(t *testing.T) {
 	}
 }
 
+// TestIdentityConflictDistinctFromReactivationImpossibleOnReactivate is the
+// RED/TRIANGULATE evidence for 5A: a reactivation candidate whose
+// recomputed identity disagrees with the stored one is ErrIdentityConflict
+// (never collapsed into the broader ErrReactivationImpossible/ErrResourceValidation
+// outcome used for "cannot validate under the current catalog").
+func TestIdentityConflictDistinctFromReactivationImpossibleOnReactivate(t *testing.T) {
+	t.Run("identity mismatch is ErrIdentityConflict, not ErrReactivationImpossible", func(t *testing.T) {
+		resource, err := domain.NewResource(domain.SeedResourceCatalog(), domain.ResourceScope{
+			ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE",
+		}, "M", []domain.ResourceAttributeValue{
+			domain.OptionValue("conductor_material", "COBRE"), domain.OptionValue("gauge", "12 AWG"),
+			domain.OptionValue("insulation", "THW"), domain.OptionValue("color", "NEGRO"), domain.OptionValue("voltage", "600 V"),
+		})
+		if err != nil {
+			t.Fatalf("NewResource() error = %v", err)
+		}
+		resource.ID, resource.Active = 8, false
+		resource.IdentityKey = "v1|stale-identity-no-longer-matches-catalog"
+		repo := &fakeLifecycleRepo{byID: resource}
+
+		_, gotErr := NewService(repo, domain.SeedResourceCatalog()).Reactivate(context.Background(), resource.ID)
+		if !errors.Is(gotErr, domain.ErrIdentityConflict) {
+			t.Fatalf("Reactivate() error = %v, want ErrIdentityConflict", gotErr)
+		}
+		if errors.Is(gotErr, domain.ErrReactivationImpossible) {
+			t.Fatalf("Reactivate() error = %v, must not also match ErrReactivationImpossible", gotErr)
+		}
+		if repo.reactivateCalls != 0 {
+			t.Fatalf("repo.reactivateCalls = %d, want 0 (identity mismatch caught before any repository call)", repo.reactivateCalls)
+		}
+	})
+
+	t.Run("catalog-invalid retained record is ErrReactivationImpossible, not ErrIdentityConflict", func(t *testing.T) {
+		resource := domain.Resource{
+			ID: 8, ClassCode: "MATERIAL", FamilyCode: "CONDUCTORES", TypeCode: "CABLE", NaturalUnit: "M",
+			IdentityKey: "v1|resource", Active: false,
+			Attributes: []domain.ResourceAttributeValue{domain.OptionValue("conductor_material", "COBRE")},
+		}
+		repo := &fakeLifecycleRepo{byID: resource}
+
+		_, gotErr := NewService(repo, domain.SeedResourceCatalog()).Reactivate(context.Background(), resource.ID)
+		if !errors.Is(gotErr, domain.ErrReactivationImpossible) {
+			t.Fatalf("Reactivate() error = %v, want ErrReactivationImpossible", gotErr)
+		}
+		if !errors.Is(gotErr, domain.ErrResourceValidation) {
+			t.Fatalf("Reactivate() error = %v, want it to still wrap the underlying ErrResourceValidation reason", gotErr)
+		}
+		if errors.Is(gotErr, domain.ErrIdentityConflict) {
+			t.Fatalf("Reactivate() error = %v, must not also match ErrIdentityConflict", gotErr)
+		}
+		if repo.reactivateCalls != 0 {
+			t.Fatalf("repo.reactivateCalls = %d, want 0", repo.reactivateCalls)
+		}
+	})
+}
+
+// fakeReactivateReferenceRepo is a domain.ResourceRepository whose Reactivate
+// simulates the repository-level "cannot restore required reference"
+// backstop (e.g. an inactive unit/class) — see
+// internal/postgres/resource_repository_crud.go's setLifecycle.
+type fakeReactivateReferenceRepo struct {
+	fakeLifecycleRepo
+	reactivateErr error
+}
+
+func (f *fakeReactivateReferenceRepo) Reactivate(_ context.Context, id int64, _ string) (domain.LifecycleResult, error) {
+	f.reactivateCalls++
+	return domain.LifecycleResult{}, f.reactivateErr
+}
+
+// TestReactivationImpossibleClassifiesRepositoryReferenceFailure proves the
+// repository-level "cannot restore required reference" backstop (raw
+// domain.ErrResourceReference) is classified ErrReactivationImpossible by
+// the service, not left as the bare request-level sentinel.
+func TestReactivationImpossibleClassifiesRepositoryReferenceFailure(t *testing.T) {
+	resource := fullReactivationResource(false)
+	repo := &fakeReactivateReferenceRepo{fakeLifecycleRepo: fakeLifecycleRepo{byID: resource}, reactivateErr: domain.ErrResourceReference}
+
+	_, err := NewService(repo, domain.SeedResourceCatalog()).Reactivate(context.Background(), resource.ID)
+	if !errors.Is(err, domain.ErrReactivationImpossible) || !errors.Is(err, domain.ErrResourceReference) {
+		t.Fatalf("Reactivate() error = %v, want it to satisfy errors.Is for both ErrReactivationImpossible and ErrResourceReference", err)
+	}
+	if repo.reactivateCalls != 1 {
+		t.Fatalf("repo.reactivateCalls = %d, want 1", repo.reactivateCalls)
+	}
+}
+
 func TestServiceDescribeUsesCurrentCommittedCatalog(t *testing.T) {
 	catalog := domain.SeedResourceCatalog()
 	authority := domain.NewCatalogAuthority(catalog)
