@@ -201,3 +201,52 @@ func TestCatalogAdminGrantsIntegration(t *testing.T) {
 		}
 	})
 }
+
+// TestGrantRevisionColumnAccessIntegration proves migration 000003's
+// table-level GRANTs (INSERT/UPDATE/DELETE) already cover migration 8's new
+// `revision` column for a revision-bearing catalog table without any
+// additional GRANT statement (design "Resource revisions and identity"),
+// using the same garfex_app-privilege GARFEX_TEST_DSN convention as
+// TestCatalogAdminGrantsIntegration above.
+func TestGrantRevisionColumnAccessIntegration(t *testing.T) {
+	dsn := os.Getenv("GARFEX_TEST_DSN")
+	if dsn == "" {
+		t.Skip("GARFEX_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	var classID int64
+	err = pool.QueryRow(ctx,
+		`INSERT INTO public.resource_classes (code, name, plural, slug) VALUES ($1,$2,$3,$4) RETURNING id`,
+		"TEST_GRANT_REVISION_CLASS", "Test Revision Clase", "Test Revision Clases", "test-grant-revision-clase").Scan(&classID)
+	if err != nil {
+		t.Fatalf("insert resource_classes: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(ctx, `DELETE FROM public.resource_classes WHERE id = $1`, classID); err != nil {
+			t.Errorf("cleanup resource_classes: %v", err)
+		}
+	})
+
+	var revision int64
+	if err := pool.QueryRow(ctx, `SELECT revision FROM public.resource_classes WHERE id = $1`, classID).Scan(&revision); err != nil {
+		t.Fatalf("select revision: %v", err)
+	}
+	if revision != 1 {
+		t.Fatalf("inserted revision = %d, want 1 (migration-8 default)", revision)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE public.resource_classes SET revision = revision + 1 WHERE id = $1`, classID); err != nil {
+		t.Fatalf("update revision (permission check): %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT revision FROM public.resource_classes WHERE id = $1`, classID).Scan(&revision); err != nil {
+		t.Fatalf("re-select revision: %v", err)
+	}
+	if revision != 2 {
+		t.Fatalf("updated revision = %d, want 2", revision)
+	}
+}

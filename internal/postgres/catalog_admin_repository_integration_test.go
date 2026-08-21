@@ -397,7 +397,7 @@ func TestCatalogAdminRepositoryIntegration(t *testing.T) {
 		must(st, "insert recursos", pool.QueryRow(ctx, `
 			INSERT INTO public.recursos (class_id, family_id, type_id, natural_unit_id, display_name, identity_key)
 			VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-			classID, fam1ID, typeID, unitID, "Test Repo Recurso", "TEST_REPO_IDENTITY_KEY").Scan(&resourceID))
+			classID, fam1ID, typeID, unitID, "Test Repo Recurso", canonicalResourceIdentityKey("TEST_REPO_CLASS", "TEST_REPO_FAM1", "TEST_REPO_TYPE")).Scan(&resourceID))
 		t.Cleanup(func() {
 			if _, err := pool.Exec(ctx, `DELETE FROM public.recursos WHERE id=$1`, resourceID); err != nil {
 				t.Errorf("cleanup recursos: %v", err)
@@ -463,7 +463,7 @@ func TestCatalogAdminRepositoryIntegration(t *testing.T) {
 		must(st, "resolve class", pool.QueryRow(ctx, `SELECT id FROM public.resource_classes WHERE code='MATERIAL'`).Scan(&classID))
 		must(st, "resolve family", pool.QueryRow(ctx, `SELECT id FROM public.resource_families WHERE code='CONDUCTORES'`).Scan(&familyID))
 		must(st, "resolve type", pool.QueryRow(ctx, `SELECT id FROM public.resource_types WHERE code='CABLE'`).Scan(&typeID))
-		must(st, "insert stable reference", pool.QueryRow(ctx, `INSERT INTO public.recursos (class_id,family_id,type_id,natural_unit_id,display_name,identity_key) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, classID, familyID, typeID, first, "U2a restart", "TEST_U2A_RESTART_KEY").Scan(&resourceID))
+		must(st, "insert stable reference", pool.QueryRow(ctx, `INSERT INTO public.recursos (class_id,family_id,type_id,natural_unit_id,display_name,identity_key) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, classID, familyID, typeID, first, "U2a restart", canonicalResourceIdentityKey("MATERIAL", "CONDUCTORES", "CABLE")).Scan(&resourceID))
 		st.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM public.recursos WHERE id=$1", resourceID) })
 		freshPool, err := pgxpool.New(ctx, dsn)
 		must(st, "reconnect to PostgreSQL", err)

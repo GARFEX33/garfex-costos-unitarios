@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/core"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -223,6 +224,7 @@ func refValueLabel(kind domain.CatalogKindCode, code, label string) domain.Catal
 // resource_repository_codec.go's mapRepositoryError for the resource-instance
 // domain — kept separate per catalog_repository_errors.go's doc comment).
 func mapCatalogWriteError(err error) error {
+	core.Record(context.Background(), core.Operation("catalog.write"), "", 0, err)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
@@ -243,6 +245,7 @@ func mapCatalogWriteError(err error) error {
 // ErrCatalogInUse — the repository-level backstop behind the service/UI
 // guarded-delete flow (design §6).
 func mapCatalogDeleteError(err error) error {
+	core.Record(context.Background(), core.Operation("catalog.delete"), "", 0, err)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 		return fmt.Errorf("%w: %s", domain.ErrCatalogInUse, pgErr.Message)

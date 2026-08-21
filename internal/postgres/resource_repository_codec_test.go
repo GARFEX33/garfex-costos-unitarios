@@ -63,3 +63,20 @@ func TestMapRepositoryError(t *testing.T) {
 		})
 	}
 }
+
+// TestIdentityConflictNeverMatchesGenuineCardinalityCorruption is 5A's
+// TRIANGULATE non-collapse evidence: a genuine persisted-cardinality
+// corruption (the 23505 attribute-uniqueness constraint) keeps returning
+// bare domain.ErrResourceIntegrity and is never accidentally reclassified as
+// domain.ErrIdentityConflict — that dedicated outcome is reserved for a
+// reactivation candidate's identity-v1 mismatch (internal/app/recursos),
+// never for real PostgreSQL-level persistence corruption.
+func TestIdentityConflictNeverMatchesGenuineCardinalityCorruption(t *testing.T) {
+	err := mapRepositoryError(&pgconn.PgError{Code: "23505", ConstraintName: "resource_attribute_values_resource_id_resource_attribute_id_key", Message: "duplicate attribute row"})
+	if !errors.Is(err, domain.ErrResourceIntegrity) {
+		t.Fatalf("mapRepositoryError() = %v, want ErrResourceIntegrity", err)
+	}
+	if errors.Is(err, domain.ErrIdentityConflict) {
+		t.Fatalf("mapRepositoryError() = %v, must not also match ErrIdentityConflict", err)
+	}
+}

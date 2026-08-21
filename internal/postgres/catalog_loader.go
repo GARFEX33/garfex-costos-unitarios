@@ -32,6 +32,19 @@ func LoadResourceCatalog(ctx context.Context, pool *pgxpool.Pool) (domain.Resour
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	catalog, err := loadResourceCatalogTx(ctx, tx)
+	if err != nil {
+		return domain.ResourceCatalog{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ResourceCatalog{}, fmt.Errorf("commit catalog load transaction: %w", err)
+	}
+	return catalog, classifyLoadedCatalog(catalog)
+}
+
+// loadResourceCatalogTx hydrates inside an already-open tx (no begin/commit);
+// the dormant V2 applicability helpers call it read-write before their own commit.
+func loadResourceCatalogTx(ctx context.Context, tx pgx.Tx) (domain.ResourceCatalog, error) {
 	classes, err := loadClasses(ctx, tx)
 	if err != nil {
 		return domain.ResourceCatalog{}, err
@@ -81,11 +94,7 @@ func LoadResourceCatalog(ctx context.Context, pool *pgxpool.Pool) (domain.Resour
 		return domain.ResourceCatalog{}, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return domain.ResourceCatalog{}, fmt.Errorf("commit catalog load transaction: %w", err)
-	}
-
-	catalog := domain.ResourceCatalog{
+	return domain.ResourceCatalog{
 		Classes:            classes,
 		Families:           families,
 		Types:              types,
@@ -97,8 +106,7 @@ func LoadResourceCatalog(ctx context.Context, pool *pgxpool.Pool) (domain.Resour
 		Options:            options,
 		Relations:          relations,
 		OptionSets:         optionSets,
-	}
-	return catalog, classifyLoadedCatalog(catalog)
+	}, nil
 }
 
 // classifyLoadedCatalog reports ErrCatalogEmpty when the hydrated catalog
@@ -388,6 +396,43 @@ func loadRelations(ctx context.Context, tx pgx.Tx) ([]domain.AttributeOptionRela
 		relations = append(relations, r)
 	}
 	return relations, rows.Err()
+}
+
+// revisionTables lists every table migration 8 adds a `revision` column to:
+// public.recursos and the 11 catalog-definition parent tables (design
+// "Resource revisions and identity"). resource_attribute_rules deliberately
+// has no independent revision and is intentionally absent here.
+var revisionTables = map[string]bool{
+	"recursos":                          true,
+	"resource_classes":                  true,
+	"resource_families":                 true,
+	"resource_types":                    true,
+	"attribute_definitions":             true,
+	"resource_option_sets":              true,
+	"attribute_options":                 true,
+	"attribute_option_relations":        true,
+	"unit_definitions":                  true,
+	"resource_unit_policies":            true,
+	"resource_attributes":               true,
+	"resource_type_presentation_fields": true,
+}
+
+// loadRevision reads the current migration-8 revision for one row of a
+// revision-bearing table, inside the given transaction. It is the dormant
+// read half of the CAS revision handling introduced by migration 8; the
+// write-path CAS kind handlers land in a later, independently green slice
+// (design "Resource revisions and identity", "SQL CAS classification"). The
+// table name is validated against revisionTables before being interpolated,
+// so this never accepts caller-controlled SQL identifiers.
+func loadRevision(ctx context.Context, tx pgx.Tx, table string, id int64) (uint64, error) {
+	if !revisionTables[table] {
+		return 0, fmt.Errorf("loadRevision: table %q has no revision column", table)
+	}
+	var revision uint64
+	if err := tx.QueryRow(ctx, `SELECT revision FROM public.`+table+` WHERE id = $1`, id).Scan(&revision); err != nil {
+		return 0, fmt.Errorf("query %s revision: %w", table, err)
+	}
+	return revision, nil
 }
 
 // normalizeCatalogForParity rewrites representational differences between

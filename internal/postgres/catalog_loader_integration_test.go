@@ -200,3 +200,49 @@ func TestLoadResourceCatalogPreservesEveryActiveFlag(t *testing.T) {
 		t.Fatal("relation or presentation active flag was not preserved")
 	}
 }
+
+// TestLoaderRevisionReadsBackfilledDefault proves loadRevision — the dormant
+// read half of migration 8's CAS revision handling (design "Resource
+// revisions and identity") — reads back the migration-8 backfilled default
+// of 1 for an existing seeded catalog row, using the ordinary garfex_app
+// role (no elevated privilege is required to read the column).
+func TestLoaderRevisionReadsBackfilledDefault(t *testing.T) {
+	dsn := os.Getenv("GARFEX_TEST_DSN")
+	if dsn == "" {
+		t.Skip("GARFEX_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	var classID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM public.resource_classes WHERE code = 'MATERIAL'`).Scan(&classID); err != nil {
+		t.Fatalf("read seeded class id: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+	revision, err := loadRevision(ctx, tx, "resource_classes", classID)
+	if err != nil {
+		t.Fatalf("loadRevision() error = %v, want nil", err)
+	}
+	if revision != 1 {
+		t.Fatalf("loadRevision() = %d, want 1 (migration-8 backfilled default)", revision)
+	}
+}
+
+// TestLoaderRevisionRejectsUnknownTable proves loadRevision fails closed for
+// any table migration 8 does not add a revision column to — most notably
+// resource_attribute_rules, which deliberately has no independent revision —
+// without needing a live database connection to prove it.
+func TestLoaderRevisionRejectsUnknownTable(t *testing.T) {
+	if _, err := loadRevision(context.Background(), nil, "resource_attribute_rules", 1); err == nil {
+		t.Fatal("loadRevision() error = nil, want error for a table with no revision column")
+	}
+}

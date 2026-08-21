@@ -342,3 +342,188 @@ func (r *resourceRepository) setLifecycle(ctx context.Context, id int64, active 
 	}
 	return domain.LifecycleResult{Resource: resource, Changed: true}, nil
 }
+
+// errResourceRevisionRequired is a defense-in-depth guard; recursos.Service
+// already rejects a zero expectedRevision first.
+var errResourceRevisionRequired = errors.New("resource lifecycle revision CAS requires a non-zero expected revision")
+
+func (r *resourceRepository) DeactivateRevision(ctx context.Context, id int64, expectedRevision uint64) (domain.Resource, error) {
+	return r.setLifecycleRevision(ctx, id, false, "", expectedRevision)
+}
+
+func (r *resourceRepository) ReactivateRevision(ctx context.Context, id int64, expectedIdentityKey string, expectedRevision uint64) (domain.Resource, error) {
+	return r.setLifecycleRevision(ctx, id, true, expectedIdentityKey, expectedRevision)
+}
+
+// setLifecycleRevision mirrors setLifecycle's row-locked transition, adding
+// the CAS expectedRevision predicate under the same row lock: absent row is
+// domain.ErrResourceNotFound, present-but-different-revision is
+// domain.ErrResourceRevisionConflict — never inferred from an error string
+// (mirrors casUpdateRevision's disambiguation, catalog_admin_repository_v2.go).
+// Revision increments only on an actual active-state transition; a no-op
+// commits without incrementing. identity_key is never touched here.
+func (r *resourceRepository) setLifecycleRevision(ctx context.Context, id int64, active bool, expectedIdentityKey string, expectedRevision uint64) (domain.Resource, error) {
+	if r.pool == nil {
+		return domain.Resource{}, errors.New("resource repository: nil pool")
+	}
+	if expectedRevision == 0 {
+		return domain.Resource{}, errResourceRevisionRequired
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.Resource{}, fmt.Errorf("begin resource lifecycle revision: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var classCode, identityKey string
+	var currentActive bool
+	var currentRevision uint64
+	err = tx.QueryRow(ctx, `
+		SELECT cl.code, r.identity_key, r.active, r.revision
+		FROM public.recursos r
+		JOIN public.resource_classes cl ON cl.id = r.class_id
+		WHERE r.id = $1 FOR UPDATE`, id).Scan(&classCode, &identityKey, &currentActive, &currentRevision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Resource{}, fmt.Errorf("%w: resource id %d", domain.ErrResourceNotFound, id)
+	}
+	if err != nil {
+		return domain.Resource{}, fmt.Errorf("load resource lifecycle revision %d: %w", id, err)
+	}
+	if expectedIdentityKey != "" && expectedIdentityKey != identityKey {
+		return domain.Resource{}, domain.ErrResourceIntegrity
+	}
+	if currentRevision != expectedRevision {
+		return domain.Resource{}, domain.ErrResourceRevisionConflict
+	}
+	if currentActive == active {
+		if err := tx.Commit(ctx); err != nil {
+			return domain.Resource{}, fmt.Errorf("commit resource lifecycle revision no-op: %w", err)
+		}
+		return r.getWithRevision(ctx, id, classCode, identityKey)
+	}
+
+	query := `UPDATE public.recursos SET active=$2, revision=revision+1, updated_at=NOW() WHERE id=$1 AND revision=$3`
+	args := []any{id, active, expectedRevision}
+	if active {
+		query = `UPDATE public.recursos r SET active=TRUE, revision=r.revision+1, updated_at=NOW()
+			FROM public.resource_classes cl, public.resource_families f, public.resource_types t,
+				public.unit_definitions u, public.resource_unit_policies p
+			WHERE r.id=$1 AND r.revision=$2 AND cl.id=r.class_id AND cl.active AND f.id=r.family_id AND f.active
+				AND t.id=r.type_id AND t.active AND u.id=r.natural_unit_id AND u.active
+				AND p.family_id=f.id AND p.unit_id=u.id AND p.allowed AND p.active`
+		args = []any{id, expectedRevision}
+	}
+	tag, err := tx.Exec(ctx, query, args...)
+	if err != nil {
+		return domain.Resource{}, mapRepositoryError(fmt.Errorf("set resource active revision: %w", err))
+	}
+	if tag.RowsAffected() != 1 {
+		if active {
+			// Already row-locked at a matching revision above, so a zero-row
+			// CAS UPDATE here means the catalog scope is no longer active.
+			return domain.Resource{}, domain.ErrResourceReference
+		}
+		return domain.Resource{}, fmt.Errorf("%w: resource id %d", domain.ErrResourceNotFound, id)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Resource{}, fmt.Errorf("commit resource lifecycle revision: %w", err)
+	}
+	return r.getWithRevision(ctx, id, classCode, identityKey)
+}
+
+// UpdateRevision CAS-locks the parent row (mirroring setLifecycleRevision),
+// then fully replaces the attribute set in the same transaction, rolling
+// both back together on either failure. identity_key is never in the SET.
+func (r *resourceRepository) UpdateRevision(ctx context.Context, resource domain.Resource, expectedRevision uint64) (domain.Resource, error) {
+	if err := resource.ValidateForPersistence(); err != nil {
+		return domain.Resource{}, err
+	}
+	if r.pool == nil {
+		return domain.Resource{}, errors.New("resource repository: nil pool")
+	}
+	if expectedRevision == 0 {
+		return domain.Resource{}, errResourceRevisionRequired
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.Resource{}, fmt.Errorf("begin resource update revision: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var classCode, identityKey string
+	var currentRevision uint64
+	err = tx.QueryRow(ctx, `
+		SELECT cl.code, r.identity_key, r.revision
+		FROM public.recursos r
+		JOIN public.resource_classes cl ON cl.id = r.class_id
+		WHERE r.id = $1 FOR UPDATE`, resource.ID).Scan(&classCode, &identityKey, &currentRevision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Resource{}, fmt.Errorf("%w: resource id %d", domain.ErrResourceNotFound, resource.ID)
+	}
+	if err != nil {
+		return domain.Resource{}, fmt.Errorf("load resource update revision %d: %w", resource.ID, err)
+	}
+	if currentRevision != expectedRevision {
+		return domain.Resource{}, domain.ErrResourceRevisionConflict
+	}
+
+	var classID, familyID, typeID, unitID int64
+	err = tx.QueryRow(ctx, `
+		SELECT cl.id, f.id, t.id, u.id
+		FROM public.resource_classes cl
+		JOIN public.resource_families f ON f.class_id = cl.id AND f.code = $2
+		JOIN public.resource_types t ON t.family_id = f.id AND t.code = $3
+		JOIN public.unit_definitions u ON u.code = $4
+		JOIN public.resource_unit_policies p ON p.family_id = f.id AND p.unit_id = u.id AND p.allowed AND p.active
+		WHERE cl.code = $1 AND cl.active AND f.active AND t.active AND u.active`, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit).Scan(&classID, &familyID, &typeID, &unitID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Resource{}, fmt.Errorf("%w: class %q, family %q, type %q, or unit %q", domain.ErrResourceReference, resource.ClassCode, resource.FamilyCode, resource.TypeCode, resource.NaturalUnit)
+		}
+		return domain.Resource{}, fmt.Errorf("resolve resource references: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE public.recursos
+		SET class_id = $1, family_id = $2, type_id = $3, natural_unit_id = $4, display_name = $5,
+		    revision = revision + 1, updated_at = NOW()
+		WHERE id = $6 AND revision = $7`, classID, familyID, typeID, unitID, resource.FamilyCode, resource.ID, expectedRevision)
+	if err != nil {
+		return domain.Resource{}, mapRepositoryError(fmt.Errorf("update resource revision: %w", err))
+	}
+	if tag.RowsAffected() != 1 {
+		// Already row-locked above, so a zero-row result is a raced transition.
+		return domain.Resource{}, domain.ErrResourceRevisionConflict
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM public.resource_attribute_values WHERE resource_id = $1`, resource.ID); err != nil {
+		return domain.Resource{}, fmt.Errorf("clear resource attributes: %w", err)
+	}
+	for _, value := range resource.Attributes {
+		if err := persistAttributeValue(ctx, tx, resource, resource.ID, value); err != nil {
+			return domain.Resource{}, err
+		}
+	}
+	if err := verifyAttributeCount(ctx, tx, resource.ID, len(resource.Attributes)); err != nil {
+		return domain.Resource{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Resource{}, fmt.Errorf("commit resource update revision: %w", err)
+	}
+	return r.getWithRevision(ctx, resource.ID, classCode, identityKey)
+}
+
+// getWithRevision reloads the committed resource plus its revision — Get
+// does not select revision yet, so this performs its own minimal reload
+// rather than widening Get's query/behavior in this slice.
+func (r *resourceRepository) getWithRevision(ctx context.Context, id int64, classCode, identityKey string) (domain.Resource, error) {
+	resource, err := r.Get(ctx, classCode, identityKey)
+	if err != nil {
+		return domain.Resource{}, fmt.Errorf("reload resource %d after lifecycle revision: %w", id, err)
+	}
+	if err := r.pool.QueryRow(ctx, `SELECT revision FROM public.recursos WHERE id=$1`, id).Scan(&resource.Revision); err != nil {
+		return domain.Resource{}, fmt.Errorf("load resource %d revision: %w", id, err)
+	}
+	return resource, nil
+}
