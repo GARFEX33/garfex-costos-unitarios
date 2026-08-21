@@ -74,6 +74,9 @@ func (r *resourceRepository) SearchPage(ctx context.Context, criteria domain.Sea
 	if criteria.FamilyCode != "" {
 		conditions = append(conditions, "f.code = "+arg(criteria.FamilyCode))
 	}
+	if criteria.TypeCode != "" {
+		conditions = append(conditions, "t.code = "+arg(criteria.TypeCode))
+	}
 	if criteria.Text != "" {
 		placeholder := arg("%" + criteria.Text + "%")
 		conditions = append(conditions, fmt.Sprintf("(r.identity_key ILIKE %s OR f.code ILIKE %s OR f.name ILIKE %s)", placeholder, placeholder, placeholder))
