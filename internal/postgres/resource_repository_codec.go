@@ -1,9 +1,11 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/core"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
@@ -110,6 +112,7 @@ func dereference(value *string) string {
 }
 
 func mapRepositoryError(err error) error {
+	core.Record(context.Background(), core.Operation("resource.write"), "", 0, err)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {

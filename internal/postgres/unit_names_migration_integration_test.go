@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +14,7 @@ func TestUnitNamesMigrationIntegration(t *testing.T) {
 		t.Skip("GARFEX_ADMIN_TEST_DSN and GARFEX_TEST_DSN are required")
 	}
 	ctx, admin, app := context.Background(), openUnitTestPool(t, adminDSN), openUnitTestPool(t, appDSN)
+	window := beginMigrationTestWindow(t, admin)
 	must := func(label string, err error) {
 		if err != nil {
 			t.Fatalf("%s: %v", label, err)
@@ -22,6 +22,20 @@ func TestUnitNamesMigrationIntegration(t *testing.T) {
 	}
 	var hasName bool
 	must("inspect schema", admin.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='unit_definitions' AND column_name='name')`).Scan(&hasName))
+	window.cleanups = append(window.cleanups, func(ctx context.Context) error {
+		var current bool
+		if err := admin.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='unit_definitions' AND column_name='name')`).Scan(&current); err != nil {
+			return err
+		}
+		if current == hasName {
+			return nil
+		}
+		name := "000004_unit_names.down.sql"
+		if hasName {
+			name = "000004_unit_names.up.sql"
+		}
+		return applySchemaMigration(admin, name)
+	})
 	if hasName {
 		applyUnitNamesMigration(t, admin, "000004_unit_names.down.sql")
 	}
@@ -37,6 +51,7 @@ func TestUnitNamesMigrationIntegration(t *testing.T) {
 		var id int64
 		must("insert legacy unit", admin.QueryRow(ctx, `INSERT INTO public.unit_definitions (code, symbol, dimension) VALUES ($1,$2,'MASS') RETURNING id`, unit.code, unit.symbol).Scan(&id))
 		before[unit.code] = stable{id: id, symbol: unit.symbol, dimension: "MASS"}
+		window.TrackUnit(id)
 	}
 	var classID, familyID, typeID int64
 	must("resolve references", admin.QueryRow(ctx, `SELECT cl.id, f.id, ty.id FROM public.resource_classes cl JOIN public.resource_families f ON f.class_id=cl.id AND f.code='CONDUCTORES' JOIN public.resource_types ty ON ty.family_id=f.id AND ty.code='CABLE' WHERE cl.code='MATERIAL'`).Scan(&classID, &familyID, &typeID))
@@ -44,11 +59,7 @@ func TestUnitNamesMigrationIntegration(t *testing.T) {
 	must("insert preserved policy", err)
 	var resourceID int64
 	must("insert preserved resource", admin.QueryRow(ctx, `INSERT INTO public.recursos (class_id,family_id,type_id,natural_unit_id,display_name,identity_key) VALUES ($1,$2,$3,$4,'Migration resource','TEST_UNIT_NAMES_RESOURCE') RETURNING id`, classID, familyID, typeID, before["KG"].id).Scan(&resourceID))
-	t.Cleanup(func() {
-		_, _ = admin.Exec(ctx, `DELETE FROM public.recursos WHERE id=$1`, resourceID)
-		_, _ = admin.Exec(ctx, `DELETE FROM public.resource_unit_policies WHERE unit_id=$1`, before["KG"].id)
-		_, _ = admin.Exec(ctx, `DELETE FROM public.unit_definitions WHERE code IN ('KG','TEST_CUSTOM','TEST_DUPLICATE_A','TEST_DUPLICATE_B')`)
-	})
+	window.TrackResource(resourceID)
 
 	applyUnitNamesMigration(t, admin, "000004_unit_names.up.sql")
 	for _, unit := range units {
@@ -77,6 +88,11 @@ func TestUnitNamesMigrationIntegration(t *testing.T) {
 		_, err := app.Exec(ctx, `INSERT INTO public.unit_definitions (code,name,symbol,dimension) VALUES ('TEST_DUPLICATE_A','Metro','TDA','LENGTH'),('TEST_DUPLICATE_B','Metro','TDB','LENGTH')`)
 		return err
 	}())
+	for _, code := range []string{"TEST_DUPLICATE_A", "TEST_DUPLICATE_B"} {
+		var id int64
+		must("record duplicate-name unit", admin.QueryRow(ctx, `SELECT id FROM public.unit_definitions WHERE code=$1`, code).Scan(&id))
+		window.TrackUnit(id)
+	}
 	if _, err := app.Exec(ctx, `INSERT INTO public.unit_definitions (code,name,symbol,dimension) VALUES ('TEST_BLANK','   ','TBL','LENGTH')`); err == nil {
 		t.Fatal("blank unit name was accepted")
 	}
@@ -105,11 +121,7 @@ func openUnitTestPool(t *testing.T, dsn string) *pgxpool.Pool {
 }
 
 func applyUnitNamesMigration(t *testing.T, pool *pgxpool.Pool, name string) {
-	sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
-	if err != nil {
-		t.Fatalf("read migration %s: %v", name, err)
-	}
-	if _, err := pool.Exec(context.Background(), string(sql)); err != nil {
+	if err := applySchemaMigration(pool, name); err != nil {
 		t.Fatalf("apply migration %s: %v", name, err)
 	}
 }

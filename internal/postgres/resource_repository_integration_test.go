@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"sort"
 	"testing"
 
@@ -22,16 +21,13 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	}
 	ctx := context.Background()
 	p := openUnitTestPool(t, dsn)
-	resetResourceIntegrityMigration(t, p)
-	t.Cleanup(func() {
-		resetResourceIntegrityMigration(t, p)
-		_, _ = p.Exec(ctx, `DELETE FROM public.recursos WHERE display_name LIKE 'TEST_RESOURCE_INTEGRITY%'`)
-		p.Close()
-	})
+	window := beginMigrationTestWindow(t, p)
 
 	t.Run("blocks canonical collision", func(t *testing.T) {
 		first := insertIntegrityResource(t, p, "TEST_RESOURCE_INTEGRITY_LEGACY_A")
 		second := insertIntegrityResource(t, p, "TEST_RESOURCE_INTEGRITY_LEGACY_B")
+		window.TrackResource(first)
+		window.TrackResource(second)
 		insertIntegrityOption(t, p, first, "conductor_material", "COBRE")
 		insertIntegrityOption(t, p, second, "conductor_material", "COBRE")
 		if _, err := p.Exec(ctx, `UPDATE public.recursos SET active=FALSE WHERE id=$1`, second); err != nil {
@@ -53,6 +49,7 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("insert overlapping attribute: %v", err)
 		}
+		window.TrackAttribute(id)
 		if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.up.sql"); err == nil {
 			t.Fatal("migration accepted family-wide and type-specific applicability")
 		}
@@ -63,6 +60,7 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 
 	legacy := "TEST_RESOURCE_INTEGRITY_LEGACY_DRIFT"
 	id := insertIntegrityResource(t, p, legacy)
+	window.TrackResource(id)
 	insertIntegrityOption(t, p, id, "conductor_material", "COBRE")
 	if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.up.sql"); err != nil {
 		t.Fatalf("apply integrity migration: %v", err)
@@ -87,6 +85,11 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	if err := NewResourceRepository(p).Create(ctx, created); err != nil {
 		t.Fatalf("post-up create: %v", err)
 	}
+	var createdID int64
+	if err := p.QueryRow(ctx, `SELECT id FROM public.recursos WHERE identity_key=$1`, created.IdentityKey).Scan(&createdID); err != nil {
+		t.Fatalf("read post-up resource id: %v", err)
+	}
+	window.TrackResource(createdID)
 	if err := applyResourceIntegrityMigration(p, "000007_resource_identity_v1.down.sql"); err != nil {
 		t.Fatalf("rollback v1 migration: %v", err)
 	}
@@ -94,7 +97,7 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	if err := p.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='recursos_identity_key_v1')`).Scan(&constraint); err != nil || constraint {
 		t.Fatalf("v1 constraint after rollback = %t, error %v", constraint, err)
 	}
-	if err := applyResourceIntegrityMigration(p, "000005_resource_integrity.down.sql"); err != nil {
+	if err := window.downMigration5(ctx); err != nil {
 		t.Fatalf("rollback integrity migration: %v", err)
 	}
 	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE id=$1`, id).Scan(&key); err != nil || key != admitted {
@@ -103,9 +106,7 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 	if err := p.QueryRow(ctx, `SELECT identity_key FROM public.recursos WHERE identity_key=$1`, created.IdentityKey).Scan(&key); err != nil || key != created.IdentityKey {
 		t.Fatalf("post-up key after rollback = %q, error %v", key, err)
 	}
-	if _, err := p.Exec(ctx, `DELETE FROM public.recursos WHERE identity_key=$1`, created.IdentityKey); err != nil {
-		t.Fatalf("clean post-up resource: %v", err)
-	}
+	deleteIntegrityResources(t, p, createdID)
 	var mapExists, functionExists bool
 	if err := p.QueryRow(ctx, `SELECT to_regclass('public.resource_integrity_identity_map') IS NOT NULL,
 		to_regprocedure('public.resource_identity_component(text)') IS NOT NULL`).Scan(&mapExists, &functionExists); err != nil {
@@ -117,25 +118,7 @@ func TestResourceIntegrityMigrationIntegration(t *testing.T) {
 }
 
 func applyResourceIntegrityMigration(pool *pgxpool.Pool, name string) error {
-	sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
-	if err != nil {
-		return err
-	}
-	_, err = pool.Exec(context.Background(), string(sql))
-	return err
-}
-
-func resetResourceIntegrityMigration(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	var exists bool
-	if err := pool.QueryRow(context.Background(), `SELECT to_regclass('public.resource_integrity_identity_map') IS NOT NULL`).Scan(&exists); err != nil {
-		t.Fatalf("inspect integrity migration: %v", err)
-	}
-	if exists {
-		if err := applyResourceIntegrityMigration(pool, "000005_resource_integrity.down.sql"); err != nil {
-			t.Fatalf("reset integrity migration: %v", err)
-		}
-	}
+	return applySchemaMigration(pool, name)
 }
 
 func insertIntegrityResource(t *testing.T, pool *pgxpool.Pool, legacy string) int64 {
@@ -168,10 +151,12 @@ func insertIntegrityOption(t *testing.T, pool *pgxpool.Pool, resourceID int64, a
 
 func deleteIntegrityResources(t *testing.T, pool *pgxpool.Pool, ids ...int64) {
 	t.Helper()
-	for _, id := range ids {
-		if _, err := pool.Exec(context.Background(), `DELETE FROM public.recursos WHERE id=$1`, id); err != nil {
-			t.Fatalf("delete integrity resource: %v", err)
-		}
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM public.resource_attribute_values WHERE resource_id=ANY($1::bigint[])`, ids); err != nil {
+		t.Fatalf("delete integrity resource values: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM public.recursos WHERE id=ANY($1::bigint[])`, ids); err != nil {
+		t.Fatalf("delete integrity resources: %v", err)
 	}
 }
 
@@ -753,5 +738,39 @@ func assertResourceEqual(t *testing.T, got, want domain.Resource) {
 		if wantAttrs[i].Quantity != nil && (!gotAttrs[i].Quantity.Value.Equal(wantAttrs[i].Quantity.Value) || gotAttrs[i].Quantity.UnitCode != wantAttrs[i].Quantity.UnitCode) {
 			t.Fatalf("quantity %d = %#v, want %#v", i, gotAttrs[i].Quantity, wantAttrs[i].Quantity)
 		}
+	}
+}
+
+// TestRevisionColumnDefaultsToOneOnResourceCreateIntegration proves a resource
+// created through the real NewResourceRepository(...).Create() path — which
+// never references the revision column — receives migration 8's backfilled
+// default of 1, and that domain.Resource/domain.ResourceSnapshot gaining a
+// Revision field left Create's SQL and callers unchanged (design "Resource
+// revisions and identity").
+func TestRevisionColumnDefaultsToOneOnResourceCreateIntegration(t *testing.T) {
+	dsn := os.Getenv("GARFEX_TEST_DSN")
+	if dsn == "" {
+		t.Skip("GARFEX_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool := openUnitTestPool(t, dsn)
+	created := mustCreateResource(t, domain.SeedResourceCatalog(), canalizacionesScope, "PZA", []domain.ResourceAttributeValue{domain.OptionValue("tipo", "PVC CONDUIT"), domain.OptionValue("diameter_inch", `1"`), domain.OptionValue("diameter_mm", "25 mm")})
+	if err := NewResourceRepository(pool).Create(ctx, created); err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(ctx, `DELETE FROM public.resource_attribute_values WHERE resource_id IN (SELECT id FROM public.recursos WHERE identity_key=$1)`, created.IdentityKey); err != nil {
+			t.Errorf("cleanup created resource values: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM public.recursos WHERE identity_key=$1`, created.IdentityKey); err != nil {
+			t.Errorf("cleanup created resource: %v", err)
+		}
+	})
+	var revision int64
+	if err := pool.QueryRow(ctx, `SELECT revision FROM public.recursos WHERE identity_key=$1`, created.IdentityKey).Scan(&revision); err != nil {
+		t.Fatalf("read created resource revision: %v", err)
+	}
+	if revision != 1 {
+		t.Fatalf("created resource revision = %d, want 1", revision)
 	}
 }
