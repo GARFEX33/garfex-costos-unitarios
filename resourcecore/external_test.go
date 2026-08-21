@@ -107,6 +107,49 @@ func TestExternal_ConstructsReaderWithOnlyPublicTypes(t *testing.T) {
 	}
 }
 
+type externalFakeWriteCapabilities struct{}
+
+func (f *externalFakeWriteCapabilities) CreateCatalog(ctx context.Context, req resourcecore.CatalogWriteRequest) (resourcecore.CatalogRecord, error) {
+	return resourcecore.CatalogRecord{Kind: req.Kind, ID: 1, Revision: 1, Values: req.Values}, nil
+}
+
+func (f *externalFakeWriteCapabilities) CreateResource(ctx context.Context, req resourcecore.ResourceWriteRequest) (resourcecore.Resource, error) {
+	return resourcecore.Resource{ID: 1, IdentityV1: "v1|x", Scope: req.Scope, Revision: 1, Attributes: req.Attributes}, nil
+}
+
+func TestExternalWrite_ConsumerConstructsWriterUsingPublicTypesOnly(t *testing.T) {
+	writer, err := resourcecore.NewWriter(&externalFakeWriteCapabilities{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec, err := writer.CreateCatalog(context.Background(), resourcecore.CatalogWriteRequest{
+		Actor: "PI",
+		Kind:  resourcecore.KindClass,
+		Values: map[string]resourcecore.Value{
+			"code": {Kind: resourcecore.ValueCode, Text: "MAT"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.ID != 1 || rec.Revision != 1 {
+		t.Fatalf("unexpected catalog record: %+v", rec)
+	}
+
+	res, err := writer.CreateResource(context.Background(), resourcecore.ResourceWriteRequest{
+		Actor:       "PI",
+		Scope:       resourcecore.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit: "m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID != 1 || res.IdentityV1 != "v1|x" {
+		t.Fatalf("unexpected resource: %+v", res)
+	}
+}
+
 func TestExternal_NoInternalImports(t *testing.T) {
 	// This test lives in resourcecore_test so it can only reference exported
 	// symbols from the public module package. Compilation success is the proof.
