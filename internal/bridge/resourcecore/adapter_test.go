@@ -3,17 +3,29 @@ package resourcecore
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/app/catalogo"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/core"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 	public "github.com/GARFEX33/garfex-costos-unitarios/resourcecore"
 )
 
+// bridgePgxLikeError simulates a PostgreSQL driver error crossing the
+// bridge, proving no technical detail leaks through the public boundary.
+type bridgePgxLikeError struct {
+	SQLState, ConstraintName, TableName, ColumnName, ServerMessage string
+}
+
+func (e bridgePgxLikeError) Error() string { return e.ServerMessage }
+
 type fakeCatalogReader struct {
-	kinds []domain.CatalogKind
-	list  func(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error)
-	get   func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error)
+	kinds  []domain.CatalogKind
+	list   func(ctx context.Context, kind domain.CatalogKindCode, filter domain.CatalogFilter) ([]domain.CatalogRecord, error)
+	get    func(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error)
+	create func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
 }
 
 func (f *fakeCatalogReader) Kinds() []domain.CatalogKind { return f.kinds }
@@ -23,12 +35,20 @@ func (f *fakeCatalogReader) List(ctx context.Context, kind domain.CatalogKindCod
 func (f *fakeCatalogReader) Get(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error) {
 	return f.get(ctx, kind, id)
 }
+func (f *fakeCatalogReader) Create(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+	return f.create(ctx, kind, rec)
+}
 
 type fakeResourceReader struct {
 	get           func(ctx context.Context, classCode, identityKey string) (domain.Resource, error)
 	search        func(ctx context.Context, criteria domain.SearchCriteria) (domain.ResourcePage, error)
 	describe      func(resource domain.Resource) string
+	create        func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
 	lastDescribed domain.Resource
+}
+
+func (f *fakeResourceReader) Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+	return f.create(ctx, command)
 }
 
 func (f *fakeResourceReader) Get(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
@@ -470,5 +490,411 @@ func TestAdapter_ResourceValueProjection(t *testing.T) {
 	}
 	if byCode["text"].Value.Kind != public.ValueNotApplicable {
 		t.Fatalf("not-applicable projection mismatch: %+v", byCode["text"])
+	}
+}
+
+func allFieldKindsKind() domain.CatalogKind {
+	return domain.CatalogKind{
+		Code: domain.KindFamily, Singular: "Familia", Plural: "Familias",
+		Fields: []domain.FieldDescriptor{
+			{Name: "text", Label: "Texto", Kind: domain.FieldText},
+			{Name: "code", Label: "Código", Kind: domain.FieldCode},
+			{Name: "flag", Label: "Bandera", Kind: domain.FieldBool},
+			{Name: "count", Label: "Cantidad", Kind: domain.FieldInt},
+			{Name: "tags", Label: "Etiquetas", Kind: domain.FieldStringList},
+			{Name: "class", Label: "Clase", Kind: domain.FieldRef, RefKind: domain.KindClass},
+			{Name: "kind", Label: "Tipo de valor", Kind: domain.FieldEnum},
+		},
+	}
+}
+
+func TestWriteBridge_CatalogPort_FakeAdapted(t *testing.T) {
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		create: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+			rec.ID, rec.Revision = 1, 1
+			return rec, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	rec, err := adapter.CreateCatalog(context.Background(), public.CatalogWriteRequest{
+		Actor: "PI", Kind: public.KindClass,
+		Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.ID != 1 || rec.Revision != 1 {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+}
+
+func TestWriteBridge_CatalogCreate_FieldCompleteness(t *testing.T) {
+	var capturedKind domain.CatalogKindCode
+	var captured domain.CatalogRecord
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		create: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+			capturedKind, captured = kind, rec
+			rec.Kind, rec.ID, rec.Revision = kind, 3, 1
+			return rec, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.CreateCatalog(context.Background(), public.CatalogWriteRequest{
+		Actor:  "PI",
+		Kind:   public.KindClass,
+		Active: true,
+		Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedKind != domain.KindClass {
+		t.Fatalf("Kind not mapped to the Create kind argument: got %q", capturedKind)
+	}
+	if !captured.Active {
+		t.Fatalf("Active not mapped verbatim: %+v", captured)
+	}
+	if captured.Values["code"].Text != "MAT" {
+		t.Fatalf("Values not mapped: %+v", captured)
+	}
+	if captured.Rules != nil {
+		t.Fatalf("expected nil Rules when request omits the aggregate, got %+v", captured.Rules)
+	}
+}
+
+func TestCatalogCreate_ValueMapping_InverseRoundTrip(t *testing.T) {
+	tests := []struct {
+		field   string
+		value   public.Value
+		wantErr bool
+	}{
+		{"text", public.Value{Kind: public.ValueText, Text: "hello"}, false},
+		{"code", public.Value{Kind: public.ValueCode, Text: "COD"}, false},
+		{"flag", public.Value{Kind: public.ValueBool, Bool: true}, false},
+		{"count", public.Value{Kind: public.ValueInteger, Text: "42"}, false},
+		{"tags", public.Value{Kind: public.ValueStringList, Strings: []string{"a", "b"}}, false},
+		{"class", public.Value{Kind: public.ValueReference, Reference: &public.Reference{Kind: public.KindClass, Code: "MAT"}}, false},
+		{"kind", public.Value{Kind: public.ValueEnum, Text: "TEXT"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			var captured domain.CatalogRecord
+			catalog := &fakeCatalogReader{
+				kinds: []domain.CatalogKind{allFieldKindsKind()},
+				create: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+					captured = rec
+					return rec, nil
+				},
+			}
+			adapter := newTestAdapter(catalog, nil)
+			_, err := adapter.CreateCatalog(context.Background(), public.CatalogWriteRequest{
+				Actor:  "PI",
+				Kind:   public.KindFamily,
+				Values: map[string]public.Value{tt.field: tt.value},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			back := adapter.mapCatalogValue(domain.KindFamily, tt.field, captured.Values[tt.field])
+			if back.Kind != tt.value.Kind {
+				t.Fatalf("round trip kind mismatch for %s: got %+v, want %+v", tt.field, back, tt.value)
+			}
+		})
+	}
+}
+
+func TestCatalogCreate_RuleMapping_AllSixFieldsMapped(t *testing.T) {
+	var captured domain.CatalogRecord
+	catalog := &fakeCatalogReader{
+		kinds: []domain.CatalogKind{classKind()},
+		create: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+			captured = rec
+			return rec, nil
+		},
+	}
+	adapter := newTestAdapter(catalog, nil)
+	_, err := adapter.CreateCatalog(context.Background(), public.CatalogWriteRequest{
+		Actor:  "PI",
+		Kind:   public.KindClass,
+		Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+		Rules: []public.ApplicabilityRule{
+			{AttributeCode: "insulation", Equals: public.Value{Kind: public.ValueText, Text: "DESNUDO"}, Mode: "FORBIDDEN", IdentityParticipates: true, NotApplicable: true, Active: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(captured.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(captured.Rules))
+	}
+	r := captured.Rules[0]
+	if r.When.AttributeCode != "insulation" || r.When.Equals != "DESNUDO" || r.Mode != domain.ModeForbidden || !r.IdentityParticipates || !r.NotApplicable || !r.Active {
+		t.Fatalf("unexpected mapped rule: %+v", r)
+	}
+}
+
+func TestCatalogCreate_NineCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"23505", "resource_classes_code_key", "resource_classes", "code", "duplicate key value violates unique constraint"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrCatalogRecordNotFound, public.NotFound},
+		{"duplicate", domain.ErrCatalogDuplicate, public.Duplicate},
+		{"invalid reference", domain.ErrCatalogReference, public.InvalidReference},
+		{"validation", domain.ErrResourceValidation, public.Validation},
+		{"integrity", domain.ErrResourceIntegrity, public.Integrity},
+		{"invalid catalog", domain.WrapInvalidCatalog(domain.ErrResourceValidation), public.InvalidCatalog},
+		{"unavailable", catalogo.ErrCatalogWriterUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+	}
+	seen := map[public.ErrorCode]struct{}{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &fakeCatalogReader{
+				kinds: []domain.CatalogKind{classKind()},
+				create: func(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error) {
+					return domain.CatalogRecord{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(catalog, nil)
+			_, err := adapter.CreateCatalog(context.Background(), public.CatalogWriteRequest{
+				Actor:  "PI",
+				Kind:   public.KindClass,
+				Values: map[string]public.Value{"code": {Kind: public.ValueCode, Text: "MAT"}},
+			})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v, got %v", tt.wantCode, err)
+			}
+			var publicErr public.Error
+			if !errors.As(err, &publicErr) {
+				t.Fatalf("expected public.Error, got %T", err)
+			}
+			if errors.Unwrap(publicErr) != nil {
+				t.Fatalf("public error must not unwrap")
+			}
+			for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+				if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+					t.Fatalf("leaked technical detail %q in %v", leak, err)
+				}
+			}
+			seen[tt.wantCode] = struct{}{}
+		})
+	}
+	if len(seen) != len(tests) {
+		t.Fatalf("expected %d distinct categories, got %d: %+v", len(tests), len(seen), seen)
+	}
+}
+
+func TestWriteBridge_ResourcePort_FakeAdapted(t *testing.T) {
+	resources := &fakeResourceReader{
+		create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+			return domain.Resource{ClassCode: command.Scope.ClassCode, IdentityKey: "v1|x"}, nil
+		},
+		get: func(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
+			return domain.Resource{ID: 1, ClassCode: classCode, IdentityKey: identityKey, Revision: 1}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	res, err := adapter.CreateResource(context.Background(), public.ResourceWriteRequest{
+		Actor:       "PI",
+		Scope:       public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit: "m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID != 1 || res.IdentityV1 != "v1|x" {
+		t.Fatalf("unexpected resource: %+v", res)
+	}
+}
+
+func TestResourceCreate_FieldCompleteness_AgainstCreateCommand(t *testing.T) {
+	var captured domain.CreateCommand
+	resources := &fakeResourceReader{
+		create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+			captured = command
+			return domain.Resource{ClassCode: command.Scope.ClassCode, IdentityKey: "v1|x"}, nil
+		},
+		get: func(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
+			return domain.Resource{ID: 9, ClassCode: classCode, IdentityKey: identityKey, Revision: 1}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	_, err := adapter.CreateResource(context.Background(), public.ResourceWriteRequest{
+		Actor:       "PI",
+		Scope:       public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit: "m",
+		Attributes:  []public.AttributeValue{{Code: "gauge", Value: public.Value{Kind: public.ValueText, Text: "12"}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if captured.Scope.ClassCode != "MAT" || captured.Scope.FamilyCode != "CONDUCTORES" || captured.Scope.TypeCode != "CABLE" {
+		t.Fatalf("Scope not fully mapped: %+v", captured.Scope)
+	}
+	if captured.NaturalUnit != "m" {
+		t.Fatalf("NaturalUnit not mapped: %+v", captured)
+	}
+	if len(captured.Attributes) != 1 || captured.Attributes[0].AttributeCode != "gauge" {
+		t.Fatalf("Attributes not mapped: %+v", captured.Attributes)
+	}
+}
+
+func TestResourceCreate_AttributeMapping_InverseRoundTripSevenKinds(t *testing.T) {
+	tests := []struct {
+		name  string
+		value public.Value
+	}{
+		{"controlled_option", public.Value{Kind: public.ValueControlledOption, Text: "RED"}},
+		{"integer", public.Value{Kind: public.ValueInteger, Text: "42"}},
+		{"decimal", public.Value{Kind: public.ValueDecimal, Text: "1.5"}},
+		{"quantity", public.Value{Kind: public.ValueQuantity, Text: "1.5", UnitCode: "m"}},
+		{"boolean", public.Value{Kind: public.ValueBool, Bool: true}},
+		{"not_applicable", public.Value{Kind: public.ValueNotApplicable}},
+		{"text", public.Value{Kind: public.ValueText, Text: "hello"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured domain.CreateCommand
+			resources := &fakeResourceReader{
+				create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+					captured = command
+					return domain.Resource{ClassCode: command.Scope.ClassCode, IdentityKey: "v1|x"}, nil
+				},
+				get: func(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
+					return domain.Resource{ID: 1, ClassCode: classCode, IdentityKey: identityKey, Revision: 1, Attributes: captured.Attributes}, nil
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			res, err := adapter.CreateResource(context.Background(), public.ResourceWriteRequest{
+				Actor:       "PI",
+				Scope:       public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+				NaturalUnit: "m",
+				Attributes:  []public.AttributeValue{{Code: "attr", Value: tt.value}},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(res.Attributes) != 1 || res.Attributes[0].Value.Kind != tt.value.Kind {
+				t.Fatalf("round trip kind mismatch: got %+v, want %+v", res.Attributes, tt.value)
+			}
+		})
+	}
+}
+
+func TestResourceCreate_AttributeMapping_RejectsFourUnmappableKinds(t *testing.T) {
+	for _, kind := range []public.ValueKind{public.ValueCode, public.ValueEnum, public.ValueStringList, public.ValueReference} {
+		t.Run(string(kind), func(t *testing.T) {
+			resources := &fakeResourceReader{
+				create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+					t.Fatalf("Create must not be called for an unmappable attribute kind")
+					return domain.Resource{}, nil
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, err := adapter.CreateResource(context.Background(), public.ResourceWriteRequest{
+				Actor:       "PI",
+				Scope:       public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+				NaturalUnit: "m",
+				Attributes:  []public.AttributeValue{{Code: "attr", Value: public.Value{Kind: kind, Text: "x"}}},
+			})
+			if !public.IsCode(err, public.InvalidArgument) {
+				t.Fatalf("expected INVALID_ARGUMENT for unmappable kind %s, got %v", kind, err)
+			}
+		})
+	}
+}
+
+func TestResourceCreate_ConfirmRead_IdentityV1NoReclassification(t *testing.T) {
+	resources := &fakeResourceReader{
+		create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+			return domain.Resource{ClassCode: command.Scope.ClassCode, IdentityKey: "v1|x"}, nil
+		},
+		get: func(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
+			return domain.Resource{ID: 5, ClassCode: classCode, IdentityKey: identityKey, Revision: 1}, nil
+		},
+	}
+	adapter := newTestAdapter(nil, resources)
+	res, err := adapter.CreateResource(context.Background(), public.ResourceWriteRequest{
+		Actor:       "PI",
+		Scope:       public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit: "m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID <= 0 || res.Revision < 1 || res.IdentityV1 != "v1|x" {
+		t.Fatalf("expected persisted projection from the confirm read, got %+v", res)
+	}
+
+	resources.get = func(ctx context.Context, classCode, identityKey string) (domain.Resource, error) {
+		return domain.Resource{}, domain.ErrResourceNotFound
+	}
+	_, err = adapter.CreateResource(context.Background(), public.ResourceWriteRequest{
+		Actor:       "PI",
+		Scope:       public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+		NaturalUnit: "m",
+	})
+	if !public.IsCode(err, public.NotFound) {
+		t.Fatalf("expected an unreclassified NOT_FOUND from a failed confirm read, got %v", err)
+	}
+}
+
+func TestResourceCreate_NineCategoryTable_DistinctAndNoLeakage(t *testing.T) {
+	pgxErr := bridgePgxLikeError{"23505", "recursos_identity_key_v1", "recursos", "identity_key", "duplicate key value violates unique constraint"}
+	tests := []struct {
+		name     string
+		err      error
+		wantCode public.ErrorCode
+	}{
+		{"invalid argument", catalogo.ErrInvalidArgument, public.InvalidArgument},
+		{"not found", domain.ErrResourceNotFound, public.NotFound},
+		{"duplicate", domain.ErrDuplicateResource, public.Duplicate},
+		{"invalid reference", domain.ErrResourceReference, public.InvalidReference},
+		{"validation", domain.ErrResourceValidation, public.Validation},
+		{"integrity", domain.ErrResourceIntegrity, public.Integrity},
+		{"invalid catalog", domain.WrapInvalidCatalog(domain.ErrResourceValidation), public.InvalidCatalog},
+		{"unavailable", core.ErrUnavailable, public.Unavailable},
+		{"internal", pgxErr, public.Internal},
+	}
+	seen := map[public.ErrorCode]struct{}{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := &fakeResourceReader{
+				create: func(ctx context.Context, command domain.CreateCommand) (domain.Resource, error) {
+					return domain.Resource{}, tt.err
+				},
+			}
+			adapter := newTestAdapter(nil, resources)
+			_, err := adapter.CreateResource(context.Background(), public.ResourceWriteRequest{
+				Actor:       "PI",
+				Scope:       public.ResourceScope{ClassCode: "MAT", FamilyCode: "CONDUCTORES", TypeCode: "CABLE"},
+				NaturalUnit: "m",
+			})
+			if !public.IsCode(err, tt.wantCode) {
+				t.Fatalf("expected %v, got %v", tt.wantCode, err)
+			}
+			var publicErr public.Error
+			if !errors.As(err, &publicErr) {
+				t.Fatalf("expected public.Error, got %T", err)
+			}
+			if errors.Unwrap(publicErr) != nil {
+				t.Fatalf("public error must not unwrap")
+			}
+			for _, leak := range []string{pgxErr.SQLState, pgxErr.ConstraintName, pgxErr.TableName, pgxErr.ColumnName, pgxErr.ServerMessage} {
+				if leak != "" && strings.Contains(fmt.Sprintf("%v %+v", err, err), leak) {
+					t.Fatalf("leaked technical detail %q in %v", leak, err)
+				}
+			}
+			seen[tt.wantCode] = struct{}{}
+		})
+	}
+	if len(seen) != len(tests) {
+		t.Fatalf("expected %d distinct categories, got %d: %+v", len(tests), len(seen), seen)
 	}
 }

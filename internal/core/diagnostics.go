@@ -11,7 +11,33 @@ type DiagnosticRecord struct {
 	Op    Operation
 	Kind  string
 	ID    int64
+	Actor string // caller-supplied, ctx-carried; never persisted, never public
 	Cause error
+}
+
+// actorContextKey is the unexported context key type for caller attribution.
+type actorContextKey struct{}
+
+// WithActor returns a child ctx carrying the caller-supplied actor for
+// diagnostic attribution only. It is never business data and is never
+// persisted. A blank actor returns ctx unchanged.
+func WithActor(ctx context.Context, actor string) context.Context {
+	if actor == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, actorContextKey{}, actor)
+}
+
+// ActorFrom returns the actor carried by ctx, or "" when absent.
+func ActorFrom(ctx context.Context) string {
+	actor, _ := ctx.Value(actorContextKey{}).(string)
+	return actor
+}
+
+// NewDiagnosticRecord assembles the complete diagnostic shape, including the
+// ctx-carried actor, so a sink cannot forget attribution.
+func NewDiagnosticRecord(ctx context.Context, op Operation, kind string, id int64, cause error) DiagnosticRecord {
+	return DiagnosticRecord{Op: op, Kind: kind, ID: id, Actor: ActorFrom(ctx), Cause: cause}
 }
 
 // DiagnosticSink records technical causes behind the neutral boundary.

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/core"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/domain"
 	public "github.com/GARFEX33/garfex-costos-unitarios/resourcecore"
@@ -21,6 +23,20 @@ type catalogReader interface {
 	Get(ctx context.Context, kind domain.CatalogKindCode, id int64) (domain.CatalogRecord, error)
 }
 
+// catalogWriter is the narrow catalog write seam the bridge consumes. It
+// binds to catalogo.Service.Create, never CreateV2: composition, not
+// translation, decides which repository backs the service.
+type catalogWriter interface {
+	Create(ctx context.Context, kind domain.CatalogKindCode, rec domain.CatalogRecord) (domain.CatalogRecord, error)
+}
+
+// catalogPort is the complete catalog seam: reads plus the one graduated
+// write operation.
+type catalogPort interface {
+	catalogReader
+	catalogWriter
+}
+
 // resourceReader is the narrow resource read seam the bridge consumes.
 type resourceReader interface {
 	Get(ctx context.Context, classCode, identityKey string) (domain.Resource, error)
@@ -28,17 +44,29 @@ type resourceReader interface {
 	Describe(resource domain.Resource) string
 }
 
-// Adapter implements public.ReadCapabilities by delegating to the internal
-// catalog and resource application services.
+// resourceWriter is the narrow resource write seam the bridge consumes.
+type resourceWriter interface {
+	Create(ctx context.Context, command domain.CreateCommand) (domain.Resource, error)
+}
+
+// resourcePort is the complete resource seam: reads plus the one graduated
+// write operation.
+type resourcePort interface {
+	resourceReader
+	resourceWriter
+}
+
+// Adapter implements public.ReadCapabilities and public.WriteCapabilities by
+// delegating to the internal catalog and resource application services.
 type Adapter struct {
-	catalog   catalogReader
-	resources resourceReader
+	catalog   catalogPort
+	resources resourcePort
 	kinds     map[domain.CatalogKindCode]domain.CatalogKind
 }
 
-// NewAdapter returns a ReadCapabilities implementation backed by catalog and
-// resources. Neither dependency may be nil.
-func NewAdapter(catalog catalogReader, resources resourceReader) *Adapter {
+// NewAdapter returns a ReadCapabilities/WriteCapabilities implementation
+// backed by catalog and resources. Neither dependency may be nil.
+func NewAdapter(catalog catalogPort, resources resourcePort) *Adapter {
 	kinds := make(map[domain.CatalogKindCode]domain.CatalogKind, len(catalog.Kinds()))
 	for _, kind := range catalog.Kinds() {
 		kinds[kind.Code] = kind
@@ -102,6 +130,23 @@ func (a *Adapter) GetCatalog(ctx context.Context, key public.CatalogKey) (public
 	return a.mapCatalogRecord(domain.CatalogKindCode(key.Kind), rec), nil
 }
 
+// CreateCatalog creates one catalog record of the requested kind. Actor
+// travels only as request-scoped context metadata for diagnostic
+// attribution; it is never a business parameter and is never persisted.
+func (a *Adapter) CreateCatalog(ctx context.Context, req public.CatalogWriteRequest) (public.CatalogRecord, error) {
+	kind := domain.CatalogKindCode(req.Kind)
+	rec := domain.CatalogRecord{
+		Active: req.Active,
+		Values: a.toDomainCatalogValues(kind, req.Values),
+		Rules:  toDomainCatalogRules(req.Rules),
+	}
+	created, err := a.catalog.Create(core.WithActor(ctx, req.Actor), kind, rec)
+	if err != nil {
+		return public.CatalogRecord{}, mapError(err)
+	}
+	return a.mapCatalogRecord(kind, created), nil
+}
+
 // SearchResources returns a page of resources matching the query.
 func (a *Adapter) SearchResources(ctx context.Context, q public.ResourceQuery) (public.ResourcePage, error) {
 	if q.Scope == public.ScopeAll {
@@ -137,6 +182,34 @@ func (a *Adapter) GetResource(ctx context.Context, key public.ResourceKey) (publ
 		return public.Resource{}, mapError(err)
 	}
 	return mapResource(res), nil
+}
+
+// CreateResource creates one resource. Because internal/postgres's resource
+// repository Create returns only an error (no persisted ID or revision),
+// this performs one non-transactional create-confirm read by the resource's
+// canonical identity-v1 to project the real persisted values; safe only
+// under the approved one-writer topology. A confirm-read failure passes
+// through the ordinary mapError unchanged — never reclassified.
+func (a *Adapter) CreateResource(ctx context.Context, req public.ResourceWriteRequest) (public.Resource, error) {
+	attrs, err := toDomainResourceAttributes(req.Attributes)
+	if err != nil {
+		return public.Resource{}, err
+	}
+	command := domain.CreateCommand{
+		Scope:       domain.ResourceScope{ClassCode: req.Scope.ClassCode, FamilyCode: req.Scope.FamilyCode, TypeCode: req.Scope.TypeCode},
+		NaturalUnit: req.NaturalUnit,
+		Attributes:  attrs,
+	}
+	actorCtx := core.WithActor(ctx, req.Actor)
+	created, err := a.resources.Create(actorCtx, command)
+	if err != nil {
+		return public.Resource{}, mapError(err)
+	}
+	confirmed, err := a.resources.Get(actorCtx, created.ClassCode, created.IdentityKey)
+	if err != nil {
+		return public.Resource{}, mapError(err)
+	}
+	return mapResource(confirmed), nil
 }
 
 // DescribeResource returns the canonical presentation of the identified
@@ -317,6 +390,58 @@ func (a *Adapter) mapCatalogValue(kind domain.CatalogKindCode, name string, v do
 	return public.Value{Kind: public.ValueText, Text: v.Text}
 }
 
+// toDomainCatalogValues is the inverse of mapCatalogRecordSlice's per-value
+// projection: it converts every public write value back to its domain
+// shape, driven by the same field-kind descriptor used for reads.
+func (a *Adapter) toDomainCatalogValues(kind domain.CatalogKindCode, values map[string]public.Value) map[string]domain.CatalogValue {
+	out := make(map[string]domain.CatalogValue, len(values))
+	for name, v := range values {
+		out[name] = a.toDomainCatalogValue(kind, name, v)
+	}
+	return out
+}
+
+// toDomainCatalogValue is the exact inverse of mapCatalogValue.
+func (a *Adapter) toDomainCatalogValue(kind domain.CatalogKindCode, name string, v public.Value) domain.CatalogValue {
+	fieldKind := a.fieldKind(kind, name)
+	switch fieldKind {
+	case domain.FieldCode, domain.FieldText, domain.FieldEnum:
+		return domain.CatalogValue{Text: v.Text}
+	case domain.FieldBool:
+		return domain.CatalogValue{Bool: v.Bool}
+	case domain.FieldInt:
+		n, _ := strconv.Atoi(v.Text)
+		return domain.CatalogValue{Int: n}
+	case domain.FieldStringList:
+		return domain.CatalogValue{List: append([]string(nil), v.Strings...)}
+	case domain.FieldRef:
+		if v.Reference == nil {
+			return domain.CatalogValue{}
+		}
+		return domain.CatalogValue{Ref: domain.CatalogRef{Kind: domain.CatalogKindCode(v.Reference.Kind), Code: v.Reference.Code}}
+	}
+	return domain.CatalogValue{Text: v.Text}
+}
+
+// toDomainCatalogRules is the exact inverse of mapCatalogRules: complete
+// replacement semantics, nil versus non-nil-empty preserved.
+func toDomainCatalogRules(rules []public.ApplicabilityRule) []domain.CatalogRuleRecord {
+	if rules == nil {
+		return nil
+	}
+	out := make([]domain.CatalogRuleRecord, len(rules))
+	for i, r := range rules {
+		out[i] = domain.CatalogRuleRecord{
+			When:                 domain.AttributeCondition{AttributeCode: r.AttributeCode, Equals: r.Equals.Text},
+			Mode:                 domain.AttributeMode(r.Mode),
+			IdentityParticipates: r.IdentityParticipates,
+			NotApplicable:        r.NotApplicable,
+			Active:               r.Active,
+		}
+	}
+	return out
+}
+
 func mapResourceQuery(criteria domain.SearchCriteria) public.ResourceQuery {
 	return public.ResourceQuery{
 		Scope:      publicScopeFromResourceLifecycle(criteria.LifecycleScope),
@@ -401,6 +526,60 @@ func mapResourceAttributeValue(av domain.ResourceAttributeValue) public.Value {
 		return public.Value{Kind: public.ValueText, Text: av.Text}
 	}
 	return public.Value{Kind: public.ValueText, Text: av.Text}
+}
+
+// toDomainResourceAttributes is the exact inverse of mapResourceSlice's
+// per-attribute projection (mapResourceAttributeValue).
+func toDomainResourceAttributes(attrs []public.AttributeValue) ([]domain.ResourceAttributeValue, error) {
+	if attrs == nil {
+		return nil, nil
+	}
+	out := make([]domain.ResourceAttributeValue, len(attrs))
+	for i, av := range attrs {
+		mapped, err := toDomainResourceAttribute(av)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = mapped
+	}
+	return out, nil
+}
+
+// toDomainResourceAttribute is the exact inverse of mapResourceAttributeValue.
+// Any Value.Kind with no resource-attribute counterpart is INVALID_ARGUMENT,
+// never coerced.
+func toDomainResourceAttribute(av public.AttributeValue) (domain.ResourceAttributeValue, error) {
+	code := av.Code
+	switch av.Value.Kind {
+	case public.ValueControlledOption:
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: domain.ValueTypeControlledOption, OptionCode: av.Value.Text}, nil
+	case public.ValueInteger:
+		n, err := strconv.ParseInt(av.Value.Text, 10, 64)
+		if err != nil {
+			return domain.ResourceAttributeValue{}, public.NewError(public.InvalidArgument, "invalid integer attribute value")
+		}
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: domain.ValueTypeInteger, Integer: &n}, nil
+	case public.ValueDecimal:
+		d, err := decimal.NewFromString(av.Value.Text)
+		if err != nil {
+			return domain.ResourceAttributeValue{}, public.NewError(public.InvalidArgument, "invalid decimal attribute value")
+		}
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: domain.ValueTypeDecimal, Decimal: &d}, nil
+	case public.ValueQuantity:
+		d, err := decimal.NewFromString(av.Value.Text)
+		if err != nil {
+			return domain.ResourceAttributeValue{}, public.NewError(public.InvalidArgument, "invalid quantity attribute value")
+		}
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: domain.ValueTypeQuantity, Quantity: &domain.Quantity{Value: d, UnitCode: av.Value.UnitCode}}, nil
+	case public.ValueBool:
+		b := av.Value.Bool
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: domain.ValueTypeBoolean, Boolean: &b}, nil
+	case public.ValueNotApplicable:
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: domain.ValueTypeControlledText, Text: domain.NotApplicableText}, nil
+	case public.ValueText:
+		return domain.ResourceAttributeValue{AttributeCode: code, Type: domain.ValueTypeControlledText, Text: av.Value.Text}, nil
+	}
+	return domain.ResourceAttributeValue{}, public.NewError(public.InvalidArgument, "unsupported attribute value kind for a resource attribute")
 }
 
 func (a *Adapter) String() string {
