@@ -18,6 +18,7 @@ type WriteCapabilities interface {
 	ReactivateCatalog(context.Context, CatalogLifecycleRequest) (CatalogRecord, error)
 	DeactivateResource(context.Context, ResourceLifecycleRequest) (Resource, error)
 	ReactivateResource(context.Context, ResourceLifecycleRequest) (Resource, error)
+	HardDeleteCatalog(context.Context, CatalogLifecycleRequest) error
 }
 
 // Writer is the public write-only Resource Master contract. It validates
@@ -136,6 +137,18 @@ func (w *Writer) ReactivateResource(ctx context.Context, req ResourceLifecycleRe
 		return Resource{}, err
 	}
 	return CloneResource(res), nil
+}
+
+// HardDeleteCatalog permanently removes one existing catalog record under
+// optimistic concurrency. Unlike Deactivate/Reactivate, there is no
+// idempotent no-op target: a stale ExpectedRevision always yields CONFLICT.
+// The internal capability returns no record — nothing is left to read back
+// after a delete — so this method returns only an error.
+func (w *Writer) HardDeleteCatalog(ctx context.Context, req CatalogLifecycleRequest) error {
+	if err := validateCatalogLifecycleRequest(req); err != nil {
+		return err
+	}
+	return w.cap.HardDeleteCatalog(ctx, req)
 }
 
 func validateCatalogLifecycleRequest(req CatalogLifecycleRequest) error {
