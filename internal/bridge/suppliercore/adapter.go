@@ -1,16 +1,17 @@
 // Package suppliercore is the internal bridge between the public
-// suppliercore read contract and the authoritative Supplier Master
-// application service. It translates public requests to domain calls, maps
-// internal errors to public errors, and defensively copies data crossing
-// the boundary. It never re-implements a business rule already owned by
-// the internal service — most notably branch ownership, which this bridge
-// only observes the result of.
+// suppliercore contract (read, plus the graduated Supplier Create write) and
+// the authoritative Supplier Master application service. It translates
+// public requests to domain calls, maps internal errors to public errors,
+// and defensively copies data crossing the boundary. It never re-implements
+// a business rule already owned by the internal service — most notably
+// branch ownership, which this bridge only observes the result of.
 package suppliercore
 
 import (
 	"context"
 	"errors"
 
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/core"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/modules/suppliers/domain"
 	public "github.com/GARFEX33/garfex-costos-unitarios/suppliercore"
 )
@@ -37,17 +38,53 @@ type serviceReader interface {
 	ListContacts(ctx context.Context, supplierID int64, criteria domain.ContactListCriteria) ([]domain.Contact, error)
 }
 
-// Adapter implements public.ReadCapabilities over an internal serviceReader.
+// serviceWriter is the narrow seam this bridge depends on for graduated
+// write operations. Only CreateSupplier is graduated so far.
+type serviceWriter interface {
+	CreateSupplier(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error)
+}
+
+// supplierService is the combined seam: one internal Service struct backs
+// all three aggregates and both capability directions, so a single
+// combined interface is correct here — unlike resourcecore's separate
+// catalogReader/catalogWriter split, which exists because Catalog and
+// Resource are backed by two distinct internal services.
+type supplierService interface {
+	serviceReader
+	serviceWriter
+}
+
+// Adapter implements public.ReadCapabilities and public.WriteCapabilities
+// over an internal supplierService.
 type Adapter struct {
-	service serviceReader
+	service supplierService
 }
 
 var _ public.ReadCapabilities = (*Adapter)(nil)
+var _ public.WriteCapabilities = (*Adapter)(nil)
 
-// NewAdapter returns a ReadCapabilities implementation backed by service.
-// service may not be nil.
-func NewAdapter(service serviceReader) *Adapter {
+// NewAdapter returns a ReadCapabilities and WriteCapabilities
+// implementation backed by service. service may not be nil.
+func NewAdapter(service supplierService) *Adapter {
 	return &Adapter{service: service}
+}
+
+// CreateSupplier creates one supplier. req.Actor is diagnostic-only
+// attribution, carried via core.WithActor; it is never persisted and never
+// a business parameter.
+func (a *Adapter) CreateSupplier(ctx context.Context, req public.SupplierWriteRequest) (public.Supplier, error) {
+	ctx = core.WithActor(ctx, req.Actor)
+	created, err := a.service.CreateSupplier(ctx, domain.SupplierDetails{
+		TradeName:     req.TradeName,
+		LegalName:     req.LegalName,
+		TaxIdentifier: req.TaxIdentifier,
+		Website:       req.Website,
+		Notes:         req.Notes,
+	})
+	if err != nil {
+		return public.Supplier{}, mapError(err)
+	}
+	return mapSupplier(created), nil
 }
 
 // GetSupplier returns one supplier by id.
@@ -271,11 +308,12 @@ func mapContactSlice(contacts []domain.Contact) []public.Contact {
 }
 
 // mapError classifies an internal Supplier Master error into a public
-// Error. The default branch always carries a fixed, generic message —
+// Error, for both the read and write paths — a single mapper, not a
+// sibling per direction, since the internal error taxonomy (ErrNotFound,
+// ErrBranchOwnership, ErrValidation, ErrConflict) is the same on both
+// sides. The default branch always carries a fixed, generic message —
 // never the original error's text — so a raw, unsanitized internal error
-// (the internal read path's wrapRead helper does not sanitize, unlike the
-// write path's mapWriteError) can never leak PostgreSQL detail through this
-// bridge.
+// can never leak PostgreSQL detail through this bridge.
 func mapError(err error) error {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
@@ -287,6 +325,6 @@ func mapError(err error) error {
 	case errors.Is(err, domain.ErrConflict):
 		return public.NewError(public.Conflict, "supplier master conflict")
 	default:
-		return public.NewError(public.Internal, "supplier master read failed")
+		return public.NewError(public.Internal, "supplier master operation failed")
 	}
 }

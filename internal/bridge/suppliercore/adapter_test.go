@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GARFEX33/garfex-costos-unitarios/internal/core"
 	"github.com/GARFEX33/garfex-costos-unitarios/internal/modules/suppliers/domain"
 	public "github.com/GARFEX33/garfex-costos-unitarios/suppliercore"
 )
@@ -18,6 +19,7 @@ type stubService struct {
 	listBranches    func(ctx context.Context, supplierID int64, criteria domain.ListCriteria) ([]domain.Branch, error)
 	getContact      func(ctx context.Context, supplierID, contactID int64) (domain.Contact, error)
 	listContacts    func(ctx context.Context, supplierID int64, criteria domain.ContactListCriteria) ([]domain.Contact, error)
+	createSupplier  func(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error)
 }
 
 func (s *stubService) GetSupplier(ctx context.Context, id int64) (domain.Supplier, error) {
@@ -37,6 +39,9 @@ func (s *stubService) GetContact(ctx context.Context, supplierID, contactID int6
 }
 func (s *stubService) ListContacts(ctx context.Context, supplierID int64, criteria domain.ContactListCriteria) ([]domain.Contact, error) {
 	return s.listContacts(ctx, supplierID, criteria)
+}
+func (s *stubService) CreateSupplier(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error) {
+	return s.createSupplier(ctx, details)
 }
 
 func TestAdapter_GetSupplier_MapsAllFields(t *testing.T) {
@@ -349,5 +354,112 @@ func TestAdapter_MapContact_FieldCompletenessAndBranchIDClone(t *testing.T) {
 	}
 	if got.BranchID == source.BranchID {
 		t.Fatal("mapContact returned the source's own BranchID pointer, expected a clone")
+	}
+}
+
+func TestAdapter_ImplementsWriteCapabilities(t *testing.T) {
+	var _ public.WriteCapabilities = NewAdapter(&stubService{})
+}
+
+func TestAdapter_CreateSupplier_MapsAllFieldsAndSetsActor(t *testing.T) {
+	req := public.SupplierWriteRequest{
+		Actor: "PI", TradeName: "ACME", LegalName: "ACME SA", TaxIdentifier: "TAX1", Website: "acme.test", Notes: "n",
+	}
+	var gotDetails domain.SupplierDetails
+	var gotActor string
+	stub := &stubService{createSupplier: func(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error) {
+		gotDetails = details
+		gotActor = core.ActorFrom(ctx)
+		return domain.Supplier{ID: 1, TradeName: details.TradeName, LegalName: details.LegalName, TaxIdentifier: details.TaxIdentifier, Website: details.Website, Notes: details.Notes, Active: true}, nil
+	}}
+	adapter := NewAdapter(stub)
+
+	got, err := adapter.CreateSupplier(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateSupplier error = %v", err)
+	}
+	if gotActor != "PI" {
+		t.Fatalf("core.ActorFrom(ctx) = %q, want %q", gotActor, "PI")
+	}
+	if gotDetails != (domain.SupplierDetails{TradeName: "ACME", LegalName: "ACME SA", TaxIdentifier: "TAX1", Website: "acme.test", Notes: "n"}) {
+		t.Fatalf("domain.SupplierDetails mapping mismatch: got %+v", gotDetails)
+	}
+
+	// Field-completeness: every domain.Supplier field must be reflected in
+	// the public mapping.
+	domainFields := reflect.VisibleFields(reflect.TypeOf(domain.Supplier{}))
+	publicVal := reflect.ValueOf(got)
+	for _, f := range domainFields {
+		if !publicVal.FieldByName(f.Name).IsValid() {
+			t.Errorf("domain.Supplier field %s has no corresponding public.Supplier field", f.Name)
+		}
+	}
+	if got.TradeName != "ACME" || !got.Active {
+		t.Fatalf("CreateSupplier mapping mismatch: got %+v", got)
+	}
+}
+
+func TestAdapter_CreateSupplier_EmptyContent_ReturnsValidation(t *testing.T) {
+	stub := &stubService{createSupplier: func(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error) {
+		return domain.Supplier{}, domain.NewValidationError("supplier", "trade name, legal name, or tax identifier is required")
+	}}
+	adapter := NewAdapter(stub)
+
+	_, err := adapter.CreateSupplier(context.Background(), public.SupplierWriteRequest{Actor: "PI"})
+	if !public.IsCode(err, public.Validation) {
+		t.Fatalf("CreateSupplier(empty content) error code = %v, want %v", public.Code(err), public.Validation)
+	}
+}
+
+func TestAdapter_CreateSupplier_DuplicateTaxIdentifier_ReturnsConflict(t *testing.T) {
+	stub := &stubService{createSupplier: func(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error) {
+		return domain.Supplier{}, domain.ErrTaxIdentifierConflict
+	}}
+	adapter := NewAdapter(stub)
+
+	_, err := adapter.CreateSupplier(context.Background(), public.SupplierWriteRequest{Actor: "PI", TaxIdentifier: "TAX1"})
+	if !public.IsCode(err, public.Conflict) {
+		t.Fatalf("CreateSupplier(duplicate tax identifier) error code = %v, want %v", public.Code(err), public.Conflict)
+	}
+}
+
+func TestAdapter_CreateSupplier_RawInternalErrorNeverLeaks_ReturnsInternal(t *testing.T) {
+	rawErr := errors.New(`ERROR: duplicate key value violates unique constraint "suppliers_tax_identifier_key" (SQLSTATE 23505)`)
+	stub := &stubService{createSupplier: func(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error) {
+		return domain.Supplier{}, rawErr
+	}}
+	adapter := NewAdapter(stub)
+
+	_, err := adapter.CreateSupplier(context.Background(), public.SupplierWriteRequest{Actor: "PI", TaxIdentifier: "TAX1"})
+	if !public.IsCode(err, public.Internal) {
+		t.Fatalf("CreateSupplier error code = %v, want %v", public.Code(err), public.Internal)
+	}
+	if err.Error() != "supplier master operation failed" {
+		t.Fatalf("mapError default message = %q, want %q", err.Error(), "supplier master operation failed")
+	}
+	for _, forbidden := range []string{"SQLSTATE", "23505", "suppliers_tax_identifier_key", "duplicate key"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Errorf("public error message %q leaks driver detail %q", err.Error(), forbidden)
+		}
+	}
+}
+
+func TestAdapter_CreateSupplier_MutatingRequestAfterCall_NoLeak(t *testing.T) {
+	var captured domain.SupplierDetails
+	stub := &stubService{createSupplier: func(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error) {
+		captured = details
+		return domain.Supplier{TradeName: details.TradeName}, nil
+	}}
+	adapter := NewAdapter(stub)
+
+	req := public.SupplierWriteRequest{Actor: "PI", TradeName: "ACME"}
+	if _, err := adapter.CreateSupplier(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req.TradeName = "MUTATED"
+
+	if captured.TradeName != "ACME" {
+		t.Fatalf("caller mutation after call leaked into the internal call: %+v", captured)
 	}
 }
