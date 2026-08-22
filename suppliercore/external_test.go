@@ -49,3 +49,27 @@ func TestExternalConsumer_ReadsAllThreeEntities(t *testing.T) {
 		t.Fatalf("ListContacts error = %v", err)
 	}
 }
+
+// fakeWriteCapabilities is a minimal external WriteCapabilities
+// implementation, proving suppliercore.Writer can be constructed and used
+// from a package that imports no internal/... path.
+type fakeWriteCapabilities struct{}
+
+func (fakeWriteCapabilities) CreateSupplier(ctx context.Context, req suppliercore.SupplierWriteRequest) (suppliercore.Supplier, error) {
+	return suppliercore.Supplier{ID: 1, TradeName: req.TradeName, Active: true}, nil
+}
+
+func TestExternalConsumer_CreatesSupplier(t *testing.T) {
+	writer, err := suppliercore.NewWriter(fakeWriteCapabilities{})
+	if err != nil {
+		t.Fatalf("NewWriter error = %v", err)
+	}
+
+	got, err := writer.CreateSupplier(context.Background(), suppliercore.SupplierWriteRequest{Actor: "PI", TradeName: "ACME"})
+	if err != nil {
+		t.Fatalf("CreateSupplier error = %v", err)
+	}
+	if got.TradeName != "ACME" {
+		t.Fatalf("CreateSupplier result = %+v, want TradeName ACME", got)
+	}
+}
