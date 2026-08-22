@@ -1,6 +1,6 @@
 // Package suppliercore is the internal bridge between the public
-// suppliercore contract (read, plus the graduated Supplier Create write) and
-// the authoritative Supplier Master application service. It translates
+// suppliercore contract (read, plus the graduated Supplier Create and
+// Update writes) and the authoritative Supplier Master application service. It translates
 // public requests to domain calls, maps internal errors to public errors,
 // and defensively copies data crossing the boundary. It never re-implements
 // a business rule already owned by the internal service — most notably
@@ -39,9 +39,11 @@ type serviceReader interface {
 }
 
 // serviceWriter is the narrow seam this bridge depends on for graduated
-// write operations. Only CreateSupplier is graduated so far.
+// write operations. Only CreateSupplier and UpdateSupplier are graduated so
+// far.
 type serviceWriter interface {
 	CreateSupplier(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error)
+	UpdateSupplier(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error)
 }
 
 // supplierService is the combined seam: one internal Service struct backs
@@ -85,6 +87,24 @@ func (a *Adapter) CreateSupplier(ctx context.Context, req public.SupplierWriteRe
 		return public.Supplier{}, mapError(err)
 	}
 	return mapSupplier(created), nil
+}
+
+// UpdateSupplier replaces one existing supplier's content. req.Actor is
+// diagnostic-only attribution, carried via core.WithActor; req.ID and the
+// mapped domain.SupplierDetails are the only business inputs.
+func (a *Adapter) UpdateSupplier(ctx context.Context, req public.SupplierUpdateRequest) (public.Supplier, error) {
+	ctx = core.WithActor(ctx, req.Actor)
+	updated, err := a.service.UpdateSupplier(ctx, req.ID, domain.SupplierDetails{
+		TradeName:     req.TradeName,
+		LegalName:     req.LegalName,
+		TaxIdentifier: req.TaxIdentifier,
+		Website:       req.Website,
+		Notes:         req.Notes,
+	})
+	if err != nil {
+		return public.Supplier{}, mapError(err)
+	}
+	return mapSupplier(updated), nil
 }
 
 // GetSupplier returns one supplier by id.
