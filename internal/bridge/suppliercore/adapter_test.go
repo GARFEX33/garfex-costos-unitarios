@@ -20,6 +20,7 @@ type stubService struct {
 	getContact      func(ctx context.Context, supplierID, contactID int64) (domain.Contact, error)
 	listContacts    func(ctx context.Context, supplierID int64, criteria domain.ContactListCriteria) ([]domain.Contact, error)
 	createSupplier  func(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error)
+	updateSupplier  func(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error)
 }
 
 func (s *stubService) GetSupplier(ctx context.Context, id int64) (domain.Supplier, error) {
@@ -42,6 +43,9 @@ func (s *stubService) ListContacts(ctx context.Context, supplierID int64, criter
 }
 func (s *stubService) CreateSupplier(ctx context.Context, details domain.SupplierDetails) (domain.Supplier, error) {
 	return s.createSupplier(ctx, details)
+}
+func (s *stubService) UpdateSupplier(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error) {
+	return s.updateSupplier(ctx, id, details)
 }
 
 func TestAdapter_GetSupplier_MapsAllFields(t *testing.T) {
@@ -454,6 +458,125 @@ func TestAdapter_CreateSupplier_MutatingRequestAfterCall_NoLeak(t *testing.T) {
 
 	req := public.SupplierWriteRequest{Actor: "PI", TradeName: "ACME"}
 	if _, err := adapter.CreateSupplier(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req.TradeName = "MUTATED"
+
+	if captured.TradeName != "ACME" {
+		t.Fatalf("caller mutation after call leaked into the internal call: %+v", captured)
+	}
+}
+
+func TestAdapter_UpdateSupplier_FieldCompleteness(t *testing.T) {
+	req := public.SupplierUpdateRequest{
+		Actor: "PI", ID: 1, TradeName: "ACME", LegalName: "ACME SA", TaxIdentifier: "TAX1", Website: "acme.test", Notes: "n",
+	}
+	var gotID int64
+	var gotDetails domain.SupplierDetails
+	var gotActor string
+	stub := &stubService{updateSupplier: func(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error) {
+		gotID = id
+		gotDetails = details
+		gotActor = core.ActorFrom(ctx)
+		return domain.Supplier{ID: id, TradeName: details.TradeName, LegalName: details.LegalName, TaxIdentifier: details.TaxIdentifier, Website: details.Website, Notes: details.Notes, Active: true}, nil
+	}}
+	adapter := NewAdapter(stub)
+
+	got, err := adapter.UpdateSupplier(context.Background(), req)
+	if err != nil {
+		t.Fatalf("UpdateSupplier error = %v", err)
+	}
+	if gotActor != "PI" {
+		t.Fatalf("core.ActorFrom(ctx) = %q, want %q", gotActor, "PI")
+	}
+	if gotID != 1 {
+		t.Fatalf("id passed to internal call = %d, want 1", gotID)
+	}
+	if gotDetails != (domain.SupplierDetails{TradeName: "ACME", LegalName: "ACME SA", TaxIdentifier: "TAX1", Website: "acme.test", Notes: "n"}) {
+		t.Fatalf("domain.SupplierDetails mapping mismatch: got %+v", gotDetails)
+	}
+
+	domainFields := reflect.VisibleFields(reflect.TypeOf(domain.Supplier{}))
+	publicVal := reflect.ValueOf(got)
+	for _, f := range domainFields {
+		if !publicVal.FieldByName(f.Name).IsValid() {
+			t.Errorf("domain.Supplier field %s has no corresponding public.Supplier field", f.Name)
+		}
+	}
+	if got.TradeName != "ACME" {
+		t.Fatalf("UpdateSupplier mapping mismatch: got %+v", got)
+	}
+}
+
+func TestAdapter_UpdateSupplier_AllFiveErrorCategoriesReachable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want public.ErrorCode
+	}{
+		{"empty content", domain.NewValidationError("supplier", "trade name, legal name, or tax identifier is required"), public.Validation},
+		{"unknown id", domain.ErrSupplierNotFound, public.NotFound},
+		{"duplicate tax identifier", domain.ErrTaxIdentifierConflict, public.Conflict},
+		{"unclassified failure", errors.New("boom"), public.Internal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubService{updateSupplier: func(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error) {
+				return domain.Supplier{}, tt.err
+			}}
+			adapter := NewAdapter(stub)
+			_, err := adapter.UpdateSupplier(context.Background(), public.SupplierUpdateRequest{Actor: "PI", ID: 1})
+			if !public.IsCode(err, tt.want) {
+				t.Fatalf("UpdateSupplier(%s) error code = %v, want %v", tt.name, public.Code(err), tt.want)
+			}
+		})
+	}
+	// INVALID_ARGUMENT is a Writer-level shape rejection, proven at the
+	// suppliercore package level (TestWriter_UpdateSupplier_RejectsBlankActorOrNonPositiveID);
+	// the bridge is never reached for a shape-invalid request.
+}
+
+func TestAdapter_UpdateSupplier_InactiveSupplierStaysInactive(t *testing.T) {
+	stub := &stubService{updateSupplier: func(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error) {
+		return domain.Supplier{ID: id, TradeName: details.TradeName, Active: false}, nil
+	}}
+	adapter := NewAdapter(stub)
+
+	got, err := adapter.UpdateSupplier(context.Background(), public.SupplierUpdateRequest{Actor: "PI", ID: 1, TradeName: "ACME"})
+	if err != nil {
+		t.Fatalf("UpdateSupplier error = %v", err)
+	}
+	if got.Active {
+		t.Fatalf("UpdateSupplier on an inactive supplier returned Active = true, want false (Update must never reactivate)")
+	}
+}
+
+func TestAdapter_UpdateSupplier_ActiveSupplierNeverFlipped(t *testing.T) {
+	stub := &stubService{updateSupplier: func(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error) {
+		return domain.Supplier{ID: id, TradeName: details.TradeName, Active: true}, nil
+	}}
+	adapter := NewAdapter(stub)
+
+	got, err := adapter.UpdateSupplier(context.Background(), public.SupplierUpdateRequest{Actor: "PI", ID: 1, TradeName: "ACME"})
+	if err != nil {
+		t.Fatalf("UpdateSupplier error = %v", err)
+	}
+	if !got.Active {
+		t.Fatalf("UpdateSupplier on an active supplier returned Active = false, want true")
+	}
+}
+
+func TestAdapter_UpdateSupplier_MutatingRequestAfterCall_NoLeak(t *testing.T) {
+	var captured domain.SupplierDetails
+	stub := &stubService{updateSupplier: func(ctx context.Context, id int64, details domain.SupplierDetails) (domain.Supplier, error) {
+		captured = details
+		return domain.Supplier{TradeName: details.TradeName}, nil
+	}}
+	adapter := NewAdapter(stub)
+
+	req := public.SupplierUpdateRequest{Actor: "PI", ID: 1, TradeName: "ACME"}
+	if _, err := adapter.UpdateSupplier(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

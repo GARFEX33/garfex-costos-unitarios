@@ -8,14 +8,23 @@ import (
 
 type fakeWriteCapabilities struct {
 	createSupplier func(ctx context.Context, req SupplierWriteRequest) (Supplier, error)
+	updateSupplier func(ctx context.Context, req SupplierUpdateRequest) (Supplier, error)
 }
 
 func (f *fakeWriteCapabilities) CreateSupplier(ctx context.Context, req SupplierWriteRequest) (Supplier, error) {
 	return f.createSupplier(ctx, req)
 }
 
+func (f *fakeWriteCapabilities) UpdateSupplier(ctx context.Context, req SupplierUpdateRequest) (Supplier, error) {
+	return f.updateSupplier(ctx, req)
+}
+
 func validSupplierWriteRequest() SupplierWriteRequest {
 	return SupplierWriteRequest{Actor: "PI", TradeName: "ACME", LegalName: "ACME SA", TaxIdentifier: "TAX1"}
+}
+
+func validSupplierUpdateRequest() SupplierUpdateRequest {
+	return SupplierUpdateRequest{Actor: "PI", ID: 1, TradeName: "ACME", LegalName: "ACME SA", TaxIdentifier: "TAX1"}
 }
 
 func TestNewWriter_NilCapability_ReturnsInvalidArgument(t *testing.T) {
@@ -97,20 +106,102 @@ func TestWriter_CreateSupplier_MutatingRequestAfterCall_NoLeak(t *testing.T) {
 	}
 }
 
+func TestWriter_UpdateSupplier_RejectsBlankActorOrNonPositiveID(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*SupplierUpdateRequest)
+	}{
+		{"blank actor", func(r *SupplierUpdateRequest) { r.Actor = "" }},
+		{"whitespace actor", func(r *SupplierUpdateRequest) { r.Actor = "   " }},
+		{"zero id", func(r *SupplierUpdateRequest) { r.ID = 0 }},
+		{"negative id", func(r *SupplierUpdateRequest) { r.ID = -1 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			cap := &fakeWriteCapabilities{
+				updateSupplier: func(ctx context.Context, req SupplierUpdateRequest) (Supplier, error) {
+					called = true
+					return Supplier{}, nil
+				},
+			}
+			w, err := NewWriter(cap)
+			if err != nil {
+				t.Fatalf("unexpected NewWriter error: %v", err)
+			}
+			req := validSupplierUpdateRequest()
+			tt.mutate(&req)
+			_, err = w.UpdateSupplier(context.Background(), req)
+			if !IsCode(err, InvalidArgument) {
+				t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+			}
+			if called {
+				t.Fatalf("expected the capability to not be called for a shape-invalid request")
+			}
+		})
+	}
+}
+
+func TestWriter_UpdateSupplier_DelegatesAndClonesResult(t *testing.T) {
+	want := Supplier{ID: 1, TradeName: "ACME", LegalName: "ACME SA", TaxIdentifier: "TAX1", Active: true}
+	cap := &fakeWriteCapabilities{
+		updateSupplier: func(ctx context.Context, req SupplierUpdateRequest) (Supplier, error) {
+			return want, nil
+		},
+	}
+	w, err := NewWriter(cap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, err := w.UpdateSupplier(context.Background(), validSupplierUpdateRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("UpdateSupplier result = %+v, want %+v", got, want)
+	}
+}
+
+func TestWriter_UpdateSupplier_MutatingRequestAfterCall_NoLeak(t *testing.T) {
+	var captured SupplierUpdateRequest
+	cap := &fakeWriteCapabilities{
+		updateSupplier: func(ctx context.Context, req SupplierUpdateRequest) (Supplier, error) {
+			captured = req
+			return Supplier{TradeName: req.TradeName}, nil
+		},
+	}
+	w, err := NewWriter(cap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := validSupplierUpdateRequest()
+	if _, err := w.UpdateSupplier(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req.TradeName = "MUTATED"
+
+	if captured.TradeName != "ACME" {
+		t.Fatalf("caller mutation after call leaked into the capability call: %+v", captured)
+	}
+}
+
 func TestWriter_NoUngraduatedMethodExported(t *testing.T) {
 	typ := reflect.TypeOf((*WriteCapabilities)(nil)).Elem()
-	if typ.NumMethod() != 1 {
-		t.Fatalf("expected exactly 1 method on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
+	if typ.NumMethod() != 2 {
+		t.Fatalf("expected exactly 2 methods on WriteCapabilities, got %d: %v", typ.NumMethod(), typ)
 	}
-	if _, ok := typ.MethodByName("CreateSupplier"); !ok {
-		t.Fatalf("expected WriteCapabilities to declare CreateSupplier")
+	for _, name := range []string{"CreateSupplier", "UpdateSupplier"} {
+		if _, ok := typ.MethodByName(name); !ok {
+			t.Fatalf("expected WriteCapabilities to declare %s", name)
+		}
 	}
 	writerType := reflect.TypeOf((*Writer)(nil))
-	allowed := map[string]bool{"CreateSupplier": true}
+	allowed := map[string]bool{"CreateSupplier": true, "UpdateSupplier": true}
 	for i := 0; i < writerType.NumMethod(); i++ {
 		name := writerType.Method(i).Name
 		if !allowed[name] {
-			t.Fatalf("unexpected exported Writer method %s; only CreateSupplier is graduated so far", name)
+			t.Fatalf("unexpected exported Writer method %s; only CreateSupplier and UpdateSupplier are graduated so far", name)
 		}
 	}
 }
@@ -122,6 +213,17 @@ func TestSupplierWriteRequest_NoReferenceTypedField(t *testing.T) {
 		switch f.Type.Kind() {
 		case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
 			t.Fatalf("SupplierWriteRequest.%s is reference-typed (%v); this would require a defensive clone helper that does not exist", f.Name, f.Type.Kind())
+		}
+	}
+}
+
+func TestSupplierUpdateRequest_NoReferenceTypedField(t *testing.T) {
+	typ := reflect.TypeOf(SupplierUpdateRequest{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		switch f.Type.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+			t.Fatalf("SupplierUpdateRequest.%s is reference-typed (%v); this would require a defensive clone helper that does not exist", f.Name, f.Type.Kind())
 		}
 	}
 }

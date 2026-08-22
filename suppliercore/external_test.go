@@ -59,6 +59,10 @@ func (fakeWriteCapabilities) CreateSupplier(ctx context.Context, req suppliercor
 	return suppliercore.Supplier{ID: 1, TradeName: req.TradeName, Active: true}, nil
 }
 
+func (fakeWriteCapabilities) UpdateSupplier(ctx context.Context, req suppliercore.SupplierUpdateRequest) (suppliercore.Supplier, error) {
+	return suppliercore.Supplier{ID: req.ID, TradeName: req.TradeName, Active: true}, nil
+}
+
 func TestExternalConsumer_CreatesSupplier(t *testing.T) {
 	writer, err := suppliercore.NewWriter(fakeWriteCapabilities{})
 	if err != nil {
@@ -71,5 +75,20 @@ func TestExternalConsumer_CreatesSupplier(t *testing.T) {
 	}
 	if got.TradeName != "ACME" {
 		t.Fatalf("CreateSupplier result = %+v, want TradeName ACME", got)
+	}
+}
+
+func TestExternalConsumer_UpdatesSupplier(t *testing.T) {
+	writer, err := suppliercore.NewWriter(fakeWriteCapabilities{})
+	if err != nil {
+		t.Fatalf("NewWriter error = %v", err)
+	}
+
+	got, err := writer.UpdateSupplier(context.Background(), suppliercore.SupplierUpdateRequest{Actor: "PI", ID: 1, TradeName: "ACME UPDATED"})
+	if err != nil {
+		t.Fatalf("UpdateSupplier error = %v", err)
+	}
+	if got.TradeName != "ACME UPDATED" {
+		t.Fatalf("UpdateSupplier result = %+v, want TradeName ACME UPDATED", got)
 	}
 }
